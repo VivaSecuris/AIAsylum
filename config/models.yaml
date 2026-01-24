@@ -1,0 +1,63 @@
+# Model Configurations
+# Provider-specific model settings
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    models:
+      - name: gpt-4
+        max_tokens: 8192
+        temperature: 0.7
+      - name: gpt-4-turbo
+        max_tokens: 128000
+        temperature: 0.7
+      - name: gpt-3.5-turbo
+        max_tokens: 16385
+        temperature: 0.7
+  
+  anthropic:
+    base_url: https://api.anthropic.com
+    models:
+      - name: claude-3-opus
+        max_tokens: 4096
+        temperature: 0.7
+      - name: claude-3-sonnet
+        max_tokens: 4096
+        temperature: 0.7
+      - name: claude-3-haiku
+        max_tokens: 4096
+        temperature: 0.7
+  
+  google:
+    base_url: https://generativelanguage.googleapis.com
+    models:
+      - name: gemini-pro
+        max_tokens: 8192
+        temperature: 0.7
+      - name: gemini-pro-vision
+        max_tokens: 8192
+        temperature: 0.7
+  
+  ollama:
+    base_url: http://localhost:11434
+    models:
+      - name: llama2
+        max_tokens: 4096
+        temperature: 0.7
+      - name: llama3
+        max_tokens: 8192
+        temperature: 0.7
+      - name: llama3.2
+        max_tokens: 8192
+        temperature: 0.7
+      - name: mistral
+        max_tokens: 8192
+        temperature: 0.7
+      - name: codellama
+        max_tokens: 4096
+        temperature: 0.7
+
+defaults:
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 60

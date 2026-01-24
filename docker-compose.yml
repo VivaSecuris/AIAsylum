@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-asylum-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://aiasylum:aiasylum@db:5432/aiasylum
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - API_SECRET_KEY=${API_SECRET_KEY:-change-me-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - ai-asylum-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: ai-asylum-db
+    environment:
+      - POSTGRES_USER=aiasylum
+      - POSTGRES_PASSWORD=aiasylum
+      - POSTGRES_DB=aiasylum
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiasylum"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ai-asylum-network
+
+  # Optional: Ollama service for local models
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-asylum-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    networks:
+      - ai-asylum-network
+    profiles:
+      - ollama  # Only start with --profile ollama
+
+  # Optional: Frontend (if you want to containerize it)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai-asylum-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - ai-asylum-network
+    profiles:
+      - frontend  # Only start with --profile frontend
+
+volumes:
+  postgres_data:
+    driver: local
+  ollama_data:
+    driver: local
+
+networks:
+  ai-asylum-network:
+    driver: bridge

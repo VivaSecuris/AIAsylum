@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Asylum API Service
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_dir }}/app
+Environment="PATH={{ app_dir }}/venv/bin"
+EnvironmentFile={{ app_dir }}/app/.env
+ExecStart={{ app_dir }}/venv/bin/uvicorn vivasecuris.aiasylum.api.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

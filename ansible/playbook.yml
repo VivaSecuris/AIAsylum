@@ -1,0 +1,136 @@
+---
+- name: Deploy AI Asylum
+  hosts: all
+  become: yes
+  vars:
+    app_user: aiasylum
+    app_dir: /opt/aiasylum
+    python_version: "3.11"
+    postgres_version: "15"
+    
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install system dependencies
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - git
+          - postgresql-{{ postgres_version }}
+          - postgresql-contrib-{{ postgres_version }}
+          - nginx
+          - curl
+          - build-essential
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        system: yes
+        shell: /bin/bash
+        home: "{{ app_dir }}"
+        create_home: yes
+
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Clone repository
+      git:
+        repo: "{{ git_repo }}"
+        dest: "{{ app_dir }}/app"
+        version: "{{ git_branch | default('main') }}"
+      become_user: "{{ app_user }}"
+
+    - name: Create virtual environment
+      command: python3 -m venv {{ app_dir }}/venv
+      args:
+        creates: "{{ app_dir }}/venv/bin/python"
+      become_user: "{{ app_user }}"
+
+    - name: Install Python dependencies
+      pip:
+        requirements: "{{ app_dir }}/app/requirements.txt"
+        virtualenv: "{{ app_dir }}/venv"
+        virtualenv_python: python3
+      become_user: "{{ app_user }}"
+
+    - name: Create data directory
+      file:
+        path: "{{ app_dir }}/data"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Create .env file
+      template:
+        src: env.j2
+        dest: "{{ app_dir }}/app/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0600'
+      become_user: "{{ app_user }}"
+
+    - name: Initialize database
+      command: "{{ app_dir }}/venv/bin/alembic -c {{ app_dir }}/app/alembic.ini upgrade head"
+      args:
+        chdir: "{{ app_dir }}/app"
+      become_user: "{{ app_user }}"
+      environment:
+        DATABASE_URL: "{{ database_url }}"
+
+    - name: Create systemd service file
+      template:
+        src: aiasylum.service.j2
+        dest: /etc/systemd/system/aiasylum.service
+      notify: restart aiasylum
+
+    - name: Configure Nginx
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/aiasylum
+      notify: restart nginx
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/aiasylum
+        dest: /etc/nginx/sites-enabled/aiasylum
+        state: link
+      notify: restart nginx
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+
+    - name: Enable and start aiasylum service
+      systemd:
+        name: aiasylum
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+  handlers:
+    - name: restart aiasylum
+      systemd:
+        name: aiasylum
+        state: restarted
+        daemon_reload: yes
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted

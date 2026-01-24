@@ -1,0 +1,39 @@
+version: '3.8'
+
+# Production docker-compose configuration
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  api:
+    environment:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db:
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Uncomment for production PostgreSQL tuning
+    # command: postgres -c shared_buffers=256MB -c max_connections=200
+
+  # Optional: Add reverse proxy (Traefik/Nginx)
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/ssl:/etc/nginx/ssl:ro
+  #   depends_on:
+  #     - api
+  #   restart: always

@@ -1,0 +1,3 @@
+# Ansible role requirements (if using external roles)
+# - src: geerlingguy.postgresql
+#   version: 2.0.0
