@@ -1,0 +1,27 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts should always use LF
+*.sh text eol=lf
+
+# Python files
+*.py text eol=lf
+
+# Make sure these files are always treated as text
+*.md text
+*.txt text
+*.yml text
+*.yaml text
+*.json text
+*.ini text
+*.conf text
+
+# Binary files
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary

@@ -63,7 +63,40 @@ The system evaluates models across multiple dimensions:
 
 ## Quick Start
 
-**Easiest way to start everything:**
+**New to AI Asylum? Start here:**
+
+1. **Quick Test** (see what's working):
+   ```bash
+   python scripts/quick_test.py
+   ```
+
+2. **Install Dependencies**:
+   ```bash
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. **Configure** (copy `.env.example` to `.env` and add your API keys, or use Ollama!)
+
+4. **Initialize Database**:
+   ```bash
+   make init
+   ```
+
+5. **Run Your First Test**:
+   ```bash
+   # With Ollama (no API keys needed!)
+   ollama serve
+   ollama pull llama2
+   python -m vivasecuris.aiasylum.cli run \
+     --doctor-provider ollama \
+     --doctor-model llama2 \
+     --patient-provider ollama \
+     --patient-model llama2 \
+     --test-type conversation
+   ```
+
+**Or start everything at once:**
 
 ```bash
 # Bash script (recommended for Unix/Mac)
@@ -81,6 +114,8 @@ This will:
 - ✅ Show you all the URLs
 
 Press `Ctrl+C` to stop all services.
+
+**See [QUICKSTART.md](QUICKSTART.md) for detailed step-by-step guide.**
 
 ## Architecture: Test Execution vs Analysis
 
