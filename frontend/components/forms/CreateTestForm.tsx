@@ -16,7 +16,7 @@ export function CreateTestForm() {
     doctor_model: '',
     patient_provider: '',
     patient_model: '',
-    test_type: 'conversation',
+    test_type: 'multi_shot',
     test_config: {},
   })
 
@@ -89,22 +89,30 @@ export function CreateTestForm() {
         <div className="space-y-2">
           <label className="text-sm font-medium">Test Type</label>
           <div className="flex gap-4">
-            {['conversation', 'scenario', 'adversarial'].map((type) => (
-              <label key={type} className="flex items-center gap-2">
+            {[
+              { value: 'one_shot', label: 'One-Shot' },
+              { value: 'multi_shot', label: 'Multi-Shot' },
+            ].map((type) => (
+              <label key={type.value} className="flex items-center gap-2">
                 <input
                   type="radio"
                   name="test_type"
-                  value={type}
-                  checked={formData.test_type === type}
+                  value={type.value}
+                  checked={formData.test_type === type.value}
                   onChange={(e) =>
                     setFormData({ ...formData, test_type: e.target.value })
                   }
                   className="rounded"
                 />
-                <span className="capitalize">{type}</span>
+                <span className="text-sm">{type.label}</span>
               </label>
             ))}
           </div>
+          <p className="text-xs text-muted-foreground">
+            {formData.test_type === 'one_shot'
+              ? 'Single prompt/response test'
+              : 'Multi-turn conversation between doctor and patient'}
+          </p>
         </div>
 
         <div className="space-y-4">
@@ -165,7 +173,7 @@ export function CreateTestForm() {
             >
               <option value="">None (use default prompts)</option>
               {prompts
-                .filter((p) => p.prompt_type === 'test_prompt' && (!p.category || p.category === formData.test_type || formData.test_type === 'conversation'))
+                .filter((p) => p.prompt_type === 'test_prompt' && (!p.category || p.category === formData.test_type || formData.test_type === 'multi_shot'))
                 .map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
                     {prompt.name} {prompt.category && `(${prompt.category})`}
@@ -185,7 +193,7 @@ export function CreateTestForm() {
 
         {showAdvanced && (
           <div className="space-y-4 rounded border bg-muted/50 p-4">
-            {formData.test_type === 'conversation' && (
+            {formData.test_type === 'multi_shot' && (
               <div>
                 <label className="text-sm font-medium">Max Turns</label>
                 <input
@@ -204,9 +212,83 @@ export function CreateTestForm() {
                   }
                   className="mt-1 w-full rounded border px-3 py-2 text-sm"
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Number of conversation turns between doctor and patient
+                </p>
               </div>
             )}
-            {formData.test_type === 'adversarial' && (
+            {formData.test_type === 'one_shot' && (
+              <div>
+                <label className="text-sm font-medium">Prompts (Optional)</label>
+                <textarea
+                  placeholder="Enter one or more prompts, one per line"
+                  value={Array.isArray(formData.test_config?.prompts) 
+                    ? formData.test_config.prompts.join('\n')
+                    : formData.test_config?.prompt || ''}
+                  onChange={(e) => {
+                    const lines = e.target.value.split('\n').filter(l => l.trim())
+                    setFormData({
+                      ...formData,
+                      test_config: {
+                        ...formData.test_config,
+                        prompts: lines.length > 1 ? lines : undefined,
+                        prompt: lines.length === 1 ? lines[0] : undefined,
+                      },
+                    })
+                  }}
+                  className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                  rows={4}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Enter prompts to test. Each line will be tested separately.
+                </p>
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Chain-of-Thought (CoT) Reasoning</label>
+              <div className="space-y-2">
+                {formData.test_type === 'multi_shot' && (
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={formData.test_config?.enable_doctor_cot || false}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          test_config: {
+                            ...formData.test_config,
+                            enable_doctor_cot: e.target.checked,
+                          },
+                        })
+                      }
+                      className="rounded"
+                    />
+                    <span className="text-sm">Enable CoT for Doctor Model</span>
+                  </label>
+                )}
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={formData.test_config?.enable_patient_cot || false}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        test_config: {
+                          ...formData.test_config,
+                          enable_patient_cot: e.target.checked,
+                        },
+                      })
+                    }
+                    className="rounded"
+                  />
+                  <span className="text-sm">Enable CoT for Patient Model</span>
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  When enabled, the model will use ReACT-style reasoning (think-act-observe) before responding.
+                </p>
+              </div>
+            </div>
+            {false && formData.test_type === 'adversarial' && (
               <div>
                 <label className="text-sm font-medium">Jailbreak Techniques</label>
                 <select

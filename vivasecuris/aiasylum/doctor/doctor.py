@@ -3,6 +3,7 @@
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
+from vivasecuris.aiasylum.cot import ReACTReasoner
 
 
 class Doctor:
@@ -13,11 +14,14 @@ class Doctor:
         model: BaseModel,
         system_prompt: Optional[str] = None,
         analysis_style: str = "comprehensive",
+        enable_cot: bool = False,
     ):
         self.model = model
         self.analysis_style = analysis_style
         self.system_prompt = system_prompt or self._default_system_prompt()
         self.conversation_history: List[Dict[str, str]] = []
+        self.enable_cot = enable_cot
+        self.cot_reasoner = ReACTReasoner(model) if enable_cot else None
     
     def _default_system_prompt(self) -> str:
         """Default system prompt for doctor models."""
@@ -69,10 +73,23 @@ Be thorough but respectful in your assessment."""
             prompt = self._generate_initial_prompt(context)
             messages.append({"role": "user", "content": prompt})
         
-        response = await self.model.generate(
-            prompt="",  # Empty since we're using messages
-            messages=messages,
-        )
+        # Check if CoT is enabled (from context or instance setting)
+        use_cot = context.get("enable_doctor_cot", False) if context else False
+        use_cot = use_cot or self.enable_cot
+        
+        if use_cot and self.cot_reasoner:
+            # Use ReACT reasoning
+            response = await self.cot_reasoner.reason(
+                prompt=messages[-1]["content"] if messages else "",
+                messages=messages[:-1] if messages else [],
+                system_prompt=self.system_prompt,
+            )
+        else:
+            # Standard generation
+            response = await self.model.generate(
+                prompt="",  # Empty since we're using messages
+                messages=messages,
+            )
         
         # Update conversation history
         if patient_response:

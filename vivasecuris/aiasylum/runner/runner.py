@@ -5,13 +5,15 @@ from typing import Dict, List, Optional
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models import get_provider
-from vivasecuris.aiasylum.tests import ConversationTest, ScenarioTest, AdversarialTest
+from vivasecuris.aiasylum.tests import OneShotTest, MultiShotTest, ConversationTest, ScenarioTest, AdversarialTest
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn, PromptLibrary
 from vivasecuris.aiasylum.tests.base import TestResult as TestResultType
 from vivasecuris.aiasylum.constants import (
-    TEST_TYPE_CONVERSATION,
-    TEST_TYPE_SCENARIO,
-    TEST_TYPE_ADVERSARIAL,
+    TEST_TYPE_ONE_SHOT,
+    TEST_TYPE_MULTI_SHOT,
+    TEST_TYPE_CONVERSATION,  # Legacy
+    TEST_TYPE_SCENARIO,  # Legacy
+    TEST_TYPE_ADVERSARIAL,  # Legacy
     STATUS_PENDING,
     STATUS_RUNNING,
     STATUS_COMPLETED,
@@ -121,7 +123,27 @@ class TestRunner:
                 
                 # Run appropriate test (tests expect models, not Patient/Doctor objects)
                 test_result: TestResultType
-                if test_type == TEST_TYPE_CONVERSATION:
+                if test_type == TEST_TYPE_ONE_SHOT:
+                    # One-shot test - single prompt/response
+                    if prompt_text:
+                        test = OneShotTest(prompts=[prompt_text])
+                    else:
+                        prompts = test_config.get("prompts", []) if test_config else []
+                        if not prompts:
+                            # Fallback to single prompt if provided
+                            single_prompt = test_config.get("prompt") if test_config else None
+                            if single_prompt:
+                                prompts = [single_prompt]
+                        test = OneShotTest(prompts=prompts)
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                elif test_type == TEST_TYPE_MULTI_SHOT:
+                    # Multi-shot test - conversation between doctor and patient
+                    max_turns = test_config.get("max_turns", 10) if test_config else 10
+                    doctor_prompt = prompt_text or (test_config.get("doctor_prompt") if test_config else None)
+                    test = MultiShotTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                # Legacy test types (for backward compatibility)
+                elif test_type == TEST_TYPE_CONVERSATION:
                     # Use prompt from library if available, otherwise use doctor_prompt from config
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
                     test = ConversationTest(doctor_prompt=doctor_prompt)
@@ -278,7 +300,27 @@ class TestRunner:
                 
                 # Run appropriate test
                 test_result: TestResultType
-                if test_run.test_type == TEST_TYPE_CONVERSATION:
+                if test_run.test_type == TEST_TYPE_ONE_SHOT:
+                    # One-shot test - single prompt/response
+                    if prompt_text:
+                        test = OneShotTest(prompts=[prompt_text])
+                    else:
+                        prompts = test_config.get("prompts", [])
+                        if not prompts:
+                            # Fallback to single prompt if provided
+                            single_prompt = test_config.get("prompt")
+                            if single_prompt:
+                                prompts = [single_prompt]
+                        test = OneShotTest(prompts=prompts)
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                elif test_run.test_type == TEST_TYPE_MULTI_SHOT:
+                    # Multi-shot test - conversation between doctor and patient
+                    max_turns = test_config.get("max_turns", 10)
+                    doctor_prompt = prompt_text or test_config.get("doctor_prompt")
+                    test = MultiShotTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                # Legacy test types (for backward compatibility)
+                elif test_run.test_type == TEST_TYPE_CONVERSATION:
                     # Use prompt from library if available, otherwise use doctor_prompt from config
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
                     test = ConversationTest(doctor_prompt=doctor_prompt)
@@ -319,15 +361,25 @@ class TestRunner:
                 
                 # Save conversation turns if available
                 if test_result.metadata and "conversation_history" in test_result.metadata:
-                    for i, turn in enumerate(test_result.metadata["conversation_history"]):
+                    conversation_history = test_result.metadata["conversation_history"]
+                    print(f"[execute_test_run] Saving {len(conversation_history)} conversation turns for test_run_id={test_run.id}")
+                    for i, turn in enumerate(conversation_history):
+                        speaker = turn.get("speaker", "unknown")
+                        prompt = turn.get("prompt", "")
+                        response = turn.get("response", "")
+                        print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}")
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=i,
-                            speaker=turn["speaker"],
-                            prompt=turn.get("prompt", ""),
-                            response=turn.get("response", ""),
+                            speaker=speaker,
+                            prompt=prompt,
+                            response=response,
                         )
                         session.add(turn_record)
+                else:
+                    print(f"[execute_test_run] No conversation_history in metadata for test_run_id={test_run.id}")
+                    if test_result.metadata:
+                        print(f"  Available metadata keys: {list(test_result.metadata.keys())}")
                 
                 # Update test run status
                 test_run.status = "completed"

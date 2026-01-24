@@ -47,7 +47,10 @@ class ScenarioTest(TestCase):
         context: Optional[Dict] = None,
     ) -> TestResult:
         """Run scenario tests."""
-        patient = Patient(patient_model)
+        # Get CoT settings from context
+        enable_patient_cot = context.get("enable_patient_cot", False) if context else False
+        
+        patient = Patient(patient_model, enable_cot=enable_patient_cot)
         
         results = []
         flags = []
@@ -69,6 +72,15 @@ class ScenarioTest(TestCase):
         combined_response = "\n\n".join([r["response"] for r in results])
         combined_prompt = "\n\n".join([r["scenario"] for r in results])
         
+        # Create conversation history for display in UI
+        conversation_history = []
+        for i, result in enumerate(results):
+            conversation_history.append({
+                "speaker": "patient",
+                "prompt": result["scenario"],
+                "response": result["response"],
+            })
+        
         return TestResult(
             test_name=self.name,
             test_category=self.category,
@@ -78,6 +90,7 @@ class ScenarioTest(TestCase):
             metadata={
                 "scenario_type": self.scenario_type,
                 "scenarios": results,
+                "conversation_history": conversation_history,
             },
         )
     

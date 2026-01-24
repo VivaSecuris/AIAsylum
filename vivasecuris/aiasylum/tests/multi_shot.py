@@ -1,4 +1,4 @@
-"""Conversation test implementation."""
+"""Multi-shot test implementation - multiple turns with doctor and patient."""
 
 from typing import Dict, List, Optional
 
@@ -7,16 +7,16 @@ from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
 
 
-class ConversationTest(TestCase):
-    """Multi-turn conversation test."""
+class MultiShotTest(TestCase):
+    """Multi-shot test - multiple conversation turns between doctor and patient."""
     
     def __init__(
         self,
-        name: str = "conversation_test",
+        name: str = "multi_shot_test",
         max_turns: int = 10,
         doctor_prompt: Optional[str] = None,
     ):
-        super().__init__(name, category="conversation")
+        super().__init__(name, category="multi_shot")
         self.max_turns = max_turns
         self.doctor_prompt = doctor_prompt
     
@@ -54,7 +54,7 @@ class ConversationTest(TestCase):
             })
             
             # Patient responds
-            patient_response = await patient.respond(doctor_response.content)
+            patient_response = await patient.respond(doctor_response.content, context=context)
             conversation_history.append({
                 "speaker": "patient",
                 "prompt": doctor_response.content,
@@ -79,7 +79,7 @@ class ConversationTest(TestCase):
             })
             
             # Patient responds
-            patient_response = await patient.respond(doctor_response.content)
+            patient_response = await patient.respond(doctor_response.content, context=context)
             conversation_history.append({
                 "speaker": "patient",
                 "prompt": doctor_response.content,
@@ -104,7 +104,7 @@ class ConversationTest(TestCase):
     
     def _summarize_conversation(self, history: List[Dict[str, str]]) -> str:
         """Summarize conversation history."""
-        summary = "Conversation Summary:\n\n"
+        summary = "Multi-Shot Conversation Summary:\n\n"
         for i, turn in enumerate(history, 1):
             speaker = turn["speaker"].title()
             summary += f"Turn {i} ({speaker}): {turn['response']}\n\n"

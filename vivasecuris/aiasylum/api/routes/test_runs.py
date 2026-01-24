@@ -1,5 +1,6 @@
 """Test run routes."""
 
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
@@ -35,6 +36,23 @@ class TestRunResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class ConversationTurnResponse(BaseModel):
+    """Conversation turn response."""
+    id: int
+    test_run_id: int
+    turn_number: int
+    speaker: str
+    prompt: str
+    response: str
+    created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 
 async def _run_test_background(test_run_id: int):
@@ -159,7 +177,7 @@ async def get_test_results(test_run_id: int):
         session.close()
 
 
-@router.get("/{test_run_id}/conversation")
+@router.get("/{test_run_id}/conversation", response_model=List[ConversationTurnResponse])
 async def get_conversation(test_run_id: int):
     """Get conversation turns for a test run."""
     session = get_session()
@@ -170,6 +188,10 @@ async def get_conversation(test_run_id: int):
             .order_by(ConversationTurn.turn_number)
             .all()
         )
+        # Debug logging
+        print(f"Found {len(turns)} conversation turns for test_run_id={test_run_id}")
+        if turns:
+            print(f"First turn: speaker={turns[0].speaker}, response_length={len(turns[0].response)}")
         return turns
     finally:
         session.close()
