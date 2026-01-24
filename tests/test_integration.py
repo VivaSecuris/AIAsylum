@@ -20,8 +20,15 @@ class TestIntegrationWorkflows:
             
             # Create a mock provider that returns MockModel
             mock_provider = MagicMock()
-            mock_model = MockModel()
-            mock_provider.create_model.return_value = mock_model
+            # Create separate models for doctor and patient
+            doctor_mock_model = MockModel()
+            patient_mock_model = MockModel()
+            # Make create_model return different models based on model name
+            def create_model_side_effect(model_name, **kwargs):
+                if "doctor" in str(model_name) or "llama3" in str(model_name):
+                    return doctor_mock_model
+                return patient_mock_model
+            mock_provider.create_model.side_effect = create_model_side_effect
             mock_get_provider.return_value = mock_provider
             
             # Mock httpx response for Ollama

@@ -60,21 +60,17 @@ class TestRunner:
             doctor_model_instance = doctor_provider_instance.create_model(doctor_model)
             patient_model_instance = patient_provider_instance.create_model(patient_model)
             
-            # Create doctor and patient
-            doctor = Doctor(doctor_model_instance)
-            patient = Patient(patient_model_instance)
-            
-            # Run appropriate test
+            # Run appropriate test (tests expect models, not Patient/Doctor objects)
             test_result: TestResultType
             if test_type == "conversation":
                 test = ConversationTest()
-                test_result = await test.run(patient, doctor, context=test_config)
+                test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
             elif test_type == "scenario":
                 test = ScenarioTest()
-                test_result = await test.run(patient, doctor, context=test_config)
+                test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
             elif test_type == "adversarial":
                 test = AdversarialTest()
-                test_result = await test.run(patient, doctor, context=test_config)
+                test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
             else:
                 raise ValueError(f"Unknown test type: {test_type}")
             
