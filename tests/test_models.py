@@ -90,23 +90,33 @@ class TestModelGeneration:
     @pytest.mark.asyncio
     async def test_ollama_model_generate(self):
         """Test Ollama model generation."""
-        with patch('httpx.AsyncClient') as mock_client:
+        from vivasecuris.aiasylum.models.ollama import OllamaModel
+        
+        with patch('httpx.AsyncClient') as mock_client_class:
+            # Mock the async client
+            mock_client = AsyncMock()
             mock_response = MagicMock()
             mock_response.json.return_value = {
                 "response": "Test response",
-                "done": True
+                "done": True,
+                "prompt_eval_count": 10,
+                "eval_count": 20,
             }
             mock_response.raise_for_status = MagicMock()
             
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
-                return_value=mock_response
-            )
+            # Setup async context manager
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_class.return_value = mock_client
             
-            provider = OllamaProvider()
-            model = provider.create_model("llama2")
+            model = OllamaModel("llama2")
+            # Override the client property
+            model._client = mock_client
             
             response = await model.generate("Test prompt")
             
             assert response.content == "Test response"
             assert response.model == "llama2"
             assert response.provider == "ollama"
+            
+            # Clean up
+            await model.close()

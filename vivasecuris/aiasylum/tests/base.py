@@ -30,9 +30,9 @@ class TestCase(ABC):
     @abstractmethod
     async def run(
         self,
-        patient_model,
-        doctor_model=None,
-        context: Optional[Dict] = None,
+        patient_model: "BaseModel",
+        doctor_model: Optional["BaseModel"] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> TestResult:
         """
         Run the test case.

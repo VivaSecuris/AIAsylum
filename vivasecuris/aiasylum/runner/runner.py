@@ -2,12 +2,22 @@
 
 from typing import Dict, List, Optional
 
+from typing import Dict, List, Optional
+
 from vivasecuris.aiasylum.models import get_provider
-from vivasecuris.aiasylum.doctor import Doctor
-from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests import ConversationTest, ScenarioTest, AdversarialTest
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn
 from vivasecuris.aiasylum.tests.base import TestResult as TestResultType
+from vivasecuris.aiasylum.constants import (
+    TEST_TYPE_CONVERSATION,
+    TEST_TYPE_SCENARIO,
+    TEST_TYPE_ADVERSARIAL,
+    STATUS_PENDING,
+    STATUS_RUNNING,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+)
+from vivasecuris.aiasylum.exceptions import TestExecutionError
 
 
 class TestRunner:
@@ -46,7 +56,7 @@ class TestRunner:
             patient_provider=patient_provider,
             patient_model=patient_model,
             test_type=test_type,
-            status="running",
+            status=STATUS_RUNNING,
         )
         self.session.add(test_run)
         self.session.commit()
@@ -62,17 +72,17 @@ class TestRunner:
             
             # Run appropriate test (tests expect models, not Patient/Doctor objects)
             test_result: TestResultType
-            if test_type == "conversation":
+            if test_type == TEST_TYPE_CONVERSATION:
                 test = ConversationTest()
                 test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
-            elif test_type == "scenario":
+            elif test_type == TEST_TYPE_SCENARIO:
                 test = ScenarioTest()
                 test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
-            elif test_type == "adversarial":
+            elif test_type == TEST_TYPE_ADVERSARIAL:
                 test = AdversarialTest()
                 test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
             else:
-                raise ValueError(f"Unknown test type: {test_type}")
+                raise TestExecutionError(f"Unknown test type: {test_type}")
             
             # Save test result
             db_result = TestResult(

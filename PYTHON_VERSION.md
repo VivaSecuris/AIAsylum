@@ -12,6 +12,11 @@
 
 You're running **Python 3.14.2**, which is very new. Some packages may not have wheels built yet and will try to compile from source, which can fail.
 
+**Known Issues:**
+- `pydantic-core` fails to build from source on Python 3.14 (missing `recursive_guard` argument)
+- Many packages don't have pre-built wheels for Python 3.14 yet
+- Compilation from source often fails due to compatibility issues
+
 ## Solutions
 
 ### Option 1: Use Python 3.11 or 3.12 (Recommended)
@@ -48,7 +53,7 @@ source venv/bin/activate
 pip install -r requirements-core.txt
 ```
 
-### Option 3: Try Latest Package Versions
+### Option 3: Try Latest Package Versions (May Not Work)
 
 If you want to stick with Python 3.14, try installing latest versions:
 
@@ -56,13 +61,14 @@ If you want to stick with Python 3.14, try installing latest versions:
 # Upgrade pip first
 pip install --upgrade pip setuptools wheel
 
-# Install with latest compatible versions
-pip install fastapi uvicorn[standard] pydantic pydantic-settings sqlalchemy alembic aiosqlite
-pip install openai anthropic google-generativeai httpx
-pip install python-dotenv pyyaml aiofiles python-multipart click
-pip install python-jose[cryptography] passlib[bcrypt] bcrypt
-pip install jinja2 starlette structlog
+# Try installing pydantic from source (may still fail)
+pip install --no-binary pydantic-core pydantic pydantic-settings
+
+# If that fails, pydantic is not compatible with Python 3.14 yet
+# You MUST use Python 3.11 or 3.12
 ```
+
+**Note**: As of now, `pydantic-core` does NOT work with Python 3.14. You must use Python 3.11 or 3.12.
 
 ### Option 4: Use Docker (No Python Version Issues)
 

@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 
 @dataclass
@@ -63,7 +63,7 @@ class BaseModel(ABC):
         system_prompt: Optional[str] = None,
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs
-    ):
+    ) -> "AsyncIterator[str]":
         """
         Stream generate a response from the model.
         
@@ -74,3 +74,6 @@ class BaseModel(ABC):
     
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(model={self.model_name}, provider={self.provider})"
+    
+    def __str__(self) -> str:
+        return f"{self.model_name} ({self.provider})"

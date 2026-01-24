@@ -15,16 +15,19 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from abc import ABC, abstractmethod
+
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
 from config import settings
 
 
-class ModelProvider:
-    """Base class for model providers."""
+class ModelProvider(ABC):
+    """Abstract base class for model providers."""
     
     def __init__(self, provider_name: str):
         self.provider_name = provider_name
     
+    @abstractmethod
     def create_model(
         self,
         model_name: str,
@@ -32,8 +35,19 @@ class ModelProvider:
         max_tokens: int = 4096,
         **kwargs
     ) -> BaseModel:
-        """Create a model instance."""
-        raise NotImplementedError
+        """
+        Create a model instance.
+        
+        Args:
+            model_name: Name of the model to create
+            temperature: Temperature for generation
+            max_tokens: Maximum tokens to generate
+            **kwargs: Additional provider-specific parameters
+        
+        Returns:
+            BaseModel instance
+        """
+        pass
 
 
 class OpenAIProvider(ModelProvider):
@@ -41,9 +55,11 @@ class OpenAIProvider(ModelProvider):
     
     def __init__(self):
         super().__init__("openai")
+        from vivasecuris.aiasylum.exceptions import ModelProviderError
+        
         api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("OPENAI_API_KEY not set")
+            raise ModelProviderError("OPENAI_API_KEY not set")
         self.client = AsyncOpenAI(api_key=api_key)
     
     def create_model(
@@ -67,9 +83,11 @@ class AnthropicProvider(ModelProvider):
     
     def __init__(self):
         super().__init__("anthropic")
+        from vivasecuris.aiasylum.exceptions import ModelProviderError
+        
         api_key = settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not set")
+            raise ModelProviderError("ANTHROPIC_API_KEY not set")
         self.client = AsyncAnthropic(api_key=api_key)
     
     def create_model(
@@ -93,9 +111,11 @@ class GoogleProvider(ModelProvider):
     
     def __init__(self):
         super().__init__("google")
+        from vivasecuris.aiasylum.exceptions import ModelProviderError
+        
         api_key = settings.google_api_key or os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            raise ValueError("GOOGLE_API_KEY not set")
+            raise ModelProviderError("GOOGLE_API_KEY not set")
         genai.configure(api_key=api_key)
         self.client = genai
     
@@ -360,8 +380,10 @@ def get_provider(provider_name: str) -> ModelProvider:
         "ollama": OllamaProvider,
     }
     
+    from vivasecuris.aiasylum.exceptions import ModelProviderError
+    
     provider_class = providers.get(provider_name.lower())
     if not provider_class:
-        raise ValueError(f"Unknown provider: {provider_name}")
+        raise ModelProviderError(f"Unknown provider: {provider_name}")
     
     return provider_class()

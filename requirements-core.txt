@@ -2,10 +2,12 @@
 # This is a minimal set that works on all Python versions
 
 # Core dependencies
-# Note: Python 3.14 is very new - some packages may need latest versions
+# Note: Python 3.14 is very new - pydantic-core may not have wheels yet
+# If installation fails, use Python 3.11 or 3.12 instead
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-pydantic>=2.5.0
+# Try latest pydantic for Python 3.14 compatibility
+pydantic>=2.9.0
 pydantic-settings>=2.1.0
 sqlalchemy>=2.0.0
 alembic>=1.12.0

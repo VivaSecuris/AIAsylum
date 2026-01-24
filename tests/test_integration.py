@@ -14,9 +14,8 @@ class TestIntegrationWorkflows:
     @pytest.mark.asyncio
     async def test_full_test_run_workflow(self, db_session, mock_env):
         """Test complete test run workflow."""
-        # Mock the providers and httpx for Ollama
-        with patch('vivasecuris.aiasylum.models.providers.get_provider') as mock_get_provider, \
-             patch('httpx.AsyncClient') as mock_httpx:
+        # Mock the providers - use MockModel directly to avoid Ollama complexity
+        with patch('vivasecuris.aiasylum.models.providers.get_provider') as mock_get_provider:
             
             # Create a mock provider that returns MockModel
             mock_provider = MagicMock()
@@ -30,12 +29,6 @@ class TestIntegrationWorkflows:
                 return patient_mock_model
             mock_provider.create_model.side_effect = create_model_side_effect
             mock_get_provider.return_value = mock_provider
-            
-            # Mock httpx response for Ollama
-            mock_response = MagicMock()
-            mock_response.json.return_value = {"response": "Test response", "done": True}
-            mock_response.raise_for_status = MagicMock()
-            mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
             
             runner = TestRunner()
             runner.session = db_session

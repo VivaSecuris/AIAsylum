@@ -47,8 +47,11 @@ class TestRun(Base):
     # Metadata (renamed to avoid SQLAlchemy conflict)
     meta_data = Column("metadata", JSON, default=dict)
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<TestRun(id={self.id}, test_type={self.test_type}, status={self.status})>"
+    
+    def __str__(self) -> str:
+        return f"TestRun #{self.id}: {self.test_type} ({self.status})"
 
 
 class TestResult(Base):
