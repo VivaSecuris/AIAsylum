@@ -14,6 +14,48 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.absolute()
 
 
+def check_python_version():
+    """Check Python version and warn if incompatible."""
+    version = sys.version_info
+    if version.major < 3 or (version.major == 3 and version.minor < 10):
+        print("❌ Python 3.10+ required. Found Python {}.{}".format(version.major, version.minor))
+        sys.exit(1)
+    
+    if version.major == 3 and version.minor >= 14:
+        print("⚠️  WARNING: Python 3.14+ detected. This version has compatibility issues.")
+        print("   pydantic-core will fail to build. Please use Python 3.11 or 3.12.")
+        print("")
+        print("   To switch:")
+        print("   brew install python@3.11")
+        print("   python3.11 -m venv venv")
+        print("   source venv/bin/activate")
+        print("")
+        response = input("Continue anyway? (y/N): ")
+        if response.lower() != 'y':
+            sys.exit(1)
+
+
+def find_best_python():
+    """Find the best Python version available."""
+    # Try Python 3.11 first (recommended)
+    for version in ['3.11', '3.12', '3.10']:
+        python_cmd = f'python{version}'
+        try:
+            result = subprocess.run(
+                [python_cmd, '--version'],
+                capture_output=True,
+                check=True
+            )
+            print(f"✓ Using {python_cmd} (recommended)")
+            return python_cmd
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    
+    # Fall back to system python3
+    print(f"⚠️  Using system Python ({sys.version_info.major}.{sys.version_info.minor})")
+    return sys.executable
+
+
 def run_command(cmd, cwd=None, check=True):
     """Run a shell command."""
     print(f"▶️  Running: {' '.join(cmd)}")
@@ -24,13 +66,39 @@ def run_command(cmd, cwd=None, check=True):
 def main():
     print("🚀 Starting AI Asylum...")
     
+    # Check Python version
+    check_python_version()
+    
+    # Find best Python version
+    python_cmd = find_best_python()
+    
     venv_path = SCRIPT_DIR / "venv"
     venv_python = venv_path / "bin" / "python" if sys.platform != "win32" else venv_path / "Scripts" / "python.exe"
     
     # Create virtual environment if needed
     if not venv_path.exists():
-        print("📦 Creating virtual environment...")
-        run_command([sys.executable, "-m", "venv", str(venv_path)])
+        print(f"📦 Creating virtual environment with {python_cmd}...")
+        run_command([python_cmd, "-m", "venv", str(venv_path)])
+    
+    # Verify Python version in venv
+    if venv_python.exists():
+        try:
+            result = subprocess.run(
+                [str(venv_python), "--version"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            venv_version_str = result.stdout.strip()
+            print(f"✓ Virtual environment: {venv_version_str}")
+            
+            # Check if it's Python 3.14+
+            if "3.14" in venv_version_str or "3.15" in venv_version_str:
+                print("⚠️  WARNING: Virtual environment uses Python 3.14+")
+                print("   This may cause pydantic-core build failures.")
+                print("   Consider recreating venv with: python3.11 -m venv venv")
+        except Exception:
+            pass
     
     # Install dependencies if needed
     installed_marker = venv_path / ".installed"
