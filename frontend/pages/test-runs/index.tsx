@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Layout } from '@/components/layout/Layout'
 import { TestRunTable } from '@/components/test-runs/TestRunTable'
 import { TestRunFilters } from '@/components/test-runs/TestRunFilters'
@@ -15,6 +16,7 @@ export default function TestRunsPage() {
     status?: string
     search?: string
   }>({})
+  const queryClient = useQueryClient()
   const { data: testRuns = [], isLoading, error } = useTestRuns({ limit: 1000 })
   const deleteTestRun = useDeleteTestRun()
 
@@ -44,18 +46,31 @@ export default function TestRunsPage() {
   }, [testRuns, filters])
 
   const handleDelete = async (id: number) => {
-    console.log('Delete button clicked for test run:', id)
-    if (confirm('Are you sure you want to delete this test run? This action cannot be undone.')) {
-      try {
-        console.log('Calling delete API for test run:', id)
-        await deleteTestRun.mutateAsync(id)
-        console.log('Delete successful for test run:', id)
-        toast.success('Test run deleted successfully')
-      } catch (error: any) {
-        console.error('Delete failed for test run:', id, error)
-        const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete test run'
-        toast.error(errorMessage)
-      }
+    console.log('🔴 Delete button clicked for test run:', id)
+    if (!confirm('Are you sure you want to delete this test run? This action cannot be undone.')) {
+      console.log('Delete cancelled by user')
+      return
+    }
+    
+    console.log('✅ User confirmed deletion, calling mutation for test run:', id)
+    try {
+      console.log('📡 Calling deleteTestRun.mutateAsync with id:', id)
+      const result = await deleteTestRun.mutateAsync(id)
+      console.log('✅ Delete mutation successful, result:', result)
+      toast.success('Test run deleted successfully')
+      // Force refetch - invalidate and refetch
+      await queryClient.invalidateQueries({ queryKey: ['test-runs'] })
+      await queryClient.refetchQueries({ queryKey: ['test-runs'] })
+      console.log('✅ Queries invalidated and refetched')
+    } catch (error: any) {
+      console.error('❌ Delete failed for test run:', id)
+      console.error('Error object:', error)
+      console.error('Error response:', error?.response)
+      console.error('Error data:', error?.response?.data)
+      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to delete test run'
+      console.error('Error message:', errorMessage)
+      toast.error(errorMessage)
+      alert(`Delete failed: ${errorMessage}`) // Also show alert for debugging
     }
   }
 

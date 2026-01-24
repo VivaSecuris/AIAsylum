@@ -105,32 +105,43 @@ async def get_test_run(test_run_id: int):
 @router.delete("/{test_run_id}")
 async def delete_test_run(test_run_id: int):
     """Delete a test run and all its associated data."""
+    print(f"DELETE /api/v1/test-runs/{test_run_id} - Starting deletion")
     session = None
     try:
         session = get_session()
         test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
         if not test_run:
+            print(f"DELETE /api/v1/test-runs/{test_run_id} - Test run not found")
             raise HTTPException(status_code=404, detail="Test run not found")
+        
+        print(f"DELETE /api/v1/test-runs/{test_run_id} - Found test run, status: {test_run.status}")
         
         # Check if test run is currently running
         if test_run.status == STATUS_RUNNING:
+            print(f"DELETE /api/v1/test-runs/{test_run_id} - Cannot delete running test run")
             raise HTTPException(
                 status_code=400,
                 detail="Cannot delete a test run that is currently running. Please wait for it to complete or fail."
             )
         
         # Delete the test run (cascade will handle related records)
+        print(f"DELETE /api/v1/test-runs/{test_run_id} - Deleting test run from database")
         session.delete(test_run)
         session.commit()
+        print(f"DELETE /api/v1/test-runs/{test_run_id} - Deletion committed successfully")
         session.close()
         
         return {"message": "Test run deleted successfully", "id": test_run_id}
-    except HTTPException:
+    except HTTPException as e:
+        print(f"DELETE /api/v1/test-runs/{test_run_id} - HTTPException: {e.status_code} - {e.detail}")
         if session:
             session.rollback()
             session.close()
         raise
     except Exception as e:
+        print(f"DELETE /api/v1/test-runs/{test_run_id} - Exception: {str(e)}")
+        import traceback
+        traceback.print_exc()
         if session:
             session.rollback()
             session.close()
