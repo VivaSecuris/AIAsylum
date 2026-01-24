@@ -24,8 +24,7 @@ class OllamaModel(BaseModel):
         self.base_url = base_url or settings.ollama_base_url
         self._client = None
     
-    @property
-    async def client(self) -> httpx.AsyncClient:
+    async def _get_client(self) -> httpx.AsyncClient:
         """Get or create async HTTP client."""
         if self._client is None:
             self._client = httpx.AsyncClient(
@@ -110,7 +109,7 @@ class OllamaModel(BaseModel):
         if "repeat_penalty" in kwargs:
             request_data["options"]["repeat_penalty"] = kwargs["repeat_penalty"]
         
-        client = await self.client
+        client = await self._get_client()
         response = await client.post("/api/generate", json=request_data)
         response.raise_for_status()
         data = response.json()
@@ -157,7 +156,7 @@ class OllamaModel(BaseModel):
             },
         }
         
-        client = await self.client
+        client = await self._get_client()
         async with client.stream("POST", "/api/generate", json=request_data) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -190,7 +189,7 @@ class OllamaModel(BaseModel):
     async def list_models(self) -> List[Dict[str, Any]]:
         """List all available Ollama models."""
         try:
-            client = await self.client
+            client = await self._get_client()
             response = await client.get("/api/tags")
             response.raise_for_status()
             return response.json().get("models", [])
@@ -200,7 +199,7 @@ class OllamaModel(BaseModel):
     async def get_model_info(self) -> Dict[str, Any]:
         """Get information about this specific model."""
         try:
-            client = await self.client
+            client = await self._get_client()
             response = await client.post(
                 "/api/show",
                 json={"name": self.model_name},
