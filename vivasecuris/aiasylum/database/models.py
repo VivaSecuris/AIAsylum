@@ -175,7 +175,8 @@ class BenchmarkResult(Base):
     
     # Details
     results = Column(JSON)  # Detailed results per sample
-    metadata = Column(JSON, default=dict)
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
     
     def __repr__(self):
         return f"<BenchmarkResult(id={self.id}, benchmark={self.benchmark_name}, score={self.score})>"
