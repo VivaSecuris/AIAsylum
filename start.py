@@ -79,9 +79,8 @@ def main():
     if not venv_path.exists():
         print(f"📦 Creating virtual environment with {python_cmd}...")
         run_command([python_cmd, "-m", "venv", str(venv_path)])
-    
-    # Verify Python version in venv
-    if venv_python.exists():
+    else:
+        # Verify Python version in existing venv
         try:
             result = subprocess.run(
                 [str(venv_python), "--version"],
@@ -90,13 +89,21 @@ def main():
                 check=True
             )
             venv_version_str = result.stdout.strip()
-            print(f"✓ Virtual environment: {venv_version_str}")
             
             # Check if it's Python 3.14+
             if "3.14" in venv_version_str or "3.15" in venv_version_str:
-                print("⚠️  WARNING: Virtual environment uses Python 3.14+")
-                print("   This may cause pydantic-core build failures.")
-                print("   Consider recreating venv with: python3.11 -m venv venv")
+                print("⚠️  WARNING: Existing virtual environment uses Python 3.14+")
+                print("   This will cause pydantic-core build failures.")
+                print("")
+                response = input(f"Recreate venv with {python_cmd}? (Y/n): ")
+                if response.lower() != 'n':
+                    print("🗑️  Removing old virtual environment...")
+                    import shutil
+                    shutil.rmtree(venv_path)
+                    print(f"📦 Creating new virtual environment with {python_cmd}...")
+                    run_command([python_cmd, "-m", "venv", str(venv_path)])
+                else:
+                    print("⚠️  Continuing with Python 3.14 venv (installation may fail)")
         except Exception:
             pass
     
@@ -112,11 +119,54 @@ def main():
     # Check for .env file
     env_file = SCRIPT_DIR / ".env"
     if not env_file.exists():
-        print("⚠️  .env file not found. Copying from .env.example...")
         env_example = SCRIPT_DIR / ".env.example"
         if env_example.exists():
+            print("⚠️  .env file not found. Copying from .env.example...")
             env_file.write_text(env_example.read_text())
             print("📝 Please edit .env with your API keys before continuing")
+        else:
+            print("⚠️  .env file not found. Creating from template...")
+            env_content = """# API Keys (at least one provider required, or use Ollama)
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_API_KEY=
+
+# Ollama Configuration (no API keys needed)
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Database
+DATABASE_URL=sqlite:///./data/aiasylum.db
+
+# Security
+API_SECRET_KEY=change-me-in-production
+JWT_SECRET_KEY=change-me-in-production
+API_KEY_HMAC_SECRET=change-me-in-production
+API_KEYS=
+
+# CORS
+CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+
+# Rate Limiting
+RATE_LIMIT_PER_MINUTE=60
+
+# Request Limits
+MAX_REQUEST_SIZE_MB=10
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+
+# Deep Analysis (disabled by default)
+ENABLE_PROMPT_DIFFERENTIAL_ANALYSIS=false
+ENABLE_ACTIVATION_PATCHING=false
+ENABLE_COT_DETECTION=false
+
+# RAG (optional)
+ENABLE_RAG=false
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+"""
+            env_file.write_text(env_content)
+            print("📝 Created .env file. Please edit it with your API keys (or use Ollama)")
     
     # Initialize database if needed
     data_dir = SCRIPT_DIR / "data"

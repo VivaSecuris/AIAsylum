@@ -55,22 +55,33 @@ fi
 if [ ! -d "venv" ]; then
     echo "📦 Creating virtual environment with $PYTHON_CMD..."
     $PYTHON_CMD -m venv venv
+else
+    # Verify Python version in existing venv
+    source venv/bin/activate 2>/dev/null || true
+    VENV_PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}' | cut -d'.' -f1,2)
+    VENV_PYTHON_MAJOR=$(echo $VENV_PYTHON_VERSION | cut -d'.' -f1)
+    VENV_PYTHON_MINOR=$(echo $VENV_PYTHON_VERSION | cut -d'.' -f2)
+    
+    if [ "$VENV_PYTHON_MAJOR" -eq 3 ] && [ "$VENV_PYTHON_MINOR" -ge 14 ]; then
+        echo "⚠️  WARNING: Existing virtual environment uses Python $VENV_PYTHON_VERSION"
+        echo "   This will cause pydantic-core build failures."
+        echo ""
+        read -p "Recreate venv with $PYTHON_CMD? (Y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo "🗑️  Removing old virtual environment..."
+            rm -rf venv
+            echo "📦 Creating new virtual environment with $PYTHON_CMD..."
+            $PYTHON_CMD -m venv venv
+        else
+            echo "⚠️  Continuing with Python 3.14 venv (installation may fail)"
+        fi
+    fi
 fi
 
 # Activate virtual environment
 echo "🔌 Activating virtual environment..."
 source venv/bin/activate
-
-# Verify Python version in venv
-VENV_PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}' | cut -d'.' -f1,2)
-VENV_PYTHON_MAJOR=$(echo $VENV_PYTHON_VERSION | cut -d'.' -f1)
-VENV_PYTHON_MINOR=$(echo $VENV_PYTHON_VERSION | cut -d'.' -f2)
-
-if [ "$VENV_PYTHON_MAJOR" -eq 3 ] && [ "$VENV_PYTHON_MINOR" -ge 14 ]; then
-    echo "⚠️  WARNING: Virtual environment uses Python $VENV_PYTHON_VERSION"
-    echo "   This may cause pydantic-core build failures."
-    echo "   Consider recreating venv with: python3.11 -m venv venv"
-fi
 
 # Install dependencies if needed
 if [ ! -f "venv/.installed" ]; then
@@ -82,9 +93,54 @@ fi
 
 # Check for .env file
 if [ ! -f ".env" ]; then
-    echo "⚠️  .env file not found. Copying from .env.example..."
-    cp .env.example .env
-    echo "📝 Please edit .env with your API keys before continuing"
+    if [ -f ".env.example" ]; then
+        echo "⚠️  .env file not found. Copying from .env.example..."
+        cp .env.example .env
+        echo "📝 Please edit .env with your API keys before continuing"
+    else
+        echo "⚠️  .env file not found. Creating from template..."
+        cat > .env << 'EOF'
+# API Keys (at least one provider required, or use Ollama)
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_API_KEY=
+
+# Ollama Configuration (no API keys needed)
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Database
+DATABASE_URL=sqlite:///./data/aiasylum.db
+
+# Security
+API_SECRET_KEY=change-me-in-production
+JWT_SECRET_KEY=change-me-in-production
+API_KEY_HMAC_SECRET=change-me-in-production
+API_KEYS=
+
+# CORS
+CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+
+# Rate Limiting
+RATE_LIMIT_PER_MINUTE=60
+
+# Request Limits
+MAX_REQUEST_SIZE_MB=10
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+
+# Deep Analysis (disabled by default)
+ENABLE_PROMPT_DIFFERENTIAL_ANALYSIS=false
+ENABLE_ACTIVATION_PATCHING=false
+ENABLE_COT_DETECTION=false
+
+# RAG (optional)
+ENABLE_RAG=false
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+EOF
+        echo "📝 Created .env file. Please edit it with your API keys (or use Ollama)"
+    fi
 fi
 
 # Initialize database if needed
