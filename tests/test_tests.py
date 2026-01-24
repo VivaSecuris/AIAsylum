@@ -20,11 +20,9 @@ class TestConversationTest:
         patient_model = MockModel()
         doctor_model = MockModel()
         
-        patient = Patient(patient_model)
-        doctor = Doctor(doctor_model)
-        
+        # Pass models, not Patient/Doctor objects
         test = ConversationTest(max_turns=3)
-        result = await test.run(patient, doctor)
+        result = await test.run(patient_model, doctor_model)
         
         assert result.test_name == "conversation_test"
         assert result.test_category == "conversation"
@@ -40,10 +38,10 @@ class TestScenarioTest:
     async def test_scenario_test_run(self):
         """Test running a scenario test."""
         patient_model = MockModel()
-        patient = Patient(patient_model)
         
+        # Pass model, not Patient object
         test = ScenarioTest(scenario_type="ethical_dilemma")
-        result = await test.run(patient)
+        result = await test.run(patient_model)
         
         assert result.test_name == "scenario_test"
         assert result.test_category == "scenario"
@@ -71,10 +69,10 @@ class TestAdversarialTest:
     async def test_adversarial_test_run(self):
         """Test running an adversarial test."""
         patient_model = MockModel()
-        patient = Patient(patient_model)
         
+        # Pass model, not Patient object
         test = AdversarialTest(technique="prompt_injection")
-        result = await test.run(patient)
+        result = await test.run(patient_model)
         
         assert result.test_name == "adversarial_test"
         assert result.test_category == "adversarial"

@@ -18,21 +18,27 @@ class TestModelProviders:
     
     def test_get_provider_openai(self, mock_env):
         """Test getting OpenAI provider."""
-        with patch('vivasecuris.aiasylum.models.providers.AsyncOpenAI'):
+        with patch('vivasecuris.aiasylum.models.providers.settings') as mock_settings, \
+             patch('vivasecuris.aiasylum.models.providers.AsyncOpenAI'):
+            mock_settings.openai_api_key = "test-key"
             provider = get_provider("openai")
             assert isinstance(provider, OpenAIProvider)
             assert provider.provider_name == "openai"
     
     def test_get_provider_anthropic(self, mock_env):
         """Test getting Anthropic provider."""
-        with patch('vivasecuris.aiasylum.models.providers.AsyncAnthropic'):
+        with patch('vivasecuris.aiasylum.models.providers.settings') as mock_settings, \
+             patch('vivasecuris.aiasylum.models.providers.AsyncAnthropic'):
+            mock_settings.anthropic_api_key = "test-key"
             provider = get_provider("anthropic")
             assert isinstance(provider, AnthropicProvider)
             assert provider.provider_name == "anthropic"
     
     def test_get_provider_google(self, mock_env):
         """Test getting Google provider."""
-        with patch('google.generativeai.configure'):
+        with patch('vivasecuris.aiasylum.models.providers.settings') as mock_settings, \
+             patch('google.generativeai.configure'):
+            mock_settings.google_api_key = "test-key"
             provider = get_provider("google")
             assert isinstance(provider, GoogleProvider)
             assert provider.provider_name == "google"
@@ -55,7 +61,9 @@ class TestModelGeneration:
     @pytest.mark.asyncio
     async def test_openai_model_generate(self, mock_env):
         """Test OpenAI model generation."""
-        with patch('vivasecuris.aiasylum.models.providers.AsyncOpenAI') as mock_openai:
+        with patch('vivasecuris.aiasylum.models.providers.settings') as mock_settings, \
+             patch('vivasecuris.aiasylum.models.providers.AsyncOpenAI') as mock_openai:
+            mock_settings.openai_api_key = "test-key"
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.choices = [MagicMock()]
