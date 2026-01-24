@@ -8,6 +8,7 @@ import click
 
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.database import get_session, TestRun
+from vivasecuris.aiasylum.cli import ollama as ollama_cli
 
 
 @click.group()
@@ -77,6 +78,10 @@ def list_benchmarks():
     click.echo("Available benchmarks:")
     for bench in benchmarks:
         click.echo(f"  - {bench}")
+
+
+# Add Ollama subcommands
+cli.add_command(ollama_cli.ollama)
 
 
 @cli.command()

@@ -115,12 +115,17 @@ class GoogleProvider(ModelProvider):
         )
 
 
+# Import first-class Ollama implementation
+from vivasecuris.aiasylum.models.ollama import OllamaProvider as OllamaProviderBase, OllamaModel as OllamaModelBase
+
+
 class OllamaProvider(ModelProvider):
-    """Ollama provider implementation."""
+    """Ollama provider implementation (wrapper for first-class implementation)."""
     
     def __init__(self):
         super().__init__("ollama")
-        self.base_url = settings.ollama_base_url
+        self._base_provider = OllamaProviderBase()
+        self.base_url = self._base_provider.base_url
     
     def create_model(
         self,
@@ -128,10 +133,9 @@ class OllamaProvider(ModelProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         **kwargs
-    ) -> "OllamaModel":
-        return OllamaModel(
+    ) -> OllamaModelBase:
+        return self._base_provider.create_model(
             model_name=model_name,
-            provider=self,
             temperature=temperature,
             max_tokens=max_tokens,
             **kwargs
@@ -344,80 +348,7 @@ class GoogleModel(BaseModel):
                 yield chunk.text
 
 
-class OllamaModel(BaseModel):
-    """Ollama model implementation."""
-    
-    def __init__(self, model_name: str, provider: OllamaProvider, **kwargs):
-        super().__init__(model_name, "ollama", **kwargs)
-        self.provider = provider
-        self.base_url = provider.base_url
-    
-    async def generate(
-        self,
-        prompt: str,
-        system_prompt: Optional[str] = None,
-        messages: Optional[List[Dict[str, str]]] = None,
-        **kwargs
-    ) -> ModelResponse:
-        full_prompt = prompt
-        if system_prompt:
-            full_prompt = f"{system_prompt}\n\n{prompt}"
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model_name,
-                    "prompt": full_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": self.temperature,
-                        "num_predict": self.max_tokens,
-                    },
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-        
-        return ModelResponse(
-            content=data.get("response", ""),
-            model=self.model_name,
-            provider="ollama",
-            finish_reason="stop" if data.get("done") else None,
-        )
-    
-    async def stream_generate(
-        self,
-        prompt: str,
-        system_prompt: Optional[str] = None,
-        messages: Optional[List[Dict[str, str]]] = None,
-        **kwargs
-    ):
-        full_prompt = prompt
-        if system_prompt:
-            full_prompt = f"{system_prompt}\n\n{prompt}"
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model_name,
-                    "prompt": full_prompt,
-                    "stream": True,
-                    "options": {
-                        "temperature": self.temperature,
-                        "num_predict": self.max_tokens,
-                    },
-                },
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line:
-                        import json
-                        data = json.loads(line)
-                        if "response" in data:
-                            yield data["response"]
+# OllamaModel is now imported from ollama.py (first-class implementation)
 
 
 def get_provider(provider_name: str) -> ModelProvider:
