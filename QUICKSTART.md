@@ -19,11 +19,17 @@ source venv/bin/activate  # On Mac/Linux
 # or
 venv\Scripts\activate     # On Windows
 
-# Install dependencies
+# Install core dependencies (recommended first)
+pip install -r requirements-core.txt
+
+# OR install all dependencies (some may have issues on Python 3.14+)
 pip install -r requirements.txt
 ```
 
-**Note**: `psycopg2-binary` is now optional! The default setup uses SQLite which works out of the box. If you see errors about `pg_config`, that's fine - SQLite will be used instead. See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md) if you need PostgreSQL.
+**Notes**: 
+- `psycopg2-binary` is optional - SQLite works by default
+- `pandas` may have issues on Python 3.14+ - use `requirements-core.txt` if you encounter errors
+- See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md) for help
 
 ## Step 3: Configure Environment
 
