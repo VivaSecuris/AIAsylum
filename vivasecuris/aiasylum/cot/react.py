@@ -78,16 +78,17 @@ class ReACTReasoner:
         final_answer, reasoning = self._parse_response(response.content)
         
         # Create response with both reasoning and final answer
+        response_metadata = response.metadata or {}
+        response_metadata.update({
+            "reasoning": reasoning,
+            "cot_enabled": True,
+        })
         return ModelResponse(
             content=final_answer,
             model=response.model,
             provider=response.provider,
             usage=response.usage,
-            metadata={
-                **response.metadata or {},
-                "reasoning": reasoning,
-                "cot_enabled": True,
-            }
+            metadata=response_metadata,
         )
     
     def _build_reasoning_prompt(self, prompt: str) -> str:

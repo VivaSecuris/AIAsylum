@@ -90,8 +90,9 @@ export function CreateTestForm() {
           <label className="text-sm font-medium">Test Type</label>
           <div className="flex gap-4">
             {[
-              { value: 'one_shot', label: 'One-Shot' },
-              { value: 'multi_shot', label: 'Multi-Shot' },
+              { value: 'one_shot', label: 'One-Shot', desc: 'Single prompt/response test' },
+              { value: 'multi_shot', label: 'Multi-Shot', desc: 'Multiple sequential prompts to test context handling' },
+              { value: 'conversation', label: 'Conversation', desc: 'Multi-turn conversation between doctor and patient' },
             ].map((type) => (
               <label key={type.value} className="flex items-center gap-2">
                 <input
@@ -111,6 +112,8 @@ export function CreateTestForm() {
           <p className="text-xs text-muted-foreground">
             {formData.test_type === 'one_shot'
               ? 'Single prompt/response test'
+              : formData.test_type === 'multi_shot'
+              ? 'Multiple sequential prompts to test context handling (needle in haystack, context window limits)'
               : 'Multi-turn conversation between doctor and patient'}
           </p>
         </div>
@@ -173,7 +176,7 @@ export function CreateTestForm() {
             >
               <option value="">None (use default prompts)</option>
               {prompts
-                .filter((p) => p.prompt_type === 'test_prompt' && (!p.category || p.category === formData.test_type || formData.test_type === 'multi_shot'))
+                .filter((p) => p.prompt_type === 'test_prompt' && (!p.category || p.category === formData.test_type || ['multi_shot', 'conversation'].includes(formData.test_type)))
                 .map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
                     {prompt.name} {prompt.category && `(${prompt.category})`}
@@ -194,6 +197,54 @@ export function CreateTestForm() {
         {showAdvanced && (
           <div className="space-y-4 rounded border bg-muted/50 p-4">
             {formData.test_type === 'multi_shot' && (
+              <div>
+                <label className="text-sm font-medium">Number of Messages</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={formData.test_config?.num_messages || 10}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      test_config: {
+                        ...formData.test_config,
+                        num_messages: parseInt(e.target.value),
+                      },
+                    })
+                  }
+                  className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Number of sequential messages to send (for context window testing)
+                </p>
+                <div className="mt-2">
+                  <label className="text-sm font-medium">Custom Prompts (Optional)</label>
+                  <textarea
+                    placeholder="Enter prompts, one per line. If empty, auto-generated messages will be used."
+                    value={Array.isArray(formData.test_config?.prompts) 
+                      ? formData.test_config.prompts.join('\n')
+                      : ''}
+                    onChange={(e) => {
+                      const lines = e.target.value.split('\n').filter(l => l.trim())
+                      setFormData({
+                        ...formData,
+                        test_config: {
+                          ...formData.test_config,
+                          prompts: lines.length > 0 ? lines : undefined,
+                        },
+                      })
+                    }}
+                    className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                    rows={4}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Custom prompts for needle-in-haystack or specific context tests
+                  </p>
+                </div>
+              </div>
+            )}
+            {formData.test_type === 'conversation' && (
               <div>
                 <label className="text-sm font-medium">Max Turns</label>
                 <input
@@ -247,7 +298,7 @@ export function CreateTestForm() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Chain-of-Thought (CoT) Reasoning</label>
               <div className="space-y-2">
-                {formData.test_type === 'multi_shot' && (
+                {formData.test_type === 'conversation' && (
                   <label className="flex items-center gap-2">
                     <input
                       type="checkbox"

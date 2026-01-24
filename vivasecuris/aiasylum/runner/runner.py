@@ -137,13 +137,24 @@ class TestRunner:
                         test = OneShotTest(prompts=prompts)
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 elif test_type == TEST_TYPE_MULTI_SHOT:
-                    # Multi-shot test - conversation between doctor and patient
+                    # Multi-shot test - multiple sequential prompts to test context handling
+                    if prompt_text:
+                        test = MultiShotTest(prompts=[prompt_text])
+                    else:
+                        prompts = test_config.get("prompts", []) if test_config else []
+                        num_messages = test_config.get("num_messages", 10) if test_config else 10
+                        if prompts:
+                            test = MultiShotTest(prompts=prompts)
+                        else:
+                            test = MultiShotTest(num_messages=num_messages)
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                elif test_type == TEST_TYPE_CONVERSATION:
+                    # Conversation test - multi-turn conversation between doctor and patient
                     max_turns = test_config.get("max_turns", 10) if test_config else 10
                     doctor_prompt = prompt_text or (test_config.get("doctor_prompt") if test_config else None)
-                    test = MultiShotTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
+                    test = ConversationTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 # Legacy test types (for backward compatibility)
-                elif test_type == TEST_TYPE_CONVERSATION:
                     # Use prompt from library if available, otherwise use doctor_prompt from config
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
                     test = ConversationTest(doctor_prompt=doctor_prompt)
@@ -314,13 +325,24 @@ class TestRunner:
                         test = OneShotTest(prompts=prompts)
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 elif test_run.test_type == TEST_TYPE_MULTI_SHOT:
-                    # Multi-shot test - conversation between doctor and patient
+                    # Multi-shot test - multiple sequential prompts to test context handling
+                    if prompt_text:
+                        test = MultiShotTest(prompts=[prompt_text])
+                    else:
+                        prompts = test_config.get("prompts", [])
+                        num_messages = test_config.get("num_messages", 10)
+                        if prompts:
+                            test = MultiShotTest(prompts=prompts)
+                        else:
+                            test = MultiShotTest(num_messages=num_messages)
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                elif test_run.test_type == TEST_TYPE_CONVERSATION:
+                    # Conversation test - multi-turn conversation between doctor and patient
                     max_turns = test_config.get("max_turns", 10)
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
-                    test = MultiShotTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
+                    test = ConversationTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 # Legacy test types (for backward compatibility)
-                elif test_run.test_type == TEST_TYPE_CONVERSATION:
                     # Use prompt from library if available, otherwise use doctor_prompt from config
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
                     test = ConversationTest(doctor_prompt=doctor_prompt)

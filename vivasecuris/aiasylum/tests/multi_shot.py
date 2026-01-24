@@ -1,24 +1,24 @@
-"""Multi-shot test implementation - multiple turns with doctor and patient."""
+"""Multi-shot test implementation - multiple sequential prompts to test context handling."""
 
 from typing import Dict, List, Optional
 
-from vivasecuris.aiasylum.doctor import Doctor
 from vivasecuris.aiasylum.patient import Patient
+from vivasecuris.aiasylum.doctor import Doctor
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
 
 
 class MultiShotTest(TestCase):
-    """Multi-shot test - multiple conversation turns between doctor and patient."""
+    """Multi-shot test - multiple sequential prompts to test context window and needle-in-haystack scenarios."""
     
     def __init__(
         self,
         name: str = "multi_shot_test",
-        max_turns: int = 10,
-        doctor_prompt: Optional[str] = None,
+        prompts: Optional[List[str]] = None,
+        num_messages: int = 10,
     ):
         super().__init__(name, category="multi_shot")
-        self.max_turns = max_turns
-        self.doctor_prompt = doctor_prompt
+        self.prompts = prompts or []
+        self.num_messages = num_messages
     
     async def run(
         self,
@@ -26,86 +26,97 @@ class MultiShotTest(TestCase):
         doctor_model=None,
         context: Optional[Dict] = None,
     ) -> TestResult:
-        """Run a multi-turn conversation test."""
+        """Run multi-shot test with sequential prompts."""
         # Get system prompts from context if available
         patient_system_prompt = context.get("patient_system_prompt") if context else None
         doctor_system_prompt = context.get("doctor_system_prompt") if context else None
         
-        # Use doctor_prompt (from test config) or doctor_system_prompt (from library)
-        final_doctor_prompt = doctor_system_prompt or self.doctor_prompt
-        
         # Get CoT settings from context
-        enable_doctor_cot = context.get("enable_doctor_cot", False) if context else False
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         
         patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
-        doctor = Doctor(doctor_model, system_prompt=final_doctor_prompt, enable_cot=enable_doctor_cot) if doctor_model else None
+        doctor = Doctor(doctor_model, system_prompt=doctor_system_prompt) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []
+        responses = []
+        flags = []
         
-        # Initialize conversation
-        if doctor:
-            # Doctor starts the conversation
-            doctor_response = await doctor.conduct_interview("", turn_number=0, context=context)
-            conversation_history.append({
-                "speaker": "doctor",
-                "prompt": "",
-                "response": doctor_response.content,
-            })
+        # If prompts are provided, use them; otherwise generate sequential messages
+        if self.prompts:
+            prompts_to_use = self.prompts
+        else:
+            # Generate sequential prompts for context testing
+            prompts_to_use = [
+                f"Message {i+1}: This is message number {i+1} in a sequence of {self.num_messages} messages."
+                for i in range(self.num_messages)
+            ]
+        
+        # Send each prompt sequentially to the patient
+        for i, prompt in enumerate(prompts_to_use):
+            # Patient responds to each prompt (context accumulates)
+            patient_response = await patient.respond(prompt, context=context)
             
-            # Patient responds
-            patient_response = await patient.respond(doctor_response.content, context=context)
             conversation_history.append({
                 "speaker": "patient",
-                "prompt": doctor_response.content,
+                "prompt": prompt,
                 "response": patient_response.content,
             })
-        
-        # Continue conversation for max_turns
-        for turn in range(1, self.max_turns):
-            if not doctor:
-                break
             
-            # Doctor analyzes and asks next question
-            doctor_response = await doctor.conduct_interview(
-                patient_response.content,
-                turn_number=turn,
-                context=context,
-            )
-            conversation_history.append({
-                "speaker": "doctor",
-                "prompt": patient_response.content,
-                "response": doctor_response.content,
-            })
-            
-            # Patient responds
-            patient_response = await patient.respond(doctor_response.content, context=context)
-            conversation_history.append({
-                "speaker": "patient",
-                "prompt": doctor_response.content,
+            responses.append({
+                "message_number": i + 1,
+                "prompt": prompt,
                 "response": patient_response.content,
             })
+            
+            # Basic flag detection
+            if self._detect_harmful_content(patient_response.content):
+                flags.append("harmful_content")
+            if self._detect_refusal(patient_response.content):
+                flags.append("refusal")
         
-        # Generate final assessment if doctor is available
+        # Generate assessment if doctor is available
         analysis = None
-        if doctor:
-            conversation_summary = self._summarize_conversation(conversation_history)
+        if doctor and conversation_history:
+            conversation_summary = self._summarize_responses(conversation_history)
             assessment = await doctor.generate_assessment(conversation_summary)
             analysis = assessment.content
+        
+        # Combine results
+        combined_response = "\n\n".join([r["response"] for r in responses])
+        combined_prompt = "\n\n".join([r["prompt"] for r in responses])
         
         return TestResult(
             test_name=self.name,
             test_category=self.category,
-            input_prompt=str(conversation_history[0] if conversation_history else ""),
-            output_response=str(conversation_history[-1] if conversation_history else ""),
+            input_prompt=combined_prompt,
+            output_response=combined_response,
+            flags=flags if flags else None,
             analysis=analysis,
-            metadata={"conversation_history": conversation_history},
+            metadata={
+                "conversation_history": conversation_history,
+                "num_messages": len(prompts_to_use),
+            },
         )
     
-    def _summarize_conversation(self, history: List[Dict[str, str]]) -> str:
-        """Summarize conversation history."""
-        summary = "Multi-Shot Conversation Summary:\n\n"
+    def _detect_harmful_content(self, text: str) -> bool:
+        """Basic harmful content detection."""
+        from vivasecuris.aiasylum.constants import HARMFUL_KEYWORDS
+        
+        text_lower = text.lower()
+        return any(keyword in text_lower for keyword in HARMFUL_KEYWORDS)
+    
+    def _detect_refusal(self, text: str) -> bool:
+        """Detect if model refused the request."""
+        from vivasecuris.aiasylum.constants import REFUSAL_PHRASES
+        
+        text_lower = text.lower()
+        return any(phrase in text_lower for phrase in REFUSAL_PHRASES)
+    
+    def _summarize_responses(self, history: List[Dict[str, str]]) -> str:
+        """Summarize response history for multi-shot test."""
+        summary = f"Multi-Shot Test Summary ({len(history)} messages):\n\n"
         for i, turn in enumerate(history, 1):
-            speaker = turn["speaker"].title()
-            summary += f"Turn {i} ({speaker}): {turn['response']}\n\n"
+            summary += f"Message {i}:\n"
+            summary += f"  Prompt: {turn['prompt'][:100]}...\n"
+            summary += f"  Response: {turn['response'][:100]}...\n\n"
         return summary

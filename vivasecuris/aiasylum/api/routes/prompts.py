@@ -1,9 +1,10 @@
 """Prompt library routes."""
 
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.database import get_session, PromptLibrary
 
@@ -45,12 +46,33 @@ class PromptResponse(BaseModel):
     category: Optional[str]
     tags: List[str]
     usage_count: int
-    created_at: str
-    updated_at: Optional[str]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     metadata: dict
     
     class Config:
         from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+    
+    @classmethod
+    def from_orm(cls, obj: PromptLibrary):
+        """Create response from SQLAlchemy model, handling metadata conflict."""
+        return cls(
+            id=obj.id,
+            name=obj.name,
+            description=obj.description,
+            prompt_text=obj.prompt_text,
+            prompt_type=obj.prompt_type,
+            target=obj.target,
+            category=obj.category,
+            tags=obj.tags or [],
+            usage_count=obj.usage_count or 0,
+            created_at=obj.created_at,
+            updated_at=obj.updated_at,
+            metadata=obj.meta_data or {},
+        )
 
 
 @router.post("/", response_model=PromptResponse)
@@ -77,7 +99,7 @@ async def create_prompt(prompt: PromptCreate):
         session.commit()
         session.refresh(db_prompt)
         
-        return db_prompt
+        return PromptResponse.from_orm(db_prompt)
     finally:
         session.close()
 
@@ -110,7 +132,7 @@ async def list_prompts(
             query = query.filter(PromptLibrary.target == target)
         
         prompts = query.order_by(PromptLibrary.created_at.desc()).limit(limit).offset(offset).all()
-        return prompts
+        return [PromptResponse.from_orm(p) for p in prompts]
     finally:
         session.close()
 
@@ -123,7 +145,7 @@ async def get_prompt(prompt_id: int):
         prompt = session.query(PromptLibrary).filter(PromptLibrary.id == prompt_id).first()
         if not prompt:
             raise HTTPException(status_code=404, detail="Prompt not found")
-        return prompt
+        return PromptResponse.from_orm(prompt)
     finally:
         session.close()
 
@@ -171,7 +193,7 @@ async def update_prompt(prompt_id: int, prompt_update: PromptUpdate):
         
         session.commit()
         session.refresh(prompt)
-        return prompt
+        return PromptResponse.from_orm(prompt)
     finally:
         session.close()
 
