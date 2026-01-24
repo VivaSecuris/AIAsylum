@@ -65,6 +65,13 @@ The system evaluates models across multiple dimensions:
 
 **New to AI Asylum? Start here:**
 
+**Or run the integration test to check everything:**
+```bash
+python integration.py
+```
+
+This will verify your setup and show what's working.
+
 1. **Quick Test** (see what's working):
    ```bash
    python scripts/quick_test.py
