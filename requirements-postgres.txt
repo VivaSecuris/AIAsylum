@@ -1,0 +1,10 @@
+# PostgreSQL dependencies
+# Install these only if you're using PostgreSQL instead of SQLite
+# 
+# On macOS: brew install postgresql
+# On Ubuntu/Debian: sudo apt-get install libpq-dev postgresql-dev
+# On Windows: Install PostgreSQL from https://www.postgresql.org/download/windows/
+
+psycopg2-binary==2.9.9
+pgvector==0.2.4  # Optional: for vector search
+timescaledb==2.13.0  # Optional: for time-series data

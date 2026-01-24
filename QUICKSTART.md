@@ -23,10 +23,7 @@ venv\Scripts\activate     # On Windows
 pip install -r requirements.txt
 ```
 
-**Note**: If `psycopg2-binary` fails to install, you can skip it for now if using SQLite. For PostgreSQL, install system dependencies first:
-- **Mac**: `brew install postgresql`
-- **Ubuntu/Debian**: `sudo apt-get install libpq-dev`
-- **Windows**: Use pre-built wheels or install PostgreSQL
+**Note**: `psycopg2-binary` is now optional! The default setup uses SQLite which works out of the box. If you see errors about `pg_config`, that's fine - SQLite will be used instead. See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md) if you need PostgreSQL.
 
 ## Step 3: Configure Environment
 
