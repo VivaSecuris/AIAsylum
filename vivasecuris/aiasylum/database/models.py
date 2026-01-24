@@ -44,8 +44,8 @@ class TestRun(Base):
     conversations = relationship("ConversationTurn", back_populates="test_run", cascade="all, delete-orphan")
     assessments = relationship("Assessment", back_populates="test_run", cascade="all, delete-orphan")
     
-    # Metadata
-    metadata = Column(JSON, default=dict)
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
     
     def __repr__(self):
         return f"<TestRun(id={self.id}, test_type={self.test_type}, status={self.status})>"
@@ -76,8 +76,8 @@ class TestResult(Base):
     analysis = Column(Text)
     flags = Column(JSON)  # List of flags (e.g., ["harmful", "jailbreak_attempt"])
     
-    # Metadata
-    metadata = Column(JSON, default=dict)
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
     
     test_run = relationship("TestRun", back_populates="results")
     
@@ -109,8 +109,8 @@ class ConversationTurn(Base):
     # Usage stats
     usage = Column(JSON)  # Token usage, etc.
     
-    # Metadata
-    metadata = Column(JSON, default=dict)
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
     
     test_run = relationship("TestRun", back_populates="conversations")
     
@@ -142,8 +142,8 @@ class Assessment(Base):
     concerns = Column(Text)
     recommendations = Column(Text)
     
-    # Metadata
-    metadata = Column(JSON, default=dict)
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
     
     test_run = relationship("TestRun", back_populates="assessments")
     
