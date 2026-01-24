@@ -2,7 +2,15 @@
 
 Get AI Asylum up and running in minutes!
 
-## Step 1: Verify Setup
+## Step 1: Check Python Version
+
+```bash
+python3 --version
+```
+
+**Important**: Python 3.10-3.12 are recommended. Python 3.14 is very new and may have compatibility issues. See [PYTHON_VERSION.md](PYTHON_VERSION.md) if you're on 3.14.
+
+## Step 2: Verify Setup
 
 ```bash
 # Run the quick test (no dependencies needed)
@@ -11,7 +19,7 @@ python scripts/quick_test.py
 
 This will tell you what's missing. Don't worry if some tests fail - we'll fix that next.
 
-## Step 2: Install Dependencies
+## Step 3: Install Dependencies
 
 ```bash
 # Activate virtual environment (if not already)
@@ -31,7 +39,7 @@ pip install -r requirements.txt
 - `pandas` may have issues on Python 3.14+ - use `requirements-core.txt` if you encounter errors
 - See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md) for help
 
-## Step 3: Configure Environment
+## Step 4: Configure Environment
 
 ```bash
 # Copy example environment file
@@ -45,7 +53,7 @@ cp .env.example .env
 # OR use Ollama (no API keys needed!)
 ```
 
-## Step 4: Initialize Database
+## Step 5: Initialize Database
 
 ```bash
 # Create data directory
@@ -57,7 +65,7 @@ make init
 alembic upgrade head
 ```
 
-## Step 5: Test Everything
+## Step 6: Test Everything
 
 ```bash
 # Run comprehensive test
@@ -70,7 +78,7 @@ python scripts/quick_test.py
 pytest tests/ -v
 ```
 
-## Step 6: Start Using AI Asylum
+## Step 7: Start Using AI Asylum
 
 ### Option A: Use Ollama (No API Keys!)
 
