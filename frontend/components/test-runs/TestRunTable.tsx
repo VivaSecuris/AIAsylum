@@ -65,13 +65,17 @@ export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
         <div className="flex items-center gap-2">
           <Link
             href={`/test-runs/${run.id}`}
+            onClick={(e) => e.stopPropagation()}
             className="rounded p-1 hover:bg-muted"
             title="View Details"
           >
             <Eye className="h-4 w-4" />
           </Link>
           <button
-            onClick={() => onDelete?.(run.id)}
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete?.(run.id)
+            }}
             className="rounded p-1 text-destructive hover:bg-muted"
             title="Delete"
           >

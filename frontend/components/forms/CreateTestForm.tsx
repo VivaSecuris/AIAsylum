@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { ModelSelector } from './ModelSelector'
 import { TestRunRequest } from '@/lib/api'
-import { useCreateTestRun } from '@/lib/hooks'
+import { useCreateTestRun, usePrompts } from '@/lib/hooks'
 import { useRouter } from 'next/router'
 import { toast } from '@/lib/toast'
+import Link from 'next/link'
 
 export function CreateTestForm() {
   const router = useRouter()
   const createTestRun = useCreateTestRun()
+  const { data: prompts = [] } = usePrompts()
 
   const [formData, setFormData] = useState<TestRunRequest>({
     doctor_provider: '',
@@ -18,12 +20,36 @@ export function CreateTestForm() {
     test_config: {},
   })
 
+  const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(undefined)
+  const [selectedDoctorSystemPromptId, setSelectedDoctorSystemPromptId] = useState<number | undefined>(undefined)
+  const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(undefined)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  
+  // Get system prompts separately
+  const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
+  const { data: patientSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'patient' })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      const result = await createTestRun.mutateAsync(formData)
+      const testConfig = {
+        ...formData.test_config,
+      }
+      if (selectedPromptId) {
+        testConfig.prompt_id = selectedPromptId
+      }
+      if (selectedDoctorSystemPromptId) {
+        testConfig.doctor_system_prompt_id = selectedDoctorSystemPromptId
+      }
+      if (selectedPatientSystemPromptId) {
+        testConfig.patient_system_prompt_id = selectedPatientSystemPromptId
+      }
+      
+      const submitData = {
+        ...formData,
+        test_config: testConfig,
+      }
+      const result = await createTestRun.mutateAsync(submitData)
       router.push(`/test-runs/${result.id}`)
     } catch (error) {
       console.error('Failed to create test run:', error)
@@ -78,6 +104,74 @@ export function CreateTestForm() {
                 <span className="capitalize">{type}</span>
               </label>
             ))}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">System Prompts (Optional)</label>
+            <Link
+              href="/prompts"
+              className="text-xs text-primary hover:underline"
+            >
+              Manage Prompts
+            </Link>
+          </div>
+          
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Doctor System Prompt</label>
+            <select
+              value={selectedDoctorSystemPromptId || ''}
+              onChange={(e) =>
+                setSelectedDoctorSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
+              }
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            >
+              <option value="">Default doctor system prompt</option>
+              {doctorSystemPrompts.map((prompt) => (
+                <option key={prompt.id} value={prompt.id}>
+                  {prompt.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Patient System Prompt</label>
+            <select
+              value={selectedPatientSystemPromptId || ''}
+              onChange={(e) =>
+                setSelectedPatientSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
+              }
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            >
+              <option value="">No system prompt (default behavior)</option>
+              {patientSystemPrompts.map((prompt) => (
+                <option key={prompt.id} value={prompt.id}>
+                  {prompt.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Test Prompt (Optional)</label>
+            <select
+              value={selectedPromptId || ''}
+              onChange={(e) =>
+                setSelectedPromptId(e.target.value ? parseInt(e.target.value) : undefined)
+              }
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            >
+              <option value="">None (use default prompts)</option>
+              {prompts
+                .filter((p) => p.prompt_type === 'test_prompt' && (!p.category || p.category === formData.test_type || formData.test_type === 'conversation'))
+                .map((prompt) => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {prompt.name} {prompt.category && `(${prompt.category})`}
+                  </option>
+                ))}
+            </select>
           </div>
         </div>
 

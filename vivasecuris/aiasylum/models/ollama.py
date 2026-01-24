@@ -82,15 +82,88 @@ class OllamaModel(BaseModel):
         **kwargs
     ) -> ModelResponse:
         """Generate a response from the Ollama model."""
-        # Build prompt from messages if provided
+        try:
+            client = await self._get_client()
+        except Exception as e:
+            raise RuntimeError(f"Failed to connect to Ollama at {self.base_url}: {str(e)}")
+        
+        # Use chat API if messages are provided (better for conversation)
         if messages:
-            full_prompt = self._messages_to_prompt(messages)
+            # Prepare messages for chat API
+            chat_messages = []
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                # Convert role names to Ollama format
+                if role == "assistant":
+                    chat_messages.append({"role": "assistant", "content": content})
+                elif role == "user":
+                    chat_messages.append({"role": "user", "content": content})
+                elif role == "system":
+                    # System messages go in a separate field
+                    if not any("system" in str(m) for m in chat_messages):
+                        chat_messages.insert(0, {"role": "system", "content": content})
+            
+            # Prepare chat request
+            request_data = {
+                "model": self.model_name,
+                "messages": chat_messages,
+                "stream": False,
+                "options": {
+                    "temperature": kwargs.get("temperature", self.temperature),
+                    "num_predict": kwargs.get("max_tokens", self.max_tokens),
+                },
+            }
+            
+            # Add any additional options
+            if "top_p" in kwargs:
+                request_data["options"]["top_p"] = kwargs["top_p"]
+            if "top_k" in kwargs:
+                request_data["options"]["top_k"] = kwargs["top_k"]
+            if "repeat_penalty" in kwargs:
+                request_data["options"]["repeat_penalty"] = kwargs["repeat_penalty"]
+            
+            try:
+                response = await client.post("/api/chat", json=request_data, timeout=300.0)
+                response.raise_for_status()
+                data = response.json()
+                
+                return ModelResponse(
+                    content=data.get("message", {}).get("content", ""),
+                    model=self.model_name,
+                    provider="ollama",
+                    finish_reason="stop" if data.get("done") else None,
+                    usage={
+                        "prompt_eval_count": data.get("prompt_eval_count"),
+                        "eval_count": data.get("eval_count"),
+                        "total_duration": data.get("total_duration"),
+                    } if "prompt_eval_count" in data else None,
+                    metadata={
+                        "done": data.get("done"),
+                    },
+                )
+            except httpx.ConnectError as e:
+                raise RuntimeError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running? Error: {str(e)}")
+            except httpx.HTTPStatusError as e:
+                error_detail = "Unknown error"
+                try:
+                    error_data = e.response.json()
+                    error_detail = error_data.get("error", str(e))
+                except:
+                    error_detail = str(e)
+                raise RuntimeError(f"Ollama API error: {error_detail}")
+            except Exception as e:
+                # Fallback to generate API if chat fails
+                full_prompt = self._messages_to_prompt(messages)
+                if system_prompt:
+                    full_prompt = f"{system_prompt}\n\n{full_prompt}"
         else:
+            # Use generate API for simple prompts
             full_prompt = prompt
             if system_prompt:
                 full_prompt = f"{system_prompt}\n\n{prompt}"
         
-        # Prepare request
+        # Prepare generate request
         request_data = {
             "model": self.model_name,
             "prompt": full_prompt,
@@ -109,26 +182,36 @@ class OllamaModel(BaseModel):
         if "repeat_penalty" in kwargs:
             request_data["options"]["repeat_penalty"] = kwargs["repeat_penalty"]
         
-        client = await self._get_client()
-        response = await client.post("/api/generate", json=request_data)
-        response.raise_for_status()
-        data = response.json()
-        
-        return ModelResponse(
-            content=data.get("response", ""),
-            model=self.model_name,
-            provider="ollama",
-            finish_reason="stop" if data.get("done") else None,
-            usage={
-                "prompt_eval_count": data.get("prompt_eval_count"),
-                "eval_count": data.get("eval_count"),
-                "total_duration": data.get("total_duration"),
-            } if "prompt_eval_count" in data else None,
-            metadata={
-                "context": data.get("context"),
-                "done": data.get("done"),
-            },
-        )
+        try:
+            response = await client.post("/api/generate", json=request_data, timeout=300.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            return ModelResponse(
+                content=data.get("response", ""),
+                model=self.model_name,
+                provider="ollama",
+                finish_reason="stop" if data.get("done") else None,
+                usage={
+                    "prompt_eval_count": data.get("prompt_eval_count"),
+                    "eval_count": data.get("eval_count"),
+                    "total_duration": data.get("total_duration"),
+                } if "prompt_eval_count" in data else None,
+                metadata={
+                    "context": data.get("context"),
+                    "done": data.get("done"),
+                },
+            )
+        except httpx.ConnectError as e:
+            raise RuntimeError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running? Error: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_data = e.response.json()
+                error_detail = error_data.get("error", str(e))
+            except:
+                error_detail = str(e)
+            raise RuntimeError(f"Ollama API error: {error_detail}")
     
     async def stream_generate(
         self,

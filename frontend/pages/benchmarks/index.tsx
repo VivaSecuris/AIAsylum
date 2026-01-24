@@ -16,24 +16,48 @@ export default function BenchmarksPage() {
   const [model, setModel] = useState<string>('')
   const [numSamples, setNumSamples] = useState<number>(100)
 
-  const handleRun = async () => {
+  const handleRun = async (e?: React.MouseEvent) => {
+    console.log('=== handleRun START ===')
+    console.log('Parameters:', { selectedBenchmark, provider, model, numSamples })
+    
     if (!selectedBenchmark || !provider || !model) {
-      toast.error('Please select a benchmark, provider, and model')
+      console.log('❌ Validation failed')
+      const missing = []
+      if (!selectedBenchmark) missing.push('benchmark')
+      if (!provider) missing.push('provider')
+      if (!model) missing.push('model')
+      alert(`Please select: ${missing.join(', ')}`)
+      toast.error(`Please select: ${missing.join(', ')}`)
       return
     }
 
+    console.log('✅ Validation passed, calling API...')
     try {
-      await runBenchmark.mutateAsync({
+      const payload = {
         provider,
         model,
         benchmark: selectedBenchmark,
         num_samples: numSamples,
+      }
+      console.log('API Payload:', payload)
+      
+      const result = await runBenchmark.mutateAsync(payload)
+      console.log('✅ Benchmark started successfully:', result)
+      alert(`Success! Test run ID: ${result.test_run_id || result.id}`)
+      toast.success(`Benchmark started! Test run ID: ${result.test_run_id || result.id}`)
+    } catch (error: any) {
+      console.error('❌ Failed to run benchmark:', error)
+      console.error('Error details:', {
+        message: error?.message,
+        response: error?.response?.data,
+        status: error?.response?.status,
+        stack: error?.stack,
       })
-      toast.success('Benchmark started!')
-    } catch (error) {
-      console.error('Failed to run benchmark:', error)
-      toast.error('Failed to run benchmark')
+      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run benchmark'
+      alert(`Error: ${errorMessage}`)
+      toast.error(errorMessage)
     }
+    console.log('=== handleRun END ===')
   }
 
   if (isLoading) {
@@ -91,13 +115,36 @@ export default function BenchmarksPage() {
           </div>
 
           <button
-            onClick={handleRun}
+            type="button"
+            onClick={async (e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              
+              // Immediate feedback
+              alert('Button clicked! Check console for details.')
+              console.log('=== BUTTON CLICKED ===')
+              console.log('State:', { selectedBenchmark, provider, model, numSamples })
+              console.log('Is disabled?', runBenchmark.isPending || !selectedBenchmark || !provider || !model)
+              
+              await handleRun(e)
+            }}
             disabled={runBenchmark.isPending || !selectedBenchmark || !provider || !model}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Play className="h-4 w-4" />
             {runBenchmark.isPending ? 'Running...' : 'Run Benchmark'}
           </button>
+          
+          {/* Debug info */}
+          <div className="text-xs text-muted-foreground p-2 bg-muted rounded border">
+            <div><strong>Debug Info:</strong></div>
+            <div>Benchmark: {selectedBenchmark || '❌ none'}</div>
+            <div>Provider: {provider || '❌ none'}</div>
+            <div>Model: {model || '❌ none'}</div>
+            <div>Num Samples: {numSamples}</div>
+            <div>Is Pending: {runBenchmark.isPending ? 'yes' : 'no'}</div>
+            <div>Button Disabled: {runBenchmark.isPending || !selectedBenchmark || !provider || !model ? '✅ YES' : '❌ NO'}</div>
+          </div>
         </div>
 
         <div className="rounded-lg border bg-card p-6">

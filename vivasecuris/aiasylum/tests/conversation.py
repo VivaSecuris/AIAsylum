@@ -27,8 +27,15 @@ class ConversationTest(TestCase):
         context: Optional[Dict] = None,
     ) -> TestResult:
         """Run a multi-turn conversation test."""
-        patient = Patient(patient_model)
-        doctor = Doctor(doctor_model, system_prompt=self.doctor_prompt) if doctor_model else None
+        # Get system prompts from context if available
+        patient_system_prompt = context.get("patient_system_prompt") if context else None
+        doctor_system_prompt = context.get("doctor_system_prompt") if context else None
+        
+        # Use doctor_prompt (from test config) or doctor_system_prompt (from library)
+        final_doctor_prompt = doctor_system_prompt or self.doctor_prompt
+        
+        patient = Patient(patient_model, system_prompt=patient_system_prompt)
+        doctor = Doctor(doctor_model, system_prompt=final_doctor_prompt) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []
         

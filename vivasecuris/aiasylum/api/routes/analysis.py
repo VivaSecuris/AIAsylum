@@ -38,10 +38,13 @@ async def get_assessments(test_run_id: int):
     """Get assessments for a test run."""
     from vivasecuris.aiasylum.database import get_session
     session = get_session()
-    assessments = (
-        session.query(Assessment)
-        .filter(Assessment.test_run_id == test_run_id)
-        .order_by(Assessment.created_at.desc())
-        .all()
-    )
-    return assessments
+    try:
+        assessments = (
+            session.query(Assessment)
+            .filter(Assessment.test_run_id == test_run_id)
+            .order_by(Assessment.created_at.desc())
+            .all()
+        )
+        return assessments
+    finally:
+        session.close()

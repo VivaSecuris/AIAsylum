@@ -8,6 +8,7 @@ import {
   GitCompare,
   TestTube,
   Settings,
+  FileText,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +16,7 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Create Test', href: '/create-test', icon: PlayCircle },
   { name: 'Test Runs', href: '/test-runs', icon: List },
+  { name: 'Prompts', href: '/prompts', icon: FileText },
   { name: 'Compare Models', href: '/compare', icon: GitCompare },
   { name: 'Benchmarks', href: '/benchmarks', icon: TestTube },
 ]

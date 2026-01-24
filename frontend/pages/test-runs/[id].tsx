@@ -1,14 +1,15 @@
 import { useRouter } from 'next/router'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { ConversationViewer } from '@/components/conversation/ConversationViewer'
 import { DataTable } from '@/components/common/DataTable'
-import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis } from '@/lib/hooks'
+import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis, useStartTestRun, useDeleteTestRun } from '@/lib/hooks'
 import { formatDate } from '@/lib/utils'
 import { TestResult, Assessment } from '@/lib/api'
-import { Play, Download, GitCompare } from 'lucide-react'
+import { Play, Download, GitCompare, Trash2 } from 'lucide-react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { toast } from '@/lib/toast'
 
@@ -17,14 +18,24 @@ export default function TestRunDetailPage() {
   const { id } = router.query
   const testRunId = typeof id === 'string' ? parseInt(id) : 0
 
-  const { data: testRun, isLoading: loadingRun, error: runError } = useTestRun(
-    testRunId,
-    testRun?.status === 'running' ? { refetchInterval: 2000 } : undefined
-  )
+  const queryClient = useQueryClient()
+  const { data: testRun, isLoading: loadingRun, error: runError } = useTestRun(testRunId)
+  
+  // Enable refetching when test run is running
+  useEffect(() => {
+    if (testRun?.status === 'running') {
+      const interval = setInterval(() => {
+        queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
+      }, 2000)
+      return () => clearInterval(interval)
+    }
+  }, [testRun?.status, testRunId, queryClient])
   const { data: conversation = [], isLoading: loadingConv, error: convError } = useConversation(testRunId)
   const { data: results = [], isLoading: loadingResults, error: resultsError } = useTestResults(testRunId)
   const { data: assessments = [], isLoading: loadingAssessments } = useAssessments(testRunId)
   const runAnalysis = useRunAnalysis()
+  const startTestRun = useStartTestRun()
+  const deleteTestRun = useDeleteTestRun()
 
   const [activeTab, setActiveTab] = useState('overview')
 
@@ -42,6 +53,36 @@ export default function TestRunDetailPage() {
     } catch (error) {
       console.error('Failed to run analysis:', error)
       toast.error('Failed to run analysis')
+    }
+  }
+
+  const handleStartRun = async () => {
+    if (!testRunId) return
+    try {
+      await startTestRun.mutateAsync(testRunId)
+      toast.success('Test run started!')
+    } catch (error) {
+      console.error('Failed to start test run:', error)
+      toast.error('Failed to start test run')
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!testRunId) return
+    if (testRun?.status === 'running') {
+      toast.error('Cannot delete a test run that is currently running')
+      return
+    }
+    if (confirm('Are you sure you want to delete this test run? This action cannot be undone.')) {
+      try {
+        await deleteTestRun.mutateAsync(testRunId)
+        toast.success('Test run deleted successfully')
+        router.push('/test-runs')
+      } catch (error: any) {
+        const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete test run'
+        toast.error(errorMessage)
+        console.error('Failed to delete test run:', error)
+      }
     }
   }
 
@@ -131,24 +172,48 @@ export default function TestRunDetailPage() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={handleRunAnalysis}
-              disabled={runAnalysis.isPending}
-              className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
-            >
-              <Play className="h-4 w-4" />
-              Run Analysis
-            </button>
-            <a
-              href={`/analysis/${testRunId}`}
-              className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
-            >
-              View Analysis
-            </a>
+            {(testRun.status === 'pending' || testRun.status === 'failed') && (
+              <button
+                onClick={handleStartRun}
+                disabled={startTestRun.isPending}
+                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                <Play className="h-4 w-4" />
+                {startTestRun.isPending ? 'Starting...' : 'Start Run'}
+              </button>
+            )}
+            {testRun.status === 'completed' && (
+              <>
+                <button
+                  onClick={handleRunAnalysis}
+                  disabled={runAnalysis.isPending}
+                  className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+                >
+                  <Play className="h-4 w-4" />
+                  Run Analysis
+                </button>
+                <a
+                  href={`/analysis/${testRunId}`}
+                  className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+                >
+                  View Analysis
+                </a>
+              </>
+            )}
             <button className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted">
               <Download className="h-4 w-4" />
               Export
             </button>
+            {testRun.status !== 'running' && (
+              <button
+                onClick={handleDelete}
+                disabled={deleteTestRun.isPending}
+                className="flex items-center gap-2 rounded-lg border border-destructive px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                {deleteTestRun.isPending ? 'Deleting...' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
 

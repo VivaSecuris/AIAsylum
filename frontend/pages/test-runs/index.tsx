@@ -3,10 +3,11 @@ import { Layout } from '@/components/layout/Layout'
 import { TestRunTable } from '@/components/test-runs/TestRunTable'
 import { TestRunFilters } from '@/components/test-runs/TestRunFilters'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { useTestRuns } from '@/lib/hooks'
+import { useTestRuns, useDeleteTestRun } from '@/lib/hooks'
 import { TestRun } from '@/lib/api'
 import Link from 'next/link'
-import { Plus } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
+import { toast } from '@/lib/toast'
 
 export default function TestRunsPage() {
   const [filters, setFilters] = useState<{
@@ -15,6 +16,7 @@ export default function TestRunsPage() {
     search?: string
   }>({})
   const { data: testRuns = [], isLoading, error } = useTestRuns({ limit: 1000 })
+  const deleteTestRun = useDeleteTestRun()
 
   const filteredRuns = useMemo(() => {
     let filtered = [...testRuns]
@@ -41,12 +43,48 @@ export default function TestRunsPage() {
     return filtered
   }, [testRuns, filters])
 
-  const handleDelete = (id: number) => {
-    if (confirm('Are you sure you want to delete this test run?')) {
-      // TODO: Implement delete API call
-      console.log('Delete test run:', id)
+  const handleDelete = async (id: number) => {
+    console.log('Delete button clicked for test run:', id)
+    if (confirm('Are you sure you want to delete this test run? This action cannot be undone.')) {
+      try {
+        console.log('Calling delete API for test run:', id)
+        await deleteTestRun.mutateAsync(id)
+        console.log('Delete successful for test run:', id)
+        toast.success('Test run deleted successfully')
+      } catch (error: any) {
+        console.error('Delete failed for test run:', id, error)
+        const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete test run'
+        toast.error(errorMessage)
+      }
     }
   }
+
+  const handleDeleteAllFailed = async () => {
+    const failedRuns = filteredRuns.filter((r) => r.status === 'failed')
+    if (failedRuns.length === 0) {
+      toast.info('No failed test runs to delete')
+      return
+    }
+    if (
+      confirm(
+        `Are you sure you want to delete ${failedRuns.length} failed test run(s)? This action cannot be undone.`
+      )
+    ) {
+      try {
+        // Delete all failed runs sequentially
+        for (const run of failedRuns) {
+          await deleteTestRun.mutateAsync(run.id)
+        }
+        toast.success(`Successfully deleted ${failedRuns.length} failed test run(s)`)
+      } catch (error: any) {
+        const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete some test runs'
+        toast.error(errorMessage)
+        console.error('Failed to delete test runs:', error)
+      }
+    }
+  }
+
+  const failedCount = filteredRuns.filter((r) => r.status === 'failed').length
 
   if (isLoading) {
     return (
@@ -87,8 +125,23 @@ export default function TestRunsPage() {
 
         <TestRunFilters onFilterChange={setFilters} />
 
-        <div className="text-sm text-muted-foreground">
-          Showing {filteredRuns.length} of {testRuns.length} test runs
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            Showing {filteredRuns.length} of {testRuns.length} test runs
+            {failedCount > 0 && (
+              <span className="ml-2 text-destructive">({failedCount} failed)</span>
+            )}
+          </div>
+          {failedCount > 0 && (
+            <button
+              onClick={handleDeleteAllFailed}
+              disabled={deleteTestRun.isPending}
+              className="flex items-center gap-2 rounded-lg border border-destructive px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              {deleteTestRun.isPending ? 'Deleting...' : `Delete All Failed (${failedCount})`}
+            </button>
+          )}
         </div>
 
         <TestRunTable testRuns={filteredRuns} onDelete={handleDelete} />

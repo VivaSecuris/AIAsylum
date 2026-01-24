@@ -183,3 +183,35 @@ class BenchmarkResult(Base):
     
     def __repr__(self):
         return f"<BenchmarkResult(id={self.id}, benchmark={self.benchmark_name}, score={self.score})>"
+
+
+class PromptLibrary(Base):
+    """User prompts library for testing multiple models."""
+    
+    __tablename__ = "prompt_library"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Prompt information
+    name = Column(String(200), nullable=False)
+    description = Column(Text)
+    prompt_text = Column(Text, nullable=False)
+    
+    # Prompt type and target
+    prompt_type = Column(String(50), default="test_prompt")  # test_prompt or system_prompt
+    target = Column(String(50))  # doctor, patient, or None for test prompts
+    
+    # Categorization
+    category = Column(String(50))  # conversation, adversarial, scenario, etc.
+    tags = Column(JSON, default=list)  # List of tags for filtering
+    
+    # Usage tracking
+    usage_count = Column(Integer, default=0)  # Number of times used in test runs
+    
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
+    
+    def __repr__(self):
+        return f"<PromptLibrary(id={self.id}, name={self.name}, type={self.prompt_type}, target={self.target})>"
