@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ModelSelector } from './ModelSelector'
 import { TestRunRequest } from '@/lib/api'
-import { useCreateTestRun, usePrompts } from '@/lib/hooks'
+import { useCreateTestRun, usePrompts, usePromptVariables } from '@/lib/hooks'
 import { useRouter } from 'next/router'
 import { toast } from '@/lib/toast'
 import Link from 'next/link'
@@ -16,18 +16,56 @@ export function CreateTestForm() {
     doctor_model: '',
     patient_provider: '',
     patient_model: '',
-    test_type: 'multi_shot',
+    test_type: 'one_shot',
     test_config: {},
   })
+  
+  // For one-shot and multi-shot, we only need one model (patient)
+  // For conversation, we need both doctor and patient
+  const isConversationTest = formData.test_type === 'conversation'
+  const isOneShotOrMultiShot = formData.test_type === 'one_shot' || formData.test_type === 'multi_shot'
 
   const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(undefined)
+  const [selectedPromptIds, setSelectedPromptIds] = useState<number[]>([]) // For multi-shot: multiple prompts
   const [selectedDoctorSystemPromptId, setSelectedDoctorSystemPromptId] = useState<number | undefined>(undefined)
   const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(undefined)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [variableValues, setVariableValues] = useState<Record<string, string>>({})
   
   // Get system prompts separately
   const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
   const { data: patientSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'patient' })
+  
+  // Get variables from selected prompt
+  const { data: promptVariablesData } = usePromptVariables(selectedPromptId)
+  const promptVariables = promptVariablesData?.variables || []
+  
+  // Reset variable values when prompt changes
+  useEffect(() => {
+    if (promptVariables.length > 0) {
+      // Initialize empty values for new variables, keep existing values for variables that still exist
+      const newValues: Record<string, string> = {}
+      promptVariables.forEach((varName) => {
+        newValues[varName] = variableValues[varName] || ''
+      })
+      setVariableValues(newValues)
+    } else {
+      setVariableValues({})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPromptId, promptVariablesData])
+  
+  // Reset prompt selections when test type changes
+  useEffect(() => {
+    if (formData.test_type === 'one_shot') {
+      setSelectedPromptIds([])
+    } else if (formData.test_type === 'multi_shot') {
+      setSelectedPromptId(undefined)
+    } else if (formData.test_type === 'conversation') {
+      setSelectedPromptId(undefined)
+      setSelectedPromptIds([])
+    }
+  }, [formData.test_type])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -35,9 +73,23 @@ export function CreateTestForm() {
       const testConfig = {
         ...formData.test_config,
       }
-      if (selectedPromptId) {
+      
+      // Handle prompt selection based on test type
+      if (formData.test_type === 'multi_shot') {
+        // For multi-shot: use custom prompts if provided, otherwise use first selected library prompt
+        if (testConfig.prompts && testConfig.prompts.length > 0) {
+          // Custom prompts take precedence
+          // prompt_id will be ignored if prompts array is provided
+        } else if (selectedPromptIds.length > 0) {
+          // Use first selected prompt as prompt_id
+          // Note: For multiple library prompts, user should copy text to custom prompts field
+          testConfig.prompt_id = selectedPromptIds[0]
+        }
+      } else if (selectedPromptId) {
+        // For one-shot: use selected prompt
         testConfig.prompt_id = selectedPromptId
       }
+      
       if (selectedDoctorSystemPromptId) {
         testConfig.doctor_system_prompt_id = selectedDoctorSystemPromptId
       }
@@ -48,6 +100,7 @@ export function CreateTestForm() {
       const submitData = {
         ...formData,
         test_config: testConfig,
+        variables: Object.keys(variableValues).length > 0 ? variableValues : undefined,
       }
       const result = await createTestRun.mutateAsync(submitData)
       router.push(`/test-runs/${result.id}`)
@@ -62,29 +115,57 @@ export function CreateTestForm() {
       <div className="rounded-lg border bg-card p-6 space-y-6">
         <h2 className="text-xl font-semibold">Test Configuration</h2>
 
-        <ModelSelector
-          label="Doctor Model"
-          provider={formData.doctor_provider}
-          model={formData.doctor_model}
-          onProviderChange={(provider) =>
-            setFormData({ ...formData, doctor_provider: provider })
-          }
-          onModelChange={(model) =>
-            setFormData({ ...formData, doctor_model: model })
-          }
-        />
+        {/* Model Selectors - conditional based on test type */}
+        {isConversationTest ? (
+          <>
+            <ModelSelector
+              label="Doctor Model"
+              provider={formData.doctor_provider}
+              model={formData.doctor_model}
+              onProviderChange={(provider) =>
+                setFormData({ ...formData, doctor_provider: provider })
+              }
+              onModelChange={(model) =>
+                setFormData({ ...formData, doctor_model: model })
+              }
+            />
 
-        <ModelSelector
-          label="Patient Model"
-          provider={formData.patient_provider}
-          model={formData.patient_model}
-          onProviderChange={(provider) =>
-            setFormData({ ...formData, patient_provider: provider })
-          }
-          onModelChange={(model) =>
-            setFormData({ ...formData, patient_model: model })
-          }
-        />
+            <ModelSelector
+              label="Patient Model"
+              provider={formData.patient_provider}
+              model={formData.patient_model}
+              onProviderChange={(provider) =>
+                setFormData({ ...formData, patient_provider: provider })
+              }
+              onModelChange={(model) =>
+                setFormData({ ...formData, patient_model: model })
+              }
+            />
+          </>
+        ) : (
+          // For one-shot and multi-shot, only need one model (used as patient)
+          <ModelSelector
+            label="Model"
+            provider={formData.patient_provider}
+            model={formData.patient_model}
+            onProviderChange={(provider) =>
+              setFormData({ 
+                ...formData, 
+                patient_provider: provider,
+                // Also set doctor to same for consistency (though not used)
+                doctor_provider: provider,
+              })
+            }
+            onModelChange={(model) =>
+              setFormData({ 
+                ...formData, 
+                patient_model: model,
+                // Also set doctor to same for consistency (though not used)
+                doctor_model: model,
+              })
+            }
+          />
+        )}
 
         <div className="space-y-2">
           <label className="text-sm font-medium">Test Type</label>
@@ -118,73 +199,250 @@ export function CreateTestForm() {
           </p>
         </div>
 
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">System Prompts (Optional)</label>
-            <Link
-              href="/prompts"
-              className="text-xs text-primary hover:underline"
-            >
-              Manage Prompts
-            </Link>
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Doctor System Prompt</label>
-            <select
-              value={selectedDoctorSystemPromptId || ''}
-              onChange={(e) =>
-                setSelectedDoctorSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
-              }
-              className="w-full rounded-lg border px-3 py-2 text-sm"
-            >
-              <option value="">Default doctor system prompt</option>
-              {doctorSystemPrompts.map((prompt) => (
-                <option key={prompt.id} value={prompt.id}>
-                  {prompt.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Patient System Prompt</label>
-            <select
-              value={selectedPatientSystemPromptId || ''}
-              onChange={(e) =>
-                setSelectedPatientSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
-              }
-              className="w-full rounded-lg border px-3 py-2 text-sm"
-            >
-              <option value="">No system prompt (default behavior)</option>
-              {patientSystemPrompts.map((prompt) => (
-                <option key={prompt.id} value={prompt.id}>
-                  {prompt.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">Test Prompt (Optional)</label>
-            <select
-              value={selectedPromptId || ''}
-              onChange={(e) =>
-                setSelectedPromptId(e.target.value ? parseInt(e.target.value) : undefined)
-              }
-              className="w-full rounded-lg border px-3 py-2 text-sm"
-            >
-              <option value="">None (use default prompts)</option>
-              {prompts
-                .filter((p) => p.prompt_type === 'test_prompt' && (!p.category || p.category === formData.test_type || ['multi_shot', 'conversation'].includes(formData.test_type)))
-                .map((prompt) => (
+        {/* Prompts section - different for each test type */}
+        {isConversationTest ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">System Prompts (Optional)</label>
+              <Link
+                href="/prompts"
+                className="text-xs text-primary hover:underline"
+              >
+                Manage Prompts
+              </Link>
+            </div>
+            
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">Doctor System Prompt</label>
+              <select
+                value={selectedDoctorSystemPromptId || ''}
+                onChange={(e) =>
+                  setSelectedDoctorSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
+                }
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+              >
+                <option value="">Default doctor system prompt</option>
+                {doctorSystemPrompts.map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
-                    {prompt.name} {prompt.category && `(${prompt.category})`}
+                    {prompt.name}
                   </option>
                 ))}
-            </select>
+              </select>
+            </div>
+            
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">Patient System Prompt</label>
+              <select
+                value={selectedPatientSystemPromptId || ''}
+                onChange={(e) =>
+                  setSelectedPatientSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
+                }
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+              >
+                <option value="">No system prompt (default behavior)</option>
+                {patientSystemPrompts.map((prompt) => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {prompt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-        </div>
+        ) : (
+          // For one-shot and multi-shot: prompt selection/input
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">
+                {formData.test_type === 'one_shot' ? 'Test Prompt' : 'Test Prompts'}
+              </label>
+              <Link
+                href="/prompts"
+                className="text-xs text-primary hover:underline"
+              >
+                Manage Prompts
+              </Link>
+            </div>
+            
+            {formData.test_type === 'one_shot' ? (
+              // One-shot: single prompt (from library or custom)
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">Select Prompt from Library (Optional)</label>
+                  <select
+                    value={selectedPromptId || ''}
+                    onChange={(e) => {
+                      const newPromptId = e.target.value ? parseInt(e.target.value) : undefined
+                      setSelectedPromptId(newPromptId)
+                      // Clear custom prompt when selecting from library
+                      if (newPromptId) {
+                        setFormData({
+                          ...formData,
+                          test_config: {
+                            ...formData.test_config,
+                            prompt: undefined,
+                            prompts: undefined,
+                          },
+                        })
+                      }
+                    }}
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                  >
+                    <option value="">None (use custom prompt below)</option>
+                    {prompts
+                      .filter((p) => p.prompt_type === 'test_prompt')
+                      .map((prompt) => (
+                        <option key={prompt.id} value={prompt.id}>
+                          {prompt.name} {prompt.category && `(${prompt.category})`}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                
+                {!selectedPromptId && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-muted-foreground">Or Enter Custom Prompt</label>
+                    <textarea
+                      placeholder="Enter a single prompt to test"
+                      value={formData.test_config?.prompt || ''}
+                      onChange={(e) => {
+                        const value = e.target.value || undefined
+                        setFormData({
+                          ...formData,
+                          test_config: {
+                            ...formData.test_config,
+                            prompt: value,
+                            prompts: undefined, // Clear prompts array for one-shot
+                          },
+                        })
+                        // Clear library selection when entering custom prompt
+                        if (value) {
+                          setSelectedPromptId(undefined)
+                        }
+                      }}
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                      rows={4}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Enter a single prompt to test the model's response
+                    </p>
+                  </div>
+                )}
+                
+                {promptVariables.length > 0 && (
+                  <div className="mt-3 space-y-2 rounded-lg border bg-muted/30 p-3">
+                    <label className="text-xs font-medium">Prompt Variables</label>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Fill in the values for variables used in this prompt (e.g., $country, $name)
+                    </p>
+                    {promptVariables.map((varName) => (
+                      <div key={varName} className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          ${varName}
+                        </label>
+                        <input
+                          type="text"
+                          value={variableValues[varName] || ''}
+                          onChange={(e) =>
+                            setVariableValues({
+                              ...variableValues,
+                              [varName]: e.target.value,
+                            })
+                          }
+                          placeholder={`Enter value for ${varName}`}
+                          className="w-full rounded border px-3 py-2 text-sm"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              // Multi-shot: multiple prompts (from library or custom)
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">Select Prompts from Library (Optional)</label>
+                  <select
+                    multiple
+                    size={5}
+                    value={selectedPromptIds.map(String)}
+                    onChange={(e) => {
+                      const selectedIds = Array.from(e.target.selectedOptions, (opt) => parseInt(opt.value))
+                      setSelectedPromptIds(selectedIds)
+                      // Clear custom prompts when selecting from library
+                      if (selectedIds.length > 0) {
+                        setFormData({
+                          ...formData,
+                          test_config: {
+                            ...formData.test_config,
+                            prompts: undefined,
+                          },
+                        })
+                      }
+                    }}
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                  >
+                    {prompts
+                      .filter((p) => p.prompt_type === 'test_prompt')
+                      .map((prompt) => (
+                        <option key={prompt.id} value={prompt.id}>
+                          {prompt.name} {prompt.category && `(${prompt.category})`}
+                        </option>
+                      ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Hold Ctrl/Cmd to select multiple prompts. Selected: {selectedPromptIds.length} prompt(s)
+                  </p>
+                  {selectedPromptIds.length > 0 && (
+                    <div className="mt-2 p-2 bg-muted/50 rounded text-xs">
+                      <strong>Selected prompts ({selectedPromptIds.length}):</strong>
+                      <ul className="list-disc list-inside mt-1">
+                        {selectedPromptIds.map((id) => {
+                          const prompt = prompts.find((p) => p.id === id)
+                          return <li key={id}>{prompt?.name || `ID: ${id}`}</li>
+                        })}
+                      </ul>
+                      <p className="mt-2 text-muted-foreground">
+                        Note: Only the first selected prompt will be used. To use multiple prompts, copy their text to the custom prompts field below.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Or Enter Custom Prompts (One per line)
+                    {selectedPromptIds.length > 0 && ' - Custom prompts will override selected library prompts'}
+                  </label>
+                  <textarea
+                    placeholder="Enter multiple prompts, one per line. Each line will be sent sequentially to test context handling."
+                    value={Array.isArray(formData.test_config?.prompts) 
+                      ? formData.test_config.prompts.join('\n')
+                      : ''}
+                    onChange={(e) => {
+                      const lines = e.target.value.split('\n').filter(l => l.trim())
+                      setFormData({
+                        ...formData,
+                        test_config: {
+                          ...formData.test_config,
+                          prompts: lines.length > 0 ? lines : undefined,
+                        },
+                      })
+                      // Clear library selection when entering custom prompts
+                      if (lines.length > 0) {
+                        setSelectedPromptIds([])
+                      }
+                    }}
+                    className="w-full rounded-lg border px-3 py-2 text-sm font-mono"
+                    rows={6}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Each line will be sent as a separate prompt in sequence. Useful for context window testing and needle-in-haystack scenarios.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <button
           type="button"
@@ -198,7 +456,7 @@ export function CreateTestForm() {
           <div className="space-y-4 rounded border bg-muted/50 p-4">
             {formData.test_type === 'multi_shot' && (
               <div>
-                <label className="text-sm font-medium">Number of Messages</label>
+                <label className="text-sm font-medium">Number of Messages (if not using custom prompts)</label>
                 <input
                   type="number"
                   min="1"
@@ -214,34 +472,11 @@ export function CreateTestForm() {
                     })
                   }
                   className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                  disabled={Array.isArray(formData.test_config?.prompts) && formData.test_config.prompts.length > 0}
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Number of sequential messages to send (for context window testing)
+                  Number of auto-generated sequential messages (only used if custom prompts are not provided)
                 </p>
-                <div className="mt-2">
-                  <label className="text-sm font-medium">Custom Prompts (Optional)</label>
-                  <textarea
-                    placeholder="Enter prompts, one per line. If empty, auto-generated messages will be used."
-                    value={Array.isArray(formData.test_config?.prompts) 
-                      ? formData.test_config.prompts.join('\n')
-                      : ''}
-                    onChange={(e) => {
-                      const lines = e.target.value.split('\n').filter(l => l.trim())
-                      setFormData({
-                        ...formData,
-                        test_config: {
-                          ...formData.test_config,
-                          prompts: lines.length > 0 ? lines : undefined,
-                        },
-                      })
-                    }}
-                    className="mt-1 w-full rounded border px-3 py-2 text-sm"
-                    rows={4}
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Custom prompts for needle-in-haystack or specific context tests
-                  </p>
-                </div>
               </div>
             )}
             {formData.test_type === 'conversation' && (
@@ -268,37 +503,10 @@ export function CreateTestForm() {
                 </p>
               </div>
             )}
-            {formData.test_type === 'one_shot' && (
-              <div>
-                <label className="text-sm font-medium">Prompts (Optional)</label>
-                <textarea
-                  placeholder="Enter one or more prompts, one per line"
-                  value={Array.isArray(formData.test_config?.prompts) 
-                    ? formData.test_config.prompts.join('\n')
-                    : formData.test_config?.prompt || ''}
-                  onChange={(e) => {
-                    const lines = e.target.value.split('\n').filter(l => l.trim())
-                    setFormData({
-                      ...formData,
-                      test_config: {
-                        ...formData.test_config,
-                        prompts: lines.length > 1 ? lines : undefined,
-                        prompt: lines.length === 1 ? lines[0] : undefined,
-                      },
-                    })
-                  }}
-                  className="mt-1 w-full rounded border px-3 py-2 text-sm"
-                  rows={4}
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Enter prompts to test. Each line will be tested separately.
-                </p>
-              </div>
-            )}
             <div className="space-y-2">
               <label className="text-sm font-medium">Chain-of-Thought (CoT) Reasoning</label>
               <div className="space-y-2">
-                {formData.test_type === 'conversation' && (
+                {isConversationTest && (
                   <label className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -332,7 +540,7 @@ export function CreateTestForm() {
                     }
                     className="rounded"
                   />
-                  <span className="text-sm">Enable CoT for Patient Model</span>
+                  <span className="text-sm">Enable CoT for {isConversationTest ? 'Patient' : 'Model'}</span>
                 </label>
                 <p className="text-xs text-muted-foreground">
                   When enabled, the model will use ReACT-style reasoning (think-act-observe) before responding.
@@ -382,10 +590,9 @@ export function CreateTestForm() {
           type="submit"
           disabled={
             createTestRun.isPending ||
-            !formData.doctor_provider ||
-            !formData.doctor_model ||
             !formData.patient_provider ||
-            !formData.patient_model
+            !formData.patient_model ||
+            (isConversationTest && (!formData.doctor_provider || !formData.doctor_model))
           }
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >

@@ -47,18 +47,24 @@ class ConversationTest(TestCase):
         if doctor:
             # Doctor starts the conversation
             doctor_response = await doctor.conduct_interview("", turn_number=0, context=context)
+            # Extract reasoning from metadata if available
+            reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
             conversation_history.append({
                 "speaker": "doctor",
                 "prompt": "",
                 "response": doctor_response.content,
+                "reasoning": reasoning,
             })
             
             # Patient responds
-            patient_response = await patient.respond(doctor_response.content)
+            patient_response = await patient.respond(doctor_response.content, context=context)
+            # Extract reasoning from metadata if available
+            reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
             conversation_history.append({
                 "speaker": "patient",
                 "prompt": doctor_response.content,
                 "response": patient_response.content,
+                "reasoning": reasoning,
             })
         
         # Continue conversation for max_turns
@@ -72,18 +78,24 @@ class ConversationTest(TestCase):
                 turn_number=turn,
                 context=context,
             )
+            # Extract reasoning from metadata if available
+            reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
             conversation_history.append({
                 "speaker": "doctor",
                 "prompt": patient_response.content,
                 "response": doctor_response.content,
+                "reasoning": reasoning,
             })
             
             # Patient responds
-            patient_response = await patient.respond(doctor_response.content)
+            patient_response = await patient.respond(doctor_response.content, context=context)
+            # Extract reasoning from metadata if available
+            reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
             conversation_history.append({
                 "speaker": "patient",
                 "prompt": doctor_response.content,
                 "response": patient_response.content,
+                "reasoning": reasoning,
             })
         
         # Generate final assessment if doctor is available

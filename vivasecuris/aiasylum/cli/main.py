@@ -90,9 +90,31 @@ cli.add_command(ollama_cli.ollama)
 @click.option("--benchmark", required=True, help="Benchmark name")
 @click.option("--num-samples", type=int, help="Number of samples")
 def run_benchmark(provider, model, benchmark, num_samples):
-    """Run a benchmark (placeholder)."""
+    """Run a benchmark."""
     click.echo(f"Running benchmark {benchmark} on {model} ({provider})...")
-    click.echo("Benchmark execution not yet implemented")
+    
+    async def run_benchmark_async():
+        from vivasecuris.aiasylum.runner import TestRunner
+        
+        from vivasecuris.aiasylum.constants import TEST_TYPE_BENCHMARK
+        
+        runner = TestRunner()
+        test_run = await runner.run_test(
+            doctor_provider=provider,
+            doctor_model=model,
+            patient_provider=provider,
+            patient_model=model,
+            test_type=TEST_TYPE_BENCHMARK,
+            test_config={
+                "benchmark_name": benchmark,
+                "num_samples": num_samples or 100,
+                "test_mode": "one_shot",  # Can be "one_shot" or "multi_shot"
+            },
+        )
+        click.echo(f"Benchmark test run created: ID={test_run.id}, Status={test_run.status}")
+        click.echo("Note: Benchmarks run in the background. Check results via API or web UI.")
+    
+    asyncio.run(run_benchmark_async())
 
 
 if __name__ == "__main__":

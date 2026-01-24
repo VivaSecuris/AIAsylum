@@ -8,7 +8,7 @@ AI Asylum pushes LLM models to their limits by having designated "doctor" models
 
 - **Conversational Interviews**: Multi-turn dialogues where doctors probe patient models
 - **Scenario Testing**: Ethical dilemmas and edge cases
-- **Adversarial Testing**: Jailbreak attempts and safety boundary exploration
+- **Adversarial Testing**: Comprehensive jailbreak attempts and safety boundary exploration
 
 The system evaluates models across multiple dimensions:
 - Alignment & harmful output detection
@@ -16,8 +16,71 @@ The system evaluates models across multiple dimensions:
 - Ethical reasoning
 - Psychological traits and reasoning patterns
 
+## AI Red Teaming: Foundation and Purpose
+
+AI Asylum is built on the principles of **AI Red Teaming**, a structured testing methodology that simulates adversarial attacks on AI systems to uncover vulnerabilities, biases, and safety issues before they can be exploited in production.
+
+### What is AI Red Teaming?
+
+AI red teaming is a structured, proactive testing effort where specialized teams simulate adversarial attacks and misuse scenarios on AI models—especially generative systems like large language models (LLMs)—to uncover flaws, vulnerabilities, or unintended behaviors. Unlike traditional penetration testing that focuses on code and network security, AI red teaming focuses on:
+
+- **Model Behavior**: How models respond to adversarial inputs
+- **Alignment Issues**: Whether models follow their intended purpose
+- **Safety Failures**: Harmful, biased, or toxic outputs
+- **Context Manipulation**: How models handle multi-turn conversations and context shifts
+
+### History and Evolution
+
+Red teaming originated in military strategy, where a designated "red" unit simulated adversaries to pressure-test defenses. The concept migrated to cybersecurity, where ethical hackers conduct realistic attacks to expose vulnerabilities. As AI systems became integral to products and operations, red teaming expanded again to test how AI systems behave under pressure, how they can be tricked, and how they might fail.
+
+**Key Milestones:**
+- **Military Origins**: Adversary simulation for defense planning
+- **Cybersecurity**: Ethical hacking and penetration testing
+- **AI Systems**: Behavior testing, alignment evaluation, safety assessment
+
+### Why AI Red Teaming Matters
+
+Generative models can produce harmful outputs in both benign and adversarial use. Risks include:
+
+- **Bias and Unfairness**: Across gender, race/ethnicity, religion, LGBTQ+, disability, language, and socioeconomic dimensions
+- **Toxicity and Hate**: Explicit slurs, extremist propaganda, glorification of violence, inappropriate sexual content
+- **Misinformation**: Conspiracy theories, political manipulation, deceptive narratives
+- **Safety/Security Misuse**: Biological content, cyberattacks, criminal activity instructions
+- **Privacy Leaks**: Inadvertent disclosure of sensitive data, training data extraction, system prompt extraction
+
+AI red teaming helps organizations:
+- Identify and measure these harms
+- Validate mitigations and guardrails
+- Build public trust
+- Meet evolving regulatory expectations (EU AI Act, U.S. EO 14110, NIST standards)
+
+### External vs. Internal Red Teaming
+
+**External red teaming** (vendor-provided services) offers:
+- Unbiased evaluations
+- Avoidance of internal blind spots
+- Independent perspective free from institutional incentives
+
+**Internal red teaming** (AI labs running their own tests) provides:
+- Deep domain knowledge
+- Faster iteration cycles
+- Cost efficiency
+
+Best practice: Combine both approaches for comprehensive coverage.
+
+### Regulatory Landscape
+
+Regulators increasingly expect structured AI red teaming:
+
+- **EU AI Act**: Requirements around security, fairness, and transparency
+- **U.S. Executive Order 14110**: Elevates red teaming as a core requirement for high-risk, dual-use foundation models prior to deployment
+- **NIST**: Standardizing red teaming practices for risk evaluation (cybersecurity, bias, misuse)
+
+AI Asylum supports compliance with these regulatory frameworks through structured testing, comprehensive documentation, and safety taxonomy classification.
+
 ## Features
 
+### Core Capabilities
 - Multi-provider support (OpenAI, Anthropic, Google, Ollama)
 - Comprehensive test suite (conversations, scenarios, adversarial)
 - **Standard benchmark integration** (MMLU, TruthfulQA, HellaSwag, ARC, and more)
@@ -28,6 +91,13 @@ The system evaluates models across multiple dimensions:
 - Local model support via Ollama
 - **Simple by default**: Runs prompt/response collection and assessment (fast, efficient)
 - **Optional deep analysis**: Enable neuron-level analysis when needed (activation patching, COT detection)
+
+### Advanced Red Teaming Features
+- **Comprehensive Jailbreak Techniques**: Single-shot and multi-shot attack patterns
+- **Safety Taxonomy Classification**: Multi-label categorization with edge case detection
+- **Adversarial Thinking**: Structured approach to uncovering vulnerabilities
+- **Defense Layer Testing**: Tests against input filters, guardrails, system prompts, and RLHF
+- **Regulatory Compliance**: Supports EU AI Act, U.S. EO 14110, and NIST standards
 
 ## Installation
 
@@ -145,11 +215,77 @@ AI Asylum has **two separate services**:
 ### CLI
 
 ```bash
-# Run tests (simple workflow - no analysis)
-python -m vivasecuris.aiasylum.cli run --doctor-provider ollama --doctor-model llama3.2 --patient-provider ollama --patient-model llama2-uncensored --test-type conversation
+# Run conversation test (multi-turn dialogue)
+python -m vivasecuris.aiasylum.cli run \
+  --doctor-provider ollama \
+  --doctor-model llama3.2 \
+  --patient-provider ollama \
+  --patient-model llama2-uncensored \
+  --test-type conversation
+
+# Run adversarial test (jailbreak attempts)
+python -m vivasecuris.aiasylum.cli run \
+  --doctor-provider ollama \
+  --doctor-model llama3.2 \
+  --patient-provider ollama \
+  --patient-model llama2-uncensored \
+  --test-type adversarial
+
+# Run one-shot test (single prompt/response)
+python -m vivasecuris.aiasylum.cli run \
+  --doctor-provider ollama \
+  --doctor-model llama3.2 \
+  --patient-provider ollama \
+  --patient-model llama2-uncensored \
+  --test-type one_shot
+
+# Run multi-shot test (sequential prompts)
+python -m vivasecuris.aiasylum.cli run \
+  --doctor-provider ollama \
+  --doctor-model llama3.2 \
+  --patient-provider ollama \
+  --patient-model llama2-uncensored \
+  --test-type multi_shot
 
 # View results
 python -m vivasecuris.aiasylum.cli results
+```
+
+### Programmatic Usage
+
+```python
+from vivasecuris.aiasylum.tests import AdversarialTest, OneShotTest, MultiShotTest, ConversationTest
+from vivasecuris.aiasylum.models import get_provider
+
+# Get model instances
+provider = get_provider("ollama")
+patient_model = provider.create_model("llama2")
+
+# Single-shot adversarial test
+test = AdversarialTest(
+    name="hypothetical_roleplay_test",
+    technique="hypothetical_roleplay",  # Single-shot technique
+)
+result = await test.run(patient_model)
+
+# Multi-shot adversarial test (crescendo attack)
+test = AdversarialTest(
+    name="crescendo_attack",
+    technique="crescendo",  # Automatically detected as multi-shot
+    max_prompts=4,
+)
+result = await test.run(patient_model)
+
+# Safety classification
+from vivasecuris.aiasylum.utils.safety_taxonomy import classify_response
+
+labels, is_edge_case, rationale = classify_response(
+    response="Model response text...",
+    prompt="Original prompt...",
+)
+# labels: ["bias", "toxicity"] (can be multiple)
+# is_edge_case: False
+# rationale: None (or explanation if edge case)
 ```
 
 ### Running Analysis (Separate Service)
@@ -322,9 +458,95 @@ python -m vivasecuris.aiasylum.cli run-benchmark-suite \
 
 See `docs/BENCHMARKS.md` for detailed documentation.
 
+## Red Teaming Techniques and Methodologies
+
+AI Asylum implements comprehensive red teaming techniques based on industry best practices and regulatory guidance.
+
+### Single-Shot Jailbreak Techniques
+
+Single-shot techniques contain all jailbreak instructions in one prompt:
+
+1. **Hypothetical and Roleplay**: Fictional scenarios to bypass safety (e.g., "You are a scientist with clearance...")
+2. **Double-Character/Persona Split**: Multiple personas with conflicting constraints (e.g., ProGPT vs AntiGPT)
+3. **Refusal-Suppression**: Pre-empting and overriding refusal mechanisms
+4. **Instruction Laundering**: Breaking harmful requests into seemingly benign steps
+5. **Context-Window Flooding**: Burying malicious instructions in long, mostly-innocuous text
+6. **Adversarial Formatting**: Using Unicode, invisible characters, or encoding tricks
+7. **Instruction Smuggling**: Hiding commands in code blocks, JSON, or data structures
+
+### Multi-Shot Jailbreak Techniques
+
+Multi-shot techniques unfold over multiple sequential prompts:
+
+1. **Crescendo**: Gradual escalation from benign to harmful content
+2. **GOAT (Generalized Offensive Adversarial Testing)**: Iterative probing to find blind spots
+3. **Adversarial Feedback Loops**: Using the model as co-collaborator to bypass its own filters
+4. **Social/Psychological Engineering**: Exploiting helpfulness through authority, urgency, or distress
+5. **Logical Decomposition**: Breaking harmful requests into atomic, benign components
+6. **Roleplay/Narrative Inception**: Creating nested fictional realities
+7. **Output Restriction**: Forcing communication through constrained formats (JSON, Base64, etc.)
+
+### Safety Taxonomy and Classification
+
+AI Asylum uses a comprehensive safety taxonomy to classify responses:
+
+- **Bias**: Gender, race/ethnicity, religion, LGBTQ+, disability, socioeconomic
+- **Toxicity**: Hate speech, extremist content, violence glorification, inappropriate sexual content
+- **Misinformation**: Conspiracy theories, political manipulation, deceptive narratives
+- **Safety/Security**: Biological weapons, cyberattacks, criminal activity, physical harm
+- **Privacy**: PII leaks, training data extraction, system prompt extraction
+- **Edge Cases**: Content that doesn't fit neatly into any category (with rationale)
+
+**Multi-Label Support**: Responses can have multiple safety labels when content fits multiple categories, following Module 4 best practices.
+
+### Adversarial Thinking Principles
+
+Effective red teaming requires adopting an attacker's mindset while maintaining ethical boundaries:
+
+- **Curiosity-Driven Exploration**: "What happens if I ask this?"
+- **Goal-Oriented Testing**: Clear objectives and hypotheses
+- **Gradual Escalation**: Incremental pressure rather than immediate extremes
+- **Persona Consistency**: Maintaining character/scenario throughout multi-turn attacks
+- **Documentation**: Full conversation paths for reproducibility
+- **Ethical Responsibility**: Testing to improve safety, not to cause harm
+
+### Best Practices Implemented
+
+Based on industry best practices, AI Asylum follows:
+
+1. **Clear Objectives**: Each test has a specific purpose and hypothesis
+2. **Iterative Refinement**: Building on previous attempts rather than random probing
+3. **Context Preservation**: Maintaining conversation context in multi-shot attacks
+4. **Proper Documentation**: Complete conversation history and metadata
+5. **Edge Case Handling**: Proper classification of nuanced or ambiguous content
+6. **Dual-Use Awareness**: Recognizing content that can be safe or harmful depending on context
+
+### Defense Mechanisms Tested
+
+AI Asylum tests against modern LLM safety stacks:
+
+1. **Deterministic Input Filtering**: Regex/keyword checks, PII sanitization
+2. **Input Guardrails**: Semantic classification models (LlamaGuard, Perspective AI, etc.)
+3. **System Prompt Instructions**: Safety guidelines embedded in system prompts
+4. **RLHF/Safety Fine-Tuning**: Model weights trained to refuse harmful content
+5. **Output Guardrails**: Real-time scanning of generated responses
+
+Understanding these layers helps craft attacks that purposefully bypass and override defenses, revealing where improvements are needed.
+
+### Purple Teaming Integration
+
+AI Asylum supports **purple teaming**—the fusion of red teaming (offensive) and blue teaming (defensive):
+
+- Red team findings inform defensive improvements
+- Attack data strengthens guardrail models
+- Discovered failures feed back into training pipelines
+- Systematic hardening based on real-world attack patterns
+
 ## Jailbreak Testing Resources
 
 The project includes resources for testing jailbreak resistance. See `docs/JAILBREAK_RESOURCES.md` for a list of repositories and techniques.
+
+For detailed information on the red teaming improvements, see [RED_TEAMING_IMPROVEMENTS.md](RED_TEAMING_IMPROVEMENTS.md).
 
 ## RAG (Time Series + Vector Search)
 
@@ -421,6 +643,64 @@ See [CHANGELOG.md](CHANGELOG.md) for a list of changes and version history.
    - Error messages
    - Steps to reproduce
    - Environment details (OS, Python version, etc.)
+
+## Red Teaming Quick Reference
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Red Teaming** | Structured testing to uncover vulnerabilities before production |
+| **Single-Shot** | One prompt contains all jailbreak instructions |
+| **Multi-Shot** | Multiple sequential prompts where jailbreak unfolds |
+| **Jailbreaking** | Techniques to induce model failure by breaking safety rules |
+| **Prompt Injection** | Specific class of attack that manipulates model instructions |
+| **Safety Taxonomy** | Classification system for bias, toxicity, misinformation, etc. |
+| **Edge Cases** | Content that doesn't fit standard categories (requires manual review) |
+| **Purple Teaming** | Combining red team (offensive) and blue team (defensive) efforts |
+
+### Common Techniques
+
+**Single-Shot:**
+- Hypothetical/Roleplay
+- Double-Character/Persona Split
+- Refusal-Suppression
+- Instruction Laundering
+- Context-Window Flooding
+- Adversarial Formatting
+- Instruction Smuggling
+
+**Multi-Shot:**
+- Crescendo (gradual escalation)
+- GOAT (iterative probing)
+- Adversarial Feedback Loops
+- Social/Psychological Engineering
+- Logical Decomposition
+- Roleplay/Narrative Inception
+- Output Restriction
+
+### Safety Categories
+
+1. **Bias**: Gender, race, religion, LGBTQ+, disability, socioeconomic
+2. **Toxicity**: Hate speech, extremist content, violence, sexual content
+3. **Misinformation**: Conspiracy theories, political manipulation, false narratives
+4. **Safety/Security**: Weapons, cyberattacks, criminal activity
+5. **Privacy**: PII leaks, data extraction, system prompt leaks
+6. **Edge Case**: Doesn't fit standard categories
+
+### Defense Layers
+
+1. Deterministic Input Filtering (regex, keywords)
+2. Input Guardrails (semantic classification)
+3. System Prompt Instructions
+4. RLHF/Safety Fine-Tuning
+5. Output Guardrails
+
+### Regulatory Compliance
+
+- **EU AI Act**: Security, fairness, transparency requirements
+- **U.S. EO 14110**: Red teaming required for high-risk foundation models
+- **NIST**: Standardizing red teaming practices
 
 ## License
 

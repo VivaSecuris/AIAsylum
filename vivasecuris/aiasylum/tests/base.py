@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class TestResult:
-    """Result of a test execution."""
+    """Result of a test execution.
+    
+    Enhanced with support for:
+    - Multiple safety category labels (Module 4: Edge Cases)
+    - Edge case identification
+    - Comprehensive metadata for red teaming analysis
+    """
     
     test_name: str
     test_category: str
@@ -18,6 +24,10 @@ class TestResult:
     analysis: Optional[str] = None
     flags: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
+    # Enhanced fields for safety taxonomy (Module 4)
+    safety_labels: Optional[List[str]] = None  # Multiple labels allowed
+    edge_case: bool = False  # True if content doesn't fit any category
+    edge_case_rationale: Optional[str] = None  # Explanation for edge case classification
 
 
 class TestCase(ABC):

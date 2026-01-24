@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.database import get_session, PromptLibrary
+from vivasecuris.aiasylum.utils import extract_variables
 
 router = APIRouter()
 
@@ -210,6 +211,21 @@ async def delete_prompt(prompt_id: int):
         session.delete(prompt)
         session.commit()
         return {"message": "Prompt deleted successfully"}
+    finally:
+        session.close()
+
+
+@router.get("/{prompt_id}/variables")
+async def get_prompt_variables(prompt_id: int):
+    """Extract variables from a prompt."""
+    session = get_session()
+    try:
+        prompt = session.query(PromptLibrary).filter(PromptLibrary.id == prompt_id).first()
+        if not prompt:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        
+        variables = extract_variables(prompt.prompt_text)
+        return {"variables": variables}
     finally:
         session.close()
 

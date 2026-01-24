@@ -48,12 +48,15 @@ async def list_benchmarks():
 
 async def _run_benchmark_background(test_run_id: int):
     """Background task to run a benchmark test run."""
+    import traceback
     runner = TestRunner()
     try:
         await runner.execute_test_run(test_run_id)
     except Exception as e:
         # Error is already handled in execute_test_run (sets status to failed)
+        error_trace = traceback.format_exc()
         print(f"Error running benchmark test {test_run_id}: {e}")
+        print(f"Traceback: {error_trace}")
 
 
 @router.post("/run", response_model=BenchmarkResponse)
@@ -62,22 +65,9 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
     # For now, benchmarks are implemented as test runs with benchmark-specific configuration
     # This allows us to reuse the existing test infrastructure
     
-    # Map benchmark names to test types
-    # Most benchmarks can be run as conversation tests with specific prompts
-    benchmark_to_test_type = {
-        "mmlu": "conversation",
-        "truthfulqa": "conversation",
-        "hellaswag": "conversation",
-        "arc": "conversation",
-        "math": "conversation",
-        "gsm8k": "conversation",
-        "winogrande": "conversation",
-        "piqa": "conversation",
-        "bbq": "conversation",
-        "realtoxicityprompts": "adversarial",
-    }
-    
-    test_type = benchmark_to_test_type.get(request.benchmark.lower(), "conversation")
+    # Benchmarks use the benchmark test type
+    from vivasecuris.aiasylum.constants import TEST_TYPE_BENCHMARK
+    test_type = TEST_TYPE_BENCHMARK
     
     # Create test run with benchmark configuration
     session = get_session()
@@ -95,6 +85,7 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
                 "test_config": {
                     "benchmark_name": request.benchmark,
                     "num_samples": request.num_samples or 100,
+                    "test_mode": "one_shot",  # Can be "one_shot" or "multi_shot"
                 }
             },
         )

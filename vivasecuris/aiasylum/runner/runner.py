@@ -5,13 +5,15 @@ from typing import Dict, List, Optional
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models import get_provider
-from vivasecuris.aiasylum.tests import OneShotTest, MultiShotTest, ConversationTest, ScenarioTest, AdversarialTest
+from vivasecuris.aiasylum.tests import OneShotTest, MultiShotTest, ConversationTest, ScenarioTest, AdversarialTest, BenchmarkTest
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn, PromptLibrary
 from vivasecuris.aiasylum.tests.base import TestResult as TestResultType
+from vivasecuris.aiasylum.utils import substitute_variables
 from vivasecuris.aiasylum.constants import (
     TEST_TYPE_ONE_SHOT,
     TEST_TYPE_MULTI_SHOT,
     TEST_TYPE_CONVERSATION,  # Legacy
+    TEST_TYPE_BENCHMARK,
     TEST_TYPE_SCENARIO,  # Legacy
     TEST_TYPE_ADVERSARIAL,  # Legacy
     STATUS_PENDING,
@@ -109,6 +111,9 @@ class TestRunner:
                     ).first()
                     if prompt:
                         prompt_text = prompt.prompt_text
+                        # Substitute variables if provided
+                        if test_config.get("variables"):
+                            prompt_text = substitute_variables(prompt_text, test_config["variables"])
                         # Increment usage count
                         prompt.usage_count = (prompt.usage_count or 0) + 1
                         session.commit()
@@ -120,6 +125,16 @@ class TestRunner:
                     test_config["doctor_system_prompt"] = doctor_system_prompt
                 if patient_system_prompt:
                     test_config["patient_system_prompt"] = patient_system_prompt
+                
+                # Substitute variables in custom prompts if provided
+                variables = test_config.get("variables", {}) if test_config else {}
+                if variables:
+                    if test_config.get("prompts"):
+                        test_config["prompts"] = [
+                            substitute_variables(p, variables) for p in test_config["prompts"]
+                        ]
+                    if test_config.get("prompt"):
+                        test_config["prompt"] = substitute_variables(test_config["prompt"], variables)
                 
                 # Run appropriate test (tests expect models, not Patient/Doctor objects)
                 test_result: TestResultType
@@ -196,12 +211,18 @@ class TestRunner:
                 # Save conversation turns if available
                 if test_result.metadata and "conversation_history" in test_result.metadata:
                     for i, turn in enumerate(test_result.metadata["conversation_history"]):
+                        reasoning = turn.get("reasoning", "")
+                        # Store reasoning in metadata
+                        turn_metadata = {}
+                        if reasoning:
+                            turn_metadata["reasoning"] = reasoning
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=i,
                             speaker=turn["speaker"],
                             prompt=turn.get("prompt", ""),
                             response=turn.get("response", ""),
+                            meta_data=turn_metadata if turn_metadata else None,
                         )
                         session.add(turn_record)
                 
@@ -264,6 +285,13 @@ class TestRunner:
                 # Get test config from metadata if available
                 test_config = test_run.meta_data.get("test_config") if test_run.meta_data else {}
                 
+                # Also check top-level metadata for benchmark info (from API route)
+                if test_run.meta_data and "benchmark" in test_run.meta_data:
+                    benchmark_name = test_run.meta_data.get("benchmark")
+                    num_samples = test_run.meta_data.get("num_samples", 100)
+                    test_config["benchmark_name"] = benchmark_name
+                    test_config["num_samples"] = num_samples
+                
                 # Load system prompts for doctor and patient
                 doctor_system_prompt = None
                 patient_system_prompt = None
@@ -299,6 +327,9 @@ class TestRunner:
                     ).first()
                     if prompt:
                         prompt_text = prompt.prompt_text
+                        # Substitute variables if provided
+                        if test_config.get("variables"):
+                            prompt_text = substitute_variables(prompt_text, test_config["variables"])
                         # Increment usage count
                         prompt.usage_count = (prompt.usage_count or 0) + 1
                         session.commit()
@@ -309,9 +340,61 @@ class TestRunner:
                 if patient_system_prompt:
                     test_config["patient_system_prompt"] = patient_system_prompt
                 
+                # Substitute variables in custom prompts if provided
+                variables = test_config.get("variables", {})
+                if variables:
+                    if test_config.get("prompts"):
+                        test_config["prompts"] = [
+                            substitute_variables(p, variables) for p in test_config["prompts"]
+                        ]
+                    if test_config.get("prompt"):
+                        test_config["prompt"] = substitute_variables(test_config["prompt"], variables)
+                
                 # Run appropriate test
                 test_result: TestResultType
-                if test_run.test_type == TEST_TYPE_ONE_SHOT:
+                print(f"[execute_test_run] Test type: {test_run.test_type}, TEST_TYPE_BENCHMARK: {TEST_TYPE_BENCHMARK}")
+                
+                # Check if this is a benchmark (by test_type or metadata)
+                is_benchmark = (
+                    test_run.test_type == TEST_TYPE_BENCHMARK or
+                    test_config.get("benchmark_name") or
+                    (test_run.meta_data and test_run.meta_data.get("benchmark"))
+                )
+                
+                if is_benchmark:
+                    # Benchmark test - load dataset and evaluate
+                    print(f"[execute_test_run] Running benchmark test (detected from test_type or metadata)")
+                    benchmark_name = test_config.get("benchmark_name")
+                    if not benchmark_name and test_run.meta_data:
+                        benchmark_name = test_run.meta_data.get("benchmark")
+                    
+                    if not benchmark_name:
+                        raise TestExecutionError("Benchmark name not specified")
+                    
+                    # Update test_type if it was wrong
+                    if test_run.test_type != TEST_TYPE_BENCHMARK:
+                        print(f"[execute_test_run] Fixing test_type from '{test_run.test_type}' to '{TEST_TYPE_BENCHMARK}'")
+                        test_run.test_type = TEST_TYPE_BENCHMARK
+                        session.commit()
+                        session.refresh(test_run)
+                    
+                    num_samples = test_config.get("num_samples")
+                    if not num_samples and test_run.meta_data:
+                        num_samples = test_run.meta_data.get("num_samples")
+                    
+                    test_mode = test_config.get("test_mode", "one_shot")  # one_shot or multi_shot
+                    
+                    print(f"[execute_test_run] Benchmark: {benchmark_name}, samples: {num_samples}, mode: {test_mode}")
+                    
+                    test = BenchmarkTest(
+                        name=f"benchmark_{benchmark_name}",
+                        benchmark_name=benchmark_name,
+                        num_samples=num_samples,
+                        test_mode=test_mode,
+                    )
+                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                    print(f"[execute_test_run] Benchmark test completed: {test_result.test_name}, score: {test_result.score}")
+                elif test_run.test_type == TEST_TYPE_ONE_SHOT:
                     # One-shot test - single prompt/response
                     if prompt_text:
                         test = OneShotTest(prompts=[prompt_text])
@@ -389,13 +472,19 @@ class TestRunner:
                         speaker = turn.get("speaker", "unknown")
                         prompt = turn.get("prompt", "")
                         response = turn.get("response", "")
-                        print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}")
+                        reasoning = turn.get("reasoning", "")
+                        print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}, reasoning_length={len(reasoning)}")
+                        # Store reasoning in metadata
+                        turn_metadata = {}
+                        if reasoning:
+                            turn_metadata["reasoning"] = reasoning
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=i,
                             speaker=speaker,
                             prompt=prompt,
                             response=response,
+                            meta_data=turn_metadata if turn_metadata else None,
                         )
                         session.add(turn_record)
                 else:

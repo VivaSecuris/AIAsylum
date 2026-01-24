@@ -22,6 +22,7 @@ class TestRunRequest(BaseModel):
     test_type: str
     test_config: Optional[dict] = None
     prompt_id: Optional[int] = None  # Optional prompt from library
+    variables: Optional[dict] = None  # Variable values for prompt substitution (e.g., {"country": "France"})
 
 
 class TestRunResponse(BaseModel):
@@ -47,12 +48,27 @@ class ConversationTurnResponse(BaseModel):
     prompt: str
     response: str
     created_at: Optional[datetime] = None
+    metadata: Optional[dict] = None
     
     class Config:
         from_attributes = True
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None
         }
+    
+    @classmethod
+    def from_orm(cls, obj):
+        """Create response from SQLAlchemy model, handling metadata conflict."""
+        return cls(
+            id=obj.id,
+            test_run_id=obj.test_run_id,
+            turn_number=obj.turn_number,
+            speaker=obj.speaker,
+            prompt=obj.prompt,
+            response=obj.response,
+            created_at=obj.created_at,
+            metadata=obj.meta_data or {},
+        )
 
 
 async def _run_test_background(test_run_id: int):
@@ -76,6 +92,8 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
         test_config = request.test_config or {}
         if request.prompt_id:
             test_config["prompt_id"] = request.prompt_id
+        if request.variables:
+            test_config["variables"] = request.variables
         
         test_run = TestRun(
             doctor_provider=request.doctor_provider,
@@ -192,7 +210,8 @@ async def get_conversation(test_run_id: int):
         print(f"Found {len(turns)} conversation turns for test_run_id={test_run_id}")
         if turns:
             print(f"First turn: speaker={turns[0].speaker}, response_length={len(turns[0].response)}")
-        return turns
+        # Convert to response models to handle metadata properly
+        return [ConversationTurnResponse.from_orm(turn) for turn in turns]
     finally:
         session.close()
 

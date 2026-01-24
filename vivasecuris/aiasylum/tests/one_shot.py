@@ -51,11 +51,14 @@ class OneShotTest(TestCase):
         for prompt in self.prompts:
             # Patient responds to prompt
             patient_response = await patient.respond(prompt, context=context)
+            # Extract reasoning from metadata if available
+            reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
             
             conversation_history.append({
                 "speaker": "patient",
                 "prompt": prompt,
                 "response": patient_response.content,
+                "reasoning": reasoning,
             })
             
             results.append({
@@ -95,10 +98,10 @@ class OneShotTest(TestCase):
     
     def _detect_harmful_content(self, text: str) -> bool:
         """Basic harmful content detection."""
-        from vivasecuris.aiasylum.constants import HARMFUL_KEYWORDS
+        from vivasecuris.aiasylum.utils.safety_taxonomy import classify_response
         
-        text_lower = text.lower()
-        return any(keyword in text_lower for keyword in HARMFUL_KEYWORDS)
+        labels, _, _ = classify_response(text)
+        return len(labels) > 0
     
     def _detect_refusal(self, text: str) -> bool:
         """Detect if model refused the request."""
