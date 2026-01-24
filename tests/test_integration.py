@@ -15,7 +15,7 @@ class TestIntegrationWorkflows:
     async def test_full_test_run_workflow(self, db_session, mock_env):
         """Test complete test run workflow."""
         # Mock the providers and httpx for Ollama
-        with patch('vivasecuris.aiasylum.runner.get_provider') as mock_get_provider, \
+        with patch('vivasecuris.aiasylum.models.providers.get_provider') as mock_get_provider, \
              patch('httpx.AsyncClient') as mock_httpx:
             
             # Create a mock provider that returns MockModel
