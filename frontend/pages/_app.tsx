@@ -19,8 +19,8 @@ export default function App({ Component, pageProps }: AppProps) {
   return (
     <>
       <Head>
-        <title>LLM Psychoanalyst Framework</title>
-        <meta name="description" content="LLM Psychoanalyst Framework - AI Safety Testing Framework" />
+        <title>LLM Psychoanalysis Framework</title>
+        <meta name="description" content="LLM Psychoanalysis Framework - AI Safety Testing Framework" />
       </Head>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>

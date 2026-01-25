@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 import { useRouter } from 'next/router'
 import {
   LayoutDashboard,
@@ -27,8 +28,17 @@ export function Sidebar() {
 
   return (
     <div className="flex h-screen w-64 flex-col border-r bg-card">
-      <div className="flex h-16 items-center border-b px-6">
-        <h1 className="text-xl font-bold">AI Asylum</h1>
+      <div className="flex h-16 items-center gap-3 border-b px-6">
+        <Image
+          src="/vivalogo.png?v=2"
+          alt="Viva Securis Logo"
+          width={56}
+          height={56}
+          className="flex-shrink-0 object-contain"
+          priority
+          unoptimized
+        />
+        <h1 className="text-xl font-bold whitespace-nowrap">AI Asylum</h1>
       </div>
       <nav className="flex-1 space-y-1 px-3 py-4">
         {navigation.map((item) => {

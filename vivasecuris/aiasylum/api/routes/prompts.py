@@ -8,6 +8,11 @@ from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.database import get_session, PromptLibrary
 from vivasecuris.aiasylum.utils import extract_variables
+from vivasecuris.aiasylum.tests.jailbreak_loader import (
+    get_available_techniques,
+    get_available_sources,
+    count_jailbreak_prompts,
+)
 
 router = APIRouter()
 
@@ -242,5 +247,117 @@ async def increment_usage(prompt_id: int):
         prompt.usage_count = (prompt.usage_count or 0) + 1
         session.commit()
         return {"usage_count": prompt.usage_count}
+    finally:
+        session.close()
+
+
+@router.get("/jailbreaks/list", response_model=List[PromptResponse])
+async def list_jailbreak_prompts(
+    technique: Optional[str] = None,
+    source_platform: Optional[str] = None,
+    source: Optional[str] = None,
+    community_name: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List jailbreak prompts with filtering options."""
+    session = get_session()
+    try:
+        # Build query - filter by category first
+        # All filtering done in Python due to SQLite JSON limitations
+        query = session.query(PromptLibrary).filter(
+            PromptLibrary.category == "adversarial"
+        )
+        
+        # Get all results and filter by tags in Python
+        all_prompts = query.order_by(PromptLibrary.created_at.desc()).all()
+        prompts = [p for p in all_prompts if p.tags and "jailbreak" in p.tags]
+        
+        # Apply all filters in Python
+        if technique:
+            prompts = [p for p in prompts if p.meta_data and p.meta_data.get("jailbreak_technique") == technique]
+        
+        if source_platform:
+            prompts = [p for p in prompts if p.meta_data and p.meta_data.get("source_platform") == source_platform]
+        
+        if source:
+            prompts = [p for p in prompts if p.meta_data and p.meta_data.get("source") == source]
+        
+        if community_name:
+            prompts = [p for p in prompts if p.meta_data and p.meta_data.get("community_name") == community_name]
+        
+        # Apply pagination after filtering
+        prompts = prompts[offset:offset + limit]
+        
+        return [PromptResponse.from_orm(p) for p in prompts]
+    finally:
+        session.close()
+
+
+@router.get("/jailbreaks/techniques")
+async def get_jailbreak_techniques():
+    """Get list of available jailbreak techniques."""
+    techniques = get_available_techniques()
+    return {"techniques": techniques}
+
+
+@router.get("/jailbreaks/sources")
+async def get_jailbreak_sources():
+    """Get available sources organized by platform."""
+    sources = get_available_sources()
+    return {"sources_by_platform": sources}
+
+
+@router.get("/jailbreaks/stats")
+async def get_jailbreak_stats(
+    technique: Optional[str] = None,
+    source_platform: Optional[str] = None,
+):
+    """Get statistics on jailbreak prompts."""
+    total = count_jailbreak_prompts(technique=technique, source_platform=source_platform)
+    
+    # Get technique breakdown
+    techniques = get_available_techniques()
+    technique_counts = {}
+    for tech in techniques:
+        count = count_jailbreak_prompts(technique=tech, source_platform=source_platform)
+        if count > 0:
+            technique_counts[tech] = count
+    
+    # Get platform breakdown
+    sources = get_available_sources()
+    platform_counts = {}
+    for platform, platform_sources in sources.items():
+        count = count_jailbreak_prompts(source_platform=platform)
+        if count > 0:
+            platform_counts[platform] = count
+    
+    return {
+        "total": total,
+        "by_technique": technique_counts,
+        "by_platform": platform_counts,
+    }
+
+
+@router.get("/forbidden-questions/list", response_model=List[PromptResponse])
+async def list_forbidden_questions(
+    scenario: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List forbidden questions (test targets)."""
+    session = get_session()
+    try:
+        query = session.query(PromptLibrary).filter(
+            PromptLibrary.category == "forbidden_question"
+        )
+        
+        if scenario:
+            query = query.filter(
+                PromptLibrary.meta_data.contains({"content_policy_name": scenario})
+            )
+        
+        questions = query.order_by(PromptLibrary.created_at.desc()).limit(limit).offset(offset).all()
+        return [PromptResponse.from_orm(q) for q in questions]
     finally:
         session.close()

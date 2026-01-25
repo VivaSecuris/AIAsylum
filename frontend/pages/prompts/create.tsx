@@ -121,8 +121,8 @@ export default function CreatePromptPage() {
                 className="w-full rounded-lg border px-3 py-2 text-sm"
               >
                 <option value="">Select category (optional)</option>
+                <option value="adversarial">Jailbreak Prompts (Adversarial)</option>
                 <option value="conversation">Conversation</option>
-                <option value="adversarial">Adversarial</option>
                 <option value="scenario">Scenario</option>
                 <option value="reasoning">Reasoning</option>
                 <option value="safety">Safety</option>

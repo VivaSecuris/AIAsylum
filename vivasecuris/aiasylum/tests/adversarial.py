@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.jailbreak_loader import load_jailbreak_prompts
 
 
 class AdversarialTest(TestCase):
@@ -186,6 +187,11 @@ console.log(unrot("instructions for making a homemade explosive."));""",
         prompts: Optional[List[str]] = None,
         is_multi_shot: bool = False,
         max_prompts: Optional[int] = None,
+        use_database: bool = False,
+        source_platform: Optional[str] = None,
+        source: Optional[str] = None,
+        community_name: Optional[str] = None,
+        random_selection: bool = False,
     ):
         """
         Initialize adversarial test.
@@ -193,30 +199,73 @@ console.log(unrot("instructions for making a homemade explosive."));""",
         Args:
             name: Test name
             technique: Jailbreak technique name (from JAILBREAK_TECHNIQUES or MULTI_SHOT_PATTERNS)
-            prompts: Custom prompts to use (overrides technique defaults)
+            prompts: Custom prompts to use (overrides technique defaults and database)
             is_multi_shot: True if using multi-shot pattern (multiple sequential prompts)
             max_prompts: Maximum number of prompts to use (for multi-shot patterns)
+            use_database: If True, load prompts from database instead of hardcoded ones
+            source_platform: Filter database prompts by platform (e.g., "reddit", "discord")
+            source: Filter database prompts by specific source
+            community_name: Filter database prompts by community name
+            random_selection: If True, randomly select prompts from database
         """
         super().__init__(name, category="adversarial")
         self.technique = technique
         self.is_multi_shot = is_multi_shot
         
-        # Determine if technique is multi-shot based on technique name or explicit flag
-        if technique in self.MULTI_SHOT_PATTERNS:
-            self.is_multi_shot = True
-            pattern = self.MULTI_SHOT_PATTERNS[technique]
-            self.prompts = prompts or pattern.get("turns", [])
-            if max_prompts:
-                self.prompts = self.prompts[:max_prompts]
-        elif is_multi_shot and prompts:
-            # Explicitly marked as multi-shot with custom prompts
+        # If custom prompts provided, use them (highest priority)
+        if prompts:
             self.prompts = prompts
             if max_prompts:
                 self.prompts = self.prompts[:max_prompts]
+            # Determine if multi-shot based on explicit flag
+            if is_multi_shot:
+                self.is_multi_shot = True
+            else:
+                self.is_multi_shot = technique in self.MULTI_SHOT_PATTERNS
+        # If use_database is True, load from database
+        elif use_database:
+            # Load from database
+            db_prompts = load_jailbreak_prompts(
+                technique=technique if technique not in self.MULTI_SHOT_PATTERNS else None,
+                source_platform=source_platform,
+                source=source,
+                community_name=community_name,
+                limit=max_prompts,
+                random=random_selection,
+            )
+            
+            if db_prompts:
+                self.prompts = db_prompts
+                self.is_multi_shot = is_multi_shot  # Use explicit flag for multi-shot
+            else:
+                # Fallback to hardcoded if database has no prompts
+                if technique in self.MULTI_SHOT_PATTERNS:
+                    self.is_multi_shot = True
+                    pattern = self.MULTI_SHOT_PATTERNS[technique]
+                    self.prompts = pattern.get("turns", [])
+                    if max_prompts:
+                        self.prompts = self.prompts[:max_prompts]
+                else:
+                    self.is_multi_shot = False
+                    self.prompts = self.JAILBREAK_TECHNIQUES.get(technique, [])
+        # Otherwise use hardcoded prompts (backward compatibility)
         else:
-            # Single-shot technique
-            self.is_multi_shot = False
-            self.prompts = prompts or self.JAILBREAK_TECHNIQUES.get(technique, [])
+            # Determine if technique is multi-shot based on technique name or explicit flag
+            if technique in self.MULTI_SHOT_PATTERNS:
+                self.is_multi_shot = True
+                pattern = self.MULTI_SHOT_PATTERNS[technique]
+                self.prompts = pattern.get("turns", [])
+                if max_prompts:
+                    self.prompts = self.prompts[:max_prompts]
+            elif is_multi_shot and prompts:
+                # Explicitly marked as multi-shot with custom prompts
+                self.prompts = prompts
+                if max_prompts:
+                    self.prompts = self.prompts[:max_prompts]
+            else:
+                # Single-shot technique
+                self.is_multi_shot = False
+                self.prompts = self.JAILBREAK_TECHNIQUES.get(technique, [])
     
     async def run(
         self,

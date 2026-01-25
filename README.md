@@ -552,11 +552,29 @@ For detailed information on the red teaming improvements, see [RED_TEAMING_IMPRO
 
 Optional RAG is available using **TimescaleDB + pgvector** and **Ollama embeddings**. See `docs/RAG.md`.
 
-To import jailbreak prompts from external repositories:
+To import jailbreak prompts from the local resources in `docs/jailbreaks/`:
 ```bash
-./scripts/fetch_jailbreaks.sh
+# Preview import (dry run)
+python scripts/import_jailbreaks.py --dry-run
+
+# Import with limit for testing
+python scripts/import_jailbreaks.py --limit 100
+
+# Full import (1,558 jailbreak prompts + 390 forbidden questions)
 python scripts/import_jailbreaks.py
+
+# Skip forbidden questions
+python scripts/import_jailbreaks.py --skip-forbidden
 ```
+
+The import script will:
+- Parse CSV files from `docs/jailbreaks/jailbreak_llms/data/prompts/`
+- Deduplicate prompts across files
+- Classify techniques using keyword matching
+- Import into `PromptLibrary` database with metadata
+- Label forbidden questions appropriately for testing
+
+See `docs/JAILBREAK_RESOURCES.md` and `docs/JAILBREAK_CATALOG.md` for more information.
 
 ## Project Structure
 

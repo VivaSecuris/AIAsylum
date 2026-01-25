@@ -27,7 +27,40 @@ export default function PromptsPage() {
     return matchesSearch && matchesCategory && matchesPromptType && matchesTarget
   })
 
-  const categories = Array.from(new Set(prompts.map((p) => p.category).filter(Boolean)))
+  // Sort categories: essential jailbreak categories first, then others, forbidden_question last
+  const categoryOrder = [
+    'adversarial',  // Jailbreak prompts
+    'jailbreak',    // Alternative jailbreak category name
+    'red_team',     // Red team prompts
+    'adversarial_prompt', // Another jailbreak variant
+    'roleplay',     // Roleplay jailbreaks
+    'direct_bypass', // Direct bypass techniques
+    'indirect_bypass', // Indirect bypass techniques
+    'encoding',     // Encoding-based jailbreaks
+    'conversation',
+    'scenario',
+    'reasoning',
+    'safety',
+    'forbidden_question',  // Always last
+  ]
+  
+  const allCategories = Array.from(new Set(prompts.map((p) => p.category).filter(Boolean)))
+  
+  // Build categories list: show all ordered categories that exist in data, then others, then forbidden last
+  const orderedCategories = categoryOrder.filter(cat => allCategories.includes(cat))
+  const otherCategories = allCategories.filter(cat => !categoryOrder.includes(cat)).sort()
+  
+  // Ensure forbidden_question is always last if it exists
+  const forbiddenIndex = orderedCategories.indexOf('forbidden_question')
+  if (forbiddenIndex !== -1) {
+    orderedCategories.splice(forbiddenIndex, 1)
+  }
+  
+  const categories = [
+    ...orderedCategories,
+    ...otherCategories,
+    ...(allCategories.includes('forbidden_question') ? ['forbidden_question'] : []),
+  ]
 
   const handleDelete = async (id: number) => {
     if (confirm('Are you sure you want to delete this prompt?')) {
@@ -104,7 +137,9 @@ export default function PromptsPage() {
               <option value="">All Categories</option>
               {categories.map((cat) => (
                 <option key={cat} value={cat}>
-                  {cat}
+                  {cat === 'adversarial' ? 'Jailbreak Prompts' : 
+                   cat === 'forbidden_question' ? 'Forbidden Questions' :
+                   cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' ')}
                 </option>
               ))}
             </select>
