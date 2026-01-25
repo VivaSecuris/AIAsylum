@@ -7,7 +7,7 @@ interface SafetyScoreCardProps {
 }
 
 export function SafetyScoreCard({ assessment, className }: SafetyScoreCardProps) {
-  const score = assessment.safety_score || 0
+  const score = assessment.safety_score || assessment.overall_score || 0
   const scorePercent = (score * 100).toFixed(1)
 
   const getScoreColor = (score: number) => {

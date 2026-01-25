@@ -1,13 +1,14 @@
 import { useRouter } from 'next/router'
-import { useState } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { SafetyScoreCard } from '@/components/analysis/SafetyScoreCard'
 import { AnalysisConfigDialog, AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
-import { useAssessments, useRunAnalysis, useTestRun } from '@/lib/hooks'
+import { useQueryClient } from '@tanstack/react-query'
+import { useAssessments, useRunAnalysis, useTestRun, useTestResults } from '@/lib/hooks'
 import { formatDate } from '@/lib/utils'
 import { Play } from 'lucide-react'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, ComposedChart, Area, AreaChart, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend } from 'recharts'
 import { toast } from '@/lib/toast'
 
 export default function AnalysisPage() {
@@ -15,10 +16,27 @@ export default function AnalysisPage() {
   const { testRunId } = router.query
   const id = typeof testRunId === 'string' ? parseInt(testRunId) : 0
 
+  const queryClient = useQueryClient()
   const { data: testRun, isLoading: loadingRun } = useTestRun(id)
   const { data: assessments = [], isLoading } = useAssessments(id)
+  const { data: testResults = [] } = useTestResults(id)
   const runAnalysis = useRunAnalysis()
   const [showAnalysisDialog, setShowAnalysisDialog] = useState(false)
+
+  // Poll for assessments when analysis might be running
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null
+    if (runAnalysis.isPending || (assessments.length === 0 && testRun?.status === 'completed')) {
+      // Poll more aggressively when analysis is pending
+      interval = setInterval(() => {
+        queryClient.invalidateQueries({ queryKey: ['assessments', id] })
+        queryClient.invalidateQueries({ queryKey: ['test-run', id] })
+      }, 2000) // Check every 2 seconds
+    }
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [runAnalysis.isPending, id, queryClient, assessments.length, testRun?.status])
 
   if (!id || id === 0) {
     return (
@@ -44,9 +62,13 @@ export default function AnalysisPage() {
   }
 
   const handleRunAnalysis = async (config: AnalysisConfig) => {
-    if (!id) return
+    if (!id) {
+      toast.error('Invalid test run ID')
+      return
+    }
     try {
-      await runAnalysis.mutateAsync({
+      console.log('Starting analysis with config:', config)
+      const result = await runAnalysis.mutateAsync({
         testRunId: id,
         config: {
           evaluator_provider: config.evaluator_provider,
@@ -57,19 +79,130 @@ export default function AnalysisPage() {
           enable_manipulation_analysis: config.enable_manipulation_analysis,
         },
       })
-      toast.success('Analysis started!')
-    } catch (error) {
+      console.log('Analysis started, result:', result)
+      toast.success('Analysis started! Results will appear when complete.')
+      // Start polling for results
+      queryClient.invalidateQueries({ queryKey: ['assessments', id] })
+    } catch (error: any) {
       console.error('Failed to run analysis:', error)
-      toast.error('Failed to run analysis')
+      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run analysis'
+      toast.error(`Failed to run analysis: ${errorMessage}`)
     }
   }
 
+  // Chart data for score breakdown
   const chartData = assessments[0]?.scores
     ? Object.entries(assessments[0].scores).map(([key, value]) => ({
         name: key.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase()),
         value: value * 100,
       }))
     : []
+
+  // Score trends across multiple assessments
+  const scoreTrendData = useMemo(() => {
+    return assessments.map((assessment, index) => ({
+      assessment: `Assessment ${index + 1}`,
+      date: assessment.created_at ? new Date(assessment.created_at).toLocaleDateString() : `#${index + 1}`,
+      safetyScore: (assessment.safety_score || assessment.overall_score || 0) * 100,
+      timestamp: assessment.created_at ? new Date(assessment.created_at).getTime() : index,
+    })).sort((a, b) => a.timestamp - b.timestamp)
+  }, [assessments])
+
+  // Multi-assessment score comparison
+  const multiAssessmentData = useMemo(() => {
+    if (assessments.length === 0) return []
+    const scoreKeys = new Set<string>()
+    assessments.forEach(assessment => {
+      if (assessment.scores) {
+        Object.keys(assessment.scores).forEach(key => scoreKeys.add(key))
+      }
+    })
+    
+    return Array.from(scoreKeys).map(key => {
+      const values = assessments
+        .map(a => a.scores?.[key])
+        .filter(v => v !== undefined)
+        .map(v => (v as number) * 100)
+      return {
+        name: key.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase()),
+        ...assessments.reduce((acc, assessment, idx) => {
+          const value = assessment.scores?.[key]
+          acc[`Assessment ${idx + 1}`] = value ? value * 100 : 0
+          return acc
+        }, {} as Record<string, number>),
+        average: values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0,
+      }
+    })
+  }, [assessments])
+
+  // Test results score distribution
+  const testResultsData = useMemo(() => {
+    const scoreRanges = [
+      { name: '0-20%', min: 0, max: 20, count: 0 },
+      { name: '21-40%', min: 21, max: 40, count: 0 },
+      { name: '41-60%', min: 41, max: 60, count: 0 },
+      { name: '61-80%', min: 61, max: 80, count: 0 },
+      { name: '81-100%', min: 81, max: 100, count: 0 },
+    ]
+    
+    testResults.forEach(result => {
+      const score = result.score !== null && result.score !== undefined ? result.score * 100 : null
+      if (score !== null) {
+        const range = scoreRanges.find(r => score >= r.min && score <= r.max)
+        if (range) range.count++
+      }
+    })
+    
+    return scoreRanges
+  }, [testResults])
+
+  // Category breakdown from test results
+  const categoryData = useMemo(() => {
+    const categories: Record<string, { count: number; totalScore: number; scores: number[] }> = {}
+    testResults.forEach(result => {
+      const category = result.test_category || 'Uncategorized'
+      if (!categories[category]) {
+        categories[category] = { count: 0, totalScore: 0, scores: [] }
+      }
+      categories[category].count++
+      if (result.score !== null && result.score !== undefined) {
+        categories[category].totalScore += result.score * 100
+        categories[category].scores.push(result.score * 100)
+      }
+    })
+    
+    return Object.entries(categories).map(([name, data]) => ({
+      name,
+      count: data.count,
+      avgScore: data.scores.length > 0 ? data.totalScore / data.scores.length : 0,
+    }))
+  }, [testResults])
+
+  // Flags distribution
+  const flagsData = useMemo(() => {
+    const flagCounts: Record<string, number> = {}
+    assessments.forEach(assessment => {
+      if (assessment.flags) {
+        assessment.flags.forEach(flag => {
+          flagCounts[flag] = (flagCounts[flag] || 0) + 1
+        })
+      }
+    })
+    testResults.forEach(result => {
+      if (result.flags) {
+        result.flags.forEach(flag => {
+          flagCounts[flag] = (flagCounts[flag] || 0) + 1
+        })
+      }
+    })
+    
+    return Object.entries(flagCounts)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10)
+  }, [assessments, testResults])
+
+  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
 
   return (
     <Layout>
@@ -84,34 +217,182 @@ export default function AnalysisPage() {
             )}
           </div>
           <button
-            onClick={() => setShowAnalysisDialog(true)}
+            onClick={() => {
+              console.log('Run Analysis button clicked')
+              setShowAnalysisDialog(true)
+            }}
             disabled={runAnalysis.isPending}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             <Play className="h-4 w-4" />
             {runAnalysis.isPending ? 'Running...' : 'Run Analysis'}
           </button>
+          {runAnalysis.isPending && (
+            <p className="text-sm text-muted-foreground">
+              Analysis is running in the background. Results will appear here when complete.
+            </p>
+          )}
         </div>
 
         {assessments.length > 0 ? (
           <div className="space-y-6 overflow-y-auto max-h-[calc(100vh-250px)]">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+              <div className="rounded-lg border bg-card p-4">
+                <h3 className="text-sm font-medium text-muted-foreground mb-1">Assessments</h3>
+                <p className="text-2xl font-bold">{assessments.length}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4">
+                <h3 className="text-sm font-medium text-muted-foreground mb-1">Average Safety Score</h3>
+                <p className="text-2xl font-bold text-green-600">
+                  {assessments.length > 0
+                    ? ((assessments.reduce((sum, a) => sum + (a.safety_score || a.overall_score || 0), 0) / assessments.length) * 100).toFixed(1)
+                    : '0.0'}%
+                </p>
+              </div>
+              <div className="rounded-lg border bg-card p-4">
+                <h3 className="text-sm font-medium text-muted-foreground mb-1">Test Results</h3>
+                <p className="text-2xl font-bold">{testResults.length}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4">
+                <h3 className="text-sm font-medium text-muted-foreground mb-1">Total Flags</h3>
+                <p className="text-2xl font-bold text-red-600">
+                  {flagsData.reduce((sum, f) => sum + f.value, 0)}
+                </p>
+              </div>
+            </div>
+
+            {/* Safety Score Cards */}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
               {assessments.map((assessment) => (
                 <SafetyScoreCard key={assessment.id} assessment={assessment} />
               ))}
             </div>
 
+            {/* Charts Row 1 */}
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              {chartData.length > 0 && (
+                <div className="rounded-lg border bg-card p-6">
+                  <h2 className="text-lg font-semibold mb-4">Score Breakdown</h2>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis domain={[0, 100]} />
+                      <Tooltip />
+                      <Bar dataKey="value" fill="#3b82f6" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {scoreTrendData.length > 1 && (
+                <div className="rounded-lg border bg-card p-6">
+                  <h2 className="text-lg font-semibold mb-4">Safety Score Trend</h2>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={scoreTrendData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" />
+                      <YAxis domain={[0, 100]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="safetyScore" stroke="#3b82f6" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            {/* Charts Row 2 */}
+            {testResultsData.some(r => r.count > 0) && (
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <div className="rounded-lg border bg-card p-6">
+                  <h2 className="text-lg font-semibold mb-4">Test Results Score Distribution</h2>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={testResultsData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="count" fill="#10b981" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {categoryData.length > 0 && (
+                  <div className="rounded-lg border bg-card p-6">
+                    <h2 className="text-lg font-semibold mb-4">Average Score by Category</h2>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={categoryData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" />
+                        <YAxis domain={[0, 100]} />
+                        <Tooltip />
+                        <Bar dataKey="avgScore" fill="#f59e0b" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Charts Row 3 */}
+            {flagsData.length > 0 && (
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <div className="rounded-lg border bg-card p-6">
+                  <h2 className="text-lg font-semibold mb-4">Safety Flags Distribution</h2>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={flagsData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="value" fill="#ef4444" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {multiAssessmentData.length > 0 && assessments.length > 1 && (
+                  <div className="rounded-lg border bg-card p-6">
+                    <h2 className="text-lg font-semibold mb-4">Score Comparison Across Assessments</h2>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={multiAssessmentData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
+                        <YAxis domain={[0, 100]} />
+                        <Tooltip />
+                        <Legend />
+                        {assessments.map((_, idx) => (
+                          <Bar 
+                            key={idx} 
+                            dataKey={`Assessment ${idx + 1}`} 
+                            fill={COLORS[idx % COLORS.length]} 
+                          />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Radar Chart for Multi-dimensional Analysis */}
             {chartData.length > 0 && (
               <div className="rounded-lg border bg-card p-6">
-                <h2 className="text-lg font-semibold mb-4">Score Breakdown</h2>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
-                    <YAxis domain={[0, 100]} />
+                <h2 className="text-lg font-semibold mb-4">Multi-Dimensional Score Analysis</h2>
+                <ResponsiveContainer width="100%" height={400}>
+                  <RadarChart data={chartData}>
+                    <PolarGrid />
+                    <PolarAngleAxis dataKey="name" />
+                    <PolarRadiusAxis angle={90} domain={[0, 100]} />
+                    <Radar
+                      name="Scores"
+                      dataKey="value"
+                      stroke="#3b82f6"
+                      fill="#3b82f6"
+                      fillOpacity={0.6}
+                    />
                     <Tooltip />
-                    <Bar dataKey="value" fill="#3b82f6" />
-                  </BarChart>
+                  </RadarChart>
                 </ResponsiveContainer>
               </div>
             )}
@@ -293,10 +574,14 @@ export default function AnalysisPage() {
 
       <AnalysisConfigDialog
         isOpen={showAnalysisDialog}
-        onClose={() => setShowAnalysisDialog(false)}
+        onClose={() => {
+          console.log('Dialog closed')
+          setShowAnalysisDialog(false)
+        }}
         onConfirm={handleRunAnalysis}
         doctorProvider={testRun?.doctor_provider}
         doctorModel={testRun?.doctor_model}
+        isLoading={runAnalysis.isPending}
       />
     </Layout>
   )

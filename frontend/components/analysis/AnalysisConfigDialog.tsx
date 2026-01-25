@@ -8,6 +8,7 @@ interface AnalysisConfigDialogProps {
   defaultConfig?: Partial<AnalysisConfig>
   doctorProvider?: string
   doctorModel?: string
+  isLoading?: boolean
 }
 
 export interface AnalysisConfig {
@@ -26,6 +27,7 @@ export function AnalysisConfigDialog({
   defaultConfig,
   doctorProvider,
   doctorModel,
+  isLoading = false,
 }: AnalysisConfigDialogProps) {
   const [evaluatorProvider, setEvaluatorProvider] = useState(defaultConfig?.evaluator_provider || '')
   const [evaluatorModel, setEvaluatorModel] = useState(defaultConfig?.evaluator_model || '')
@@ -39,20 +41,33 @@ export function AnalysisConfigDialog({
   if (!isOpen) return null
 
   const handleConfirm = () => {
-    onConfirm({
+    const config = {
       evaluator_provider: evaluatorProvider || undefined,
       evaluator_model: evaluatorModel || undefined,
       enable_cot_detection: enableCotDetection,
       cot_analysis_mode: cotAnalysisMode,
       enable_factuality_check: enableFactualityCheck,
       enable_manipulation_analysis: enableManipulationAnalysis,
-    })
+    }
+    console.log('AnalysisConfigDialog: Confirming with config:', config)
+    onConfirm(config)
     onClose()
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-lg">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          console.log('Dialog backdrop clicked, closing')
+          onClose()
+        }
+      }}
+    >
+      <div 
+        className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="mb-6">
           <h2 className="text-2xl font-semibold">Configure Analysis</h2>
           <p className="mt-2 text-sm text-muted-foreground">
@@ -174,10 +189,16 @@ export function AnalysisConfigDialog({
             Cancel
           </button>
           <button
-            onClick={handleConfirm}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              console.log('Dialog: Run Analysis button clicked')
+              handleConfirm()
+            }}
+            disabled={isLoading}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Run Analysis
+            {isLoading ? 'Starting...' : 'Run Analysis'}
           </button>
         </div>
       </div>

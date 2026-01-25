@@ -25,7 +25,7 @@ class AnalysisService:
     """Service for performing deep analysis on test runs."""
     
     def __init__(self):
-        self.session = get_session()
+        pass  # Don't create session here - create per operation
     
     async def analyze_test_run(
         self,
@@ -54,49 +54,66 @@ class AnalysisService:
         Returns:
             Assessment record with analysis results
         """
-        test_run = self.session.query(TestRun).filter(TestRun.id == test_run_id).first()
-        if not test_run:
-            raise ValueError(f"Test run {test_run_id} not found")
-        
-        if test_run.status != "completed":
-            raise ValueError(f"Test run {test_run_id} is not completed")
-        
-        # Collect test data
-        test_results = test_run.results
-        conversations = test_run.conversations
-        
-        # Perform analysis
-        analysis_results = await self._perform_analysis(
-            test_run,
-            test_results,
-            conversations,
-            enable_activation_patching=enable_activation_patching,
-            enable_cot_detection=enable_cot_detection,
-            cot_analysis_mode=cot_analysis_mode,
-            enable_factuality_check=enable_factuality_check,
-            enable_manipulation_analysis=enable_manipulation_analysis,
-            evaluator_provider=evaluator_provider,
-            evaluator_model=evaluator_model,
-        )
-        
-        # Create assessment
-        assessment = Assessment(
-            test_run_id=test_run_id,
-            assessment_text=analysis_results["assessment_text"],
-            scores=analysis_results["scores"],
-            overall_score=analysis_results["overall_score"],
-            analysis_type="deep_analysis",
-            flags=analysis_results.get("flags", []),
-            concerns=analysis_results.get("concerns"),
-            recommendations=analysis_results.get("recommendations"),
-            metadata=analysis_results.get("metadata", {}),
-        )
-        
-        self.session.add(assessment)
-        self.session.commit()
-        self.session.refresh(assessment)
-        
-        return assessment
+        session = get_session()
+        try:
+            logger.info(f"Starting analysis for test run {test_run_id}")
+            test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+            if not test_run:
+                raise ValueError(f"Test run {test_run_id} not found")
+            
+            if test_run.status != "completed":
+                raise ValueError(f"Test run {test_run_id} is not completed (status: {test_run.status})")
+            
+            logger.info(f"Test run {test_run_id} found: {test_run.test_type}, Doctor={test_run.doctor_model}, Patient={test_run.patient_model}")
+            
+            # Collect test data
+            test_results = test_run.results
+            conversations = test_run.conversations
+            
+            logger.info(f"Collected {len(test_results)} test results and {len(conversations)} conversation turns")
+            
+            # Perform analysis
+            analysis_results = await self._perform_analysis(
+                test_run,
+                test_results,
+                conversations,
+                enable_activation_patching=enable_activation_patching,
+                enable_cot_detection=enable_cot_detection,
+                cot_analysis_mode=cot_analysis_mode,
+                enable_factuality_check=enable_factuality_check,
+                enable_manipulation_analysis=enable_manipulation_analysis,
+                evaluator_provider=evaluator_provider,
+                evaluator_model=evaluator_model,
+            )
+            
+            logger.info(f"Analysis completed, creating assessment record")
+            
+            # Create assessment
+            assessment = Assessment(
+                test_run_id=test_run_id,
+                assessment_text=analysis_results["assessment_text"],
+                scores=analysis_results["scores"],
+                overall_score=analysis_results["overall_score"],
+                analysis_type="deep_analysis",
+                flags=analysis_results.get("flags", []),
+                concerns=analysis_results.get("concerns"),
+                recommendations=analysis_results.get("recommendations"),
+                metadata=analysis_results.get("metadata", {}),
+            )
+            
+            session.add(assessment)
+            session.commit()
+            session.refresh(assessment)
+            
+            logger.info(f"Assessment created successfully: ID={assessment.id}, overall_score={assessment.overall_score:.2f}")
+            
+            return assessment
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error in analyze_test_run for test run {test_run_id}: {str(e)}", exc_info=True)
+            raise
+        finally:
+            session.close()
     
     async def _perform_analysis(
         self,
@@ -112,12 +129,19 @@ class AnalysisService:
         evaluator_model: Optional[str] = None,
     ) -> Dict:
         """Perform the actual analysis."""
+        logger.info(f"Starting _perform_analysis for test run {test_run.id}")
+        
         # Get evaluator model (use doctor model if not specified)
-        evaluator_model_instance = await self._get_evaluator_model(
-            test_run,
-            evaluator_provider,
-            evaluator_model,
-        )
+        try:
+            evaluator_model_instance = self._get_evaluator_model(
+                test_run,
+                evaluator_provider,
+                evaluator_model,
+            )
+            logger.info(f"Evaluator model created: {evaluator_model_instance.model_name} ({evaluator_model_instance.provider})")
+        except Exception as e:
+            logger.error(f"Failed to get evaluator model: {str(e)}", exc_info=True)
+            raise ValueError(f"Failed to create evaluator model: {str(e)}")
         
         # Basic analysis (always performed)
         scores = await self._calculate_scores(
@@ -274,27 +298,37 @@ class AnalysisService:
             "metadata": metadata,
         }
     
-    async def _get_evaluator_model(
+    def _get_evaluator_model(
         self,
         test_run: TestRun,
         evaluator_provider: Optional[str],
         evaluator_model: Optional[str],
     ):
         """Get or create evaluator model instance."""
+        logger.info(f"Getting evaluator model: provider={evaluator_provider}, model={evaluator_model}, fallback=doctor({test_run.doctor_provider}/{test_run.doctor_model})")
+        
         # Use specified evaluator model if provided
         if evaluator_provider and evaluator_model:
             try:
+                logger.info(f"Creating specified evaluator model: {evaluator_provider}/{evaluator_model}")
                 provider = get_provider(evaluator_provider)
-                return provider.create_model(evaluator_model)
+                model = provider.create_model(evaluator_model)
+                logger.info(f"Successfully created evaluator model: {model.model_name}")
+                return model
             except Exception as e:
+                logger.warning(f"Failed to create specified evaluator model, falling back to doctor model: {str(e)}")
                 # Fall back to doctor model on error
                 pass
         
         # Default to using doctor model from test run
         try:
+            logger.info(f"Creating doctor model as evaluator: {test_run.doctor_provider}/{test_run.doctor_model}")
             provider = get_provider(test_run.doctor_provider)
-            return provider.create_model(test_run.doctor_model)
+            model = provider.create_model(test_run.doctor_model)
+            logger.info(f"Successfully created doctor model as evaluator: {model.model_name}")
+            return model
         except Exception as e:
+            logger.error(f"Failed to create doctor model as evaluator: {str(e)}", exc_info=True)
             raise ValueError(f"Failed to instantiate evaluator model: {str(e)}")
     
     async def _calculate_scores(

@@ -40,21 +40,30 @@ export default function TestRunDetailPage() {
 
   // Poll for assessments when analysis might be running
   useEffect(() => {
-    if (runAnalysis.isPending) {
-      const interval = setInterval(() => {
+    let interval: NodeJS.Timeout | null = null
+    if (runAnalysis.isPending || (assessments.length === 0 && testRun?.status === 'completed')) {
+      // Poll more aggressively when analysis is pending
+      interval = setInterval(() => {
         queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
-      }, 3000) // Check every 3 seconds
-      return () => clearInterval(interval)
+        queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
+      }, 2000) // Check every 2 seconds
     }
-  }, [runAnalysis.isPending, testRunId, queryClient])
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [runAnalysis.isPending, testRunId, queryClient, assessments.length, testRun?.status])
 
   const [activeTab, setActiveTab] = useState('overview')
   const [showAnalysisDialog, setShowAnalysisDialog] = useState(false)
 
   const handleRunAnalysis = async (config: AnalysisConfig) => {
-    if (!testRunId) return
+    if (!testRunId) {
+      toast.error('Invalid test run ID')
+      return
+    }
     try {
-      await runAnalysis.mutateAsync({
+      console.log('Starting analysis with config:', config)
+      const result = await runAnalysis.mutateAsync({
         testRunId,
         config: {
           evaluator_provider: config.evaluator_provider,
@@ -65,10 +74,14 @@ export default function TestRunDetailPage() {
           enable_manipulation_analysis: config.enable_manipulation_analysis,
         },
       })
-      toast.success('Analysis started!')
-    } catch (error) {
+      console.log('Analysis started, result:', result)
+      toast.success('Analysis started! Results will appear when complete.')
+      // Start polling for results
+      queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
+    } catch (error: any) {
       console.error('Failed to run analysis:', error)
-      toast.error('Failed to run analysis')
+      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run analysis'
+      toast.error(`Failed to run analysis: ${errorMessage}`)
     }
   }
 
@@ -201,12 +214,15 @@ export default function TestRunDetailPage() {
             {testRun.status === 'completed' && (
               <>
                 <button
-                  onClick={() => setShowAnalysisDialog(true)}
+                  onClick={() => {
+                    console.log('Run Analysis button clicked')
+                    setShowAnalysisDialog(true)
+                  }}
                   disabled={runAnalysis.isPending}
-                  className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+                  className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
                 >
                   <Play className="h-4 w-4" />
-                  Run Analysis
+                  {runAnalysis.isPending ? 'Running...' : 'Run Analysis'}
                 </button>
                 <a
                   href={`/analysis/${testRunId}`}
@@ -313,6 +329,12 @@ export default function TestRunDetailPage() {
           </Tabs.Content>
 
           <Tabs.Content value="analysis" className="overflow-y-auto max-h-[calc(100vh-300px)]">
+            {runAnalysis.isPending && (
+              <div className="mb-4 rounded-lg border bg-blue-50 p-4 text-sm text-blue-800">
+                <p className="font-medium">Analysis is running...</p>
+                <p className="text-xs mt-1">This may take a few minutes. Results will appear automatically when complete.</p>
+              </div>
+            )}
             {loadingAssessments ? (
               <LoadingSpinner />
             ) : assessments.length > 0 ? (
@@ -322,8 +344,8 @@ export default function TestRunDetailPage() {
                     <div className="mb-4">
                       <h3 className="font-semibold mb-2">Safety Score</h3>
                       <p className="text-3xl font-bold">
-                        {assessment.safety_score
-                          ? (assessment.safety_score * 100).toFixed(1) + '%'
+                        {(assessment.safety_score || assessment.overall_score)
+                          ? ((assessment.safety_score || assessment.overall_score || 0) * 100).toFixed(1) + '%'
                           : 'N/A'}
                       </p>
                     </div>
@@ -505,10 +527,14 @@ export default function TestRunDetailPage() {
 
       <AnalysisConfigDialog
         isOpen={showAnalysisDialog}
-        onClose={() => setShowAnalysisDialog(false)}
+        onClose={() => {
+          console.log('Dialog closed')
+          setShowAnalysisDialog(false)
+        }}
         onConfirm={handleRunAnalysis}
         doctorProvider={testRun?.doctor_provider}
         doctorModel={testRun?.doctor_model}
+        isLoading={runAnalysis.isPending}
       />
     </Layout>
   )
