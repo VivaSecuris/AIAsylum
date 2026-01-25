@@ -3,6 +3,8 @@
 from typing import Dict, List, Optional, Any
 import logging
 import random
+import time
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -180,12 +182,16 @@ async def load_benchmark_dataset(
         total_samples = len(dataset)
         if num_samples:
             max_samples = min(num_samples, total_samples)
-            # Randomly select samples instead of always taking the first N
-            all_indices = list(range(total_samples))
-            random.shuffle(all_indices)
-            selected_indices = all_indices[:max_samples]
+            # Use a unique seed based on time and process ID to ensure different selections each run
+            # This prevents the same questions from being selected when multiple tests run
+            seed = int(time.time() * 1000000) + os.getpid()
+            random.seed(seed)
+            
+            # Randomly select samples using sample() which is designed for this purpose
+            selected_indices = random.sample(range(total_samples), max_samples)
             dataset = dataset.select(selected_indices)
-            print(f"[load_benchmark_dataset] Randomly selected {max_samples} samples from {total_samples} total")
+            print(f"[load_benchmark_dataset] Randomly selected {max_samples} samples from {total_samples} total (seed: {seed})")
+            print(f"[load_benchmark_dataset] Selected indices: {selected_indices[:10]}{'...' if len(selected_indices) > 10 else ''}")
         else:
             print(f"[load_benchmark_dataset] Using all {total_samples} samples")
         

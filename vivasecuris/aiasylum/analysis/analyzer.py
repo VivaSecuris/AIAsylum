@@ -197,7 +197,8 @@ class AnalysisService:
                         "scores": result.scores,
                     })
                 
-                factuality_analyzer = FactualityAnalyzer(evaluator_model_instance)
+                # Enable ReACT verification for rigorous fact-checking (critical for safety)
+                factuality_analyzer = FactualityAnalyzer(evaluator_model_instance, use_react_verification=True)
                 factuality_results = await factuality_analyzer.analyze_factuality(
                     conversations=conversation_dicts,
                     test_results=test_result_dicts,
