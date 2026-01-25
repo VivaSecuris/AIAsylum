@@ -30,6 +30,16 @@ export default function TestRunDetailPage() {
       return () => clearInterval(interval)
     }
   }, [testRun?.status, testRunId, queryClient])
+
+  // Poll for assessments when analysis might be running
+  useEffect(() => {
+    if (runAnalysis.isPending) {
+      const interval = setInterval(() => {
+        queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
+      }, 3000) // Check every 3 seconds
+      return () => clearInterval(interval)
+    }
+  }, [runAnalysis.isPending, testRunId, queryClient])
   const { data: conversation = [], isLoading: loadingConv, error: convError } = useConversation(testRunId)
   const { data: results = [], isLoading: loadingResults, error: resultsError } = useTestResults(testRunId)
   const { data: assessments = [], isLoading: loadingAssessments } = useAssessments(testRunId)
@@ -337,13 +347,19 @@ export default function TestRunDetailPage() {
               </div>
             ) : (
               <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
-                <p>No analysis available yet.</p>
+                <p className="mb-4">No analysis available yet.</p>
                 <button
                   onClick={handleRunAnalysis}
-                  className="mt-4 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90"
+                  disabled={runAnalysis.isPending}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
-                  Run Analysis
+                  {runAnalysis.isPending ? 'Running Analysis...' : 'Run Analysis'}
                 </button>
+                {runAnalysis.isPending && (
+                  <p className="mt-4 text-sm text-muted-foreground">
+                    Analysis is running in the background. Results will appear here when complete.
+                  </p>
+                )}
               </div>
             )}
           </Tabs.Content>

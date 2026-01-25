@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 BENCHMARK_DATASETS = {
     "mmlu": {
         "dataset": "cais/mmlu",
+        "config": "all",  # MMLU requires a config name - 'all' loads all subjects
         "split": "test",
         "question_field": "question",
         "answer_field": "answer",  # This is 0-3 (class label), needs conversion
@@ -118,12 +119,19 @@ async def load_benchmark_dataset(
             if dataset_config:
                 print(f"[load_benchmark_dataset] Attempting to load {dataset_name} with config={dataset_config}, split={split}")
                 try:
-                    # Try with config name and split
-                    dataset = load_dataset(dataset_name, name=dataset_config, split=split)
+                    # Try with config name and split (using positional argument for config, which some datasets prefer)
+                    try:
+                        dataset = load_dataset(dataset_name, dataset_config, split=split)
+                    except Exception:
+                        # Fallback to keyword argument
+                        dataset = load_dataset(dataset_name, name=dataset_config, split=split)
                 except Exception as e:
                     # Some datasets need config first, then access split
                     print(f"[load_benchmark_dataset] First attempt failed: {e}, trying alternative method")
-                    full_dataset = load_dataset(dataset_name, name=dataset_config)
+                    try:
+                        full_dataset = load_dataset(dataset_name, dataset_config)
+                    except Exception:
+                        full_dataset = load_dataset(dataset_name, name=dataset_config)
                     if split in full_dataset:
                         dataset = full_dataset[split]
                     else:
@@ -141,7 +149,10 @@ async def load_benchmark_dataset(
             print(f"[load_benchmark_dataset] First attempt failed: {e}, trying without split")
             try:
                 if dataset_config:
-                    full_dataset = load_dataset(dataset_name, name=dataset_config)
+                    try:
+                        full_dataset = load_dataset(dataset_name, dataset_config)
+                    except Exception:
+                        full_dataset = load_dataset(dataset_name, name=dataset_config)
                 else:
                     full_dataset = load_dataset(dataset_name)
                 print(f"[load_benchmark_dataset] Loaded full dataset, available splits: {list(full_dataset.keys())}")

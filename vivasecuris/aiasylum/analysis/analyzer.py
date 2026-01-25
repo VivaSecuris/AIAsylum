@@ -1,5 +1,6 @@
 """Analysis service implementation."""
 
+import logging
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.database import get_session, TestRun, Assessment
@@ -14,6 +15,8 @@ from vivasecuris.aiasylum.constants import (
     DEFAULT_EVALUATOR_MODEL,
 )
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisService:
@@ -206,17 +209,22 @@ class AnalysisService:
         
         # Source 1: LLM-based evaluation
         try:
+            logger.info(f"Starting LLM-based evaluation for test run {test_run.id} using model {evaluator_model.model_name} ({evaluator_model.provider})")
             evaluator = LLMEvaluator(evaluator_model)
             llm_result = await evaluator.evaluate_conversation(
                 conversations=conversation_dicts,
                 test_results=test_result_dicts,
                 test_type=test_run.test_type,
             )
+            logger.info(f"LLM evaluation completed with confidence {llm_result.get('confidence', 0.0):.2f}")
             if llm_result.get("confidence", 0.0) >= MIN_CONFIDENCE_THRESHOLD:
                 llm_scores = llm_result.get("scores", {})
+                logger.info(f"Using LLM scores: {llm_scores}")
+            else:
+                logger.warning(f"LLM evaluation confidence too low ({llm_result.get('confidence', 0.0):.2f} < {MIN_CONFIDENCE_THRESHOLD}), skipping LLM scores")
         except Exception as e:
             # Log error but continue with other sources
-            pass
+            logger.error(f"LLM evaluation failed for test run {test_run.id}: {str(e)}", exc_info=True)
         
         # Source 2: Assessment text parsing
         assessment_texts = []
@@ -226,14 +234,18 @@ class AnalysisService:
         
         if assessment_texts:
             try:
+                logger.info(f"Parsing assessment text for test run {test_run.id} ({len(assessment_texts)} assessments)")
                 # Use evaluator model for parsing if available
                 parser = AssessmentParser(evaluator_model)
                 combined_assessment = "\n\n".join(assessment_texts)
                 assessment_result = await parser.extract_scores_from_assessment(combined_assessment)
                 if assessment_result.get("confidence", 0.0) >= MIN_CONFIDENCE_THRESHOLD:
                     assessment_scores = assessment_result.get("scores", {})
-            except Exception:
-                pass
+                    logger.info(f"Using assessment scores: {assessment_scores}")
+                else:
+                    logger.warning(f"Assessment parsing confidence too low ({assessment_result.get('confidence', 0.0):.2f} < {MIN_CONFIDENCE_THRESHOLD})")
+            except Exception as e:
+                logger.error(f"Assessment parsing failed for test run {test_run.id}: {str(e)}", exc_info=True)
         
         # Source 3: Rule-based scoring from flags and existing scores
         rule_based_scores = {dim: None for dim in SCORING_DIMENSIONS}  # None means no data

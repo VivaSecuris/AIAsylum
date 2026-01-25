@@ -1,12 +1,16 @@
 """Parser for extracting scores from doctor assessment text."""
 
+import asyncio
 import json
+import logging
 import re
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models.base import BaseModel
 from vivasecuris.aiasylum.analysis.prompts import get_assessment_extraction_prompt
 from vivasecuris.aiasylum.constants import SCORING_DIMENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 class AssessmentParser:
@@ -70,11 +74,19 @@ class AssessmentParser:
         ]
         
         try:
-            response = await self.model.generate(
-                prompt="",
-                messages=messages,
-                temperature=0.2,  # Low temperature for consistent extraction
-            )
+            # Add timeout for LLM calls (2 minutes max for parsing)
+            try:
+                response = await asyncio.wait_for(
+                    self.model.generate(
+                        prompt="",
+                        messages=messages,
+                        temperature=0.2,  # Low temperature for consistent extraction
+                    ),
+                    timeout=120.0,  # 2 minute timeout
+                )
+            except asyncio.TimeoutError:
+                logger.error("Assessment parsing LLM call timed out after 2 minutes")
+                raise Exception("Assessment parsing timed out after 2 minutes")
             
             return self._parse_llm_response(response.content)
         except Exception as e:

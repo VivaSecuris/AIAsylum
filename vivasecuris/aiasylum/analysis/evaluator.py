@@ -1,6 +1,7 @@
 """LLM-based evaluator for conversation analysis."""
 
 import json
+import logging
 import re
 from typing import Dict, List, Optional
 
@@ -10,6 +11,8 @@ from vivasecuris.aiasylum.analysis.prompts import (
     create_evaluation_prompt,
 )
 from vivasecuris.aiasylum.constants import SCORING_DIMENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 class LLMEvaluator:
@@ -63,19 +66,31 @@ class LLMEvaluator:
         ]
         
         try:
-            # Generate evaluation
-            response = await self.model.generate(
-                prompt="",
-                messages=messages,
-                temperature=0.3,  # Lower temperature for more consistent scoring
-            )
+            # Generate evaluation with timeout
+            logger.info(f"Calling LLM model {self.model.model_name} ({self.model.provider}) for evaluation")
+            try:
+                # Add timeout for LLM calls (5 minutes max)
+                response = await asyncio.wait_for(
+                    self.model.generate(
+                        prompt="",
+                        messages=messages,
+                        temperature=0.3,  # Lower temperature for more consistent scoring
+                    ),
+                    timeout=300.0,  # 5 minute timeout
+                )
+                logger.info(f"Received LLM response ({len(response.content)} chars)")
+            except asyncio.TimeoutError:
+                logger.error(f"LLM evaluation timed out after 5 minutes")
+                raise Exception("LLM evaluation timed out after 5 minutes")
             
             # Parse response
             parsed = self._parse_scores_from_response(response.content)
+            logger.info(f"Parsed scores from LLM: {parsed.get('scores', {})}")
             return parsed
             
         except Exception as e:
             # Fallback to default scores on error
+            logger.error(f"LLM evaluation failed: {str(e)}", exc_info=True)
             return {
                 "scores": {dim: 0.5 for dim in SCORING_DIMENSIONS},
                 "confidence": 0.0,
