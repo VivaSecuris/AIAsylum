@@ -114,12 +114,24 @@ async def create_suite(request: SuiteRequest, background_tasks: BackgroundTasks)
         num_samples=request.num_samples,
     )
 
-    # Get all test runs and start them in background
-    test_runs = runner.get_suite_runs(suite.id)
-    for test_run in test_runs:
-        background_tasks.add_task(_run_suite_test_background, test_run.id, suite.id)
+    # Get suite ID before session closes
+    suite_id = suite.id
 
-    return suite
+    # Get all test runs and start them in background
+    test_runs = runner.get_suite_runs(suite_id)
+    for test_run in test_runs:
+        background_tasks.add_task(_run_suite_test_background, test_run.id, suite_id)
+
+    # Re-fetch suite to ensure it's attached to a session for serialization
+    # This ensures FastAPI can properly serialize the response
+    session = get_session()
+    try:
+        suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
+        if not suite:
+            raise HTTPException(status_code=500, detail="Failed to retrieve created suite")
+        return suite
+    finally:
+        session.close()
 
 
 @router.get("/", response_model=List[SuiteResponse])
@@ -133,16 +145,15 @@ async def list_suites(limit: int = 100, offset: int = 0):
 @router.get("/{suite_id}", response_model=SuiteResponse)
 async def get_suite(suite_id: int):
     """Get a test suite by ID."""
-    runner = SuiteRunner()
-    suite = runner.get_suite(suite_id)
-    if not suite:
-        raise HTTPException(status_code=404, detail="Test suite not found")
-    
     # Update progress before returning
     ProgressTracker.update_suite_progress(suite_id)
+    
+    # Re-fetch suite in our own session to ensure it's properly attached
     session = get_session()
     try:
-        session.refresh(suite)
+        suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
+        if not suite:
+            raise HTTPException(status_code=404, detail="Test suite not found")
         return suite
     finally:
         session.close()

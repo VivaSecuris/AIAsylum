@@ -49,6 +49,10 @@ class SuiteRunner:
 
             # For each test type + model combination
             for test_type in test_types:
+                # Skip "benchmark" test type here - benchmarks are handled separately
+                if test_type == TEST_TYPE_BENCHMARK:
+                    continue
+                    
                 for model in models:
                     # Merge test_config with suite-level config
                     run_test_config = {
