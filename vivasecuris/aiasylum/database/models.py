@@ -39,6 +39,10 @@ class TestRun(Base):
     test_type = Column(String(50), nullable=False)  # conversation, scenario, adversarial
     status = Column(String(20), default="pending")  # pending, running, completed, failed
     
+    # Suite relationship
+    suite_id = Column(Integer, ForeignKey("test_suites.id"), nullable=True, index=True)
+    suite = relationship("TestSuite", back_populates="test_runs")
+    
     # Results
     results = relationship("TestResult", back_populates="test_run", cascade="all, delete-orphan")
     conversations = relationship("ConversationTurn", back_populates="test_run", cascade="all, delete-orphan")
@@ -215,3 +219,38 @@ class PromptLibrary(Base):
     
     def __repr__(self):
         return f"<PromptLibrary(id={self.id}, name={self.name}, type={self.prompt_type}, target={self.target})>"
+
+
+class TestSuite(Base):
+    """A test suite containing multiple test runs."""
+    
+    __tablename__ = "test_suites"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200))  # Optional suite name
+    status = Column(String(20), default="pending")  # pending, running, completed, failed, partially_failed
+    
+    # Progress tracking
+    total_runs = Column(Integer, default=0)
+    completed_runs = Column(Integer, default=0)
+    failed_runs = Column(Integer, default=0)
+    running_runs = Column(Integer, default=0)
+    pending_runs = Column(Integer, default=0)
+    
+    # Time tracking
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Metadata (renamed to avoid SQLAlchemy conflict)
+    meta_data = Column("metadata", JSON, default=dict)
+    
+    # Relationship to test runs
+    test_runs = relationship("TestRun", back_populates="suite", cascade="all, delete-orphan")
+    
+    def __repr__(self) -> str:
+        return f"<TestSuite(id={self.id}, name={self.name}, status={self.status}, total_runs={self.total_runs})>"
+    
+    def __str__(self) -> str:
+        return f"TestSuite #{self.id}: {self.name or 'Unnamed'} ({self.status})"

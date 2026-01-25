@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from vivasecuris.aiasylum.api.routes import test_runs, analysis, benchmarks, auth, prompts
+from vivasecuris.aiasylum.api.routes import test_runs, analysis, benchmarks, auth, prompts, suites
 
 app = FastAPI(
     title="AI Asylum API",
@@ -27,6 +27,7 @@ app.include_router(test_runs.router, prefix="/api/v1/test-runs", tags=["test-run
 app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["analysis"])
 app.include_router(benchmarks.router, prefix="/api/v1/benchmarks", tags=["benchmarks"])
 app.include_router(prompts.router, prefix="/api/v1/prompts", tags=["prompts"])
+app.include_router(suites.router, prefix="/api/v1/suites", tags=["suites"])
 
 
 @app.get("/")

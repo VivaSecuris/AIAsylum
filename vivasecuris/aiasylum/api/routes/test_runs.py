@@ -23,6 +23,7 @@ class TestRunRequest(BaseModel):
     test_config: Optional[dict] = None
     prompt_id: Optional[int] = None  # Optional prompt from library
     variables: Optional[dict] = None  # Variable values for prompt substitution (e.g., {"country": "France"})
+    suite_id: Optional[int] = None  # Optional suite ID to link test run to a suite
 
 
 class TestRunResponse(BaseModel):
@@ -123,6 +124,7 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
             patient_model=request.patient_model,
             test_type=request.test_type,
             status=STATUS_PENDING,
+            suite_id=request.suite_id,
             meta_data={"test_config": test_config},
         )
         session.add(test_run)

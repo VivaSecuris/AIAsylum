@@ -17,6 +17,7 @@ class BenchmarkRequest(BaseModel):
     model: str
     benchmark: str
     num_samples: Optional[int] = None
+    suite_id: Optional[int] = None  # Optional suite ID to link benchmark run to a suite
 
 
 class BenchmarkResponse(BaseModel):
@@ -79,6 +80,7 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
             patient_model=request.model,
             test_type=test_type,
             status=STATUS_PENDING,
+            suite_id=request.suite_id,
             meta_data={
                 "benchmark": request.benchmark,
                 "num_samples": request.num_samples,

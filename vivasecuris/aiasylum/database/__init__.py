@@ -8,6 +8,7 @@ from vivasecuris.aiasylum.database.models import (
     Assessment,
     BenchmarkResult,
     PromptLibrary,
+    TestSuite,
 )
 from vivasecuris.aiasylum.database.session import get_session, init_db
 
@@ -19,6 +20,7 @@ __all__ = [
     "Assessment",
     "BenchmarkResult",
     "PromptLibrary",
+    "TestSuite",
     "get_session",
     "init_db",
 ]

@@ -9,6 +9,7 @@ import {
   TestTube,
   Settings,
   FileText,
+  Layers,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -16,6 +17,7 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Create Test', href: '/create-test', icon: PlayCircle },
   { name: 'Test Runs', href: '/test-runs', icon: List },
+  { name: 'Suite', href: '/suite', icon: Layers },
   { name: 'Prompts', href: '/prompts', icon: FileText },
   { name: 'Models', href: '/compare', icon: GitCompare },
 ]

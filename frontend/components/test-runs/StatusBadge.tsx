@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 
 interface StatusBadgeProps {
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'partially_failed'
   className?: string
 }
 
@@ -11,6 +11,7 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
     running: 'bg-blue-100 text-blue-800 border-blue-200',
     completed: 'bg-green-100 text-green-800 border-green-200',
     failed: 'bg-red-100 text-red-800 border-red-200',
+    partially_failed: 'bg-orange-100 text-orange-800 border-orange-200',
   }
 
   const labels = {
@@ -18,6 +19,7 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
     running: 'Running',
     completed: 'Completed',
     failed: 'Failed',
+    partially_failed: 'Partially Failed',
   }
 
   return (
