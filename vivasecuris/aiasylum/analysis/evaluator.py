@@ -1,5 +1,6 @@
 """LLM-based evaluator for conversation analysis."""
 
+import asyncio
 import json
 import logging
 import re

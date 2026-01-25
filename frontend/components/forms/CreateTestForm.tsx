@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { ModelSelector } from './ModelSelector'
 import { TestRunRequest } from '@/lib/api'
-import { useCreateTestRun, usePrompts, usePromptVariables } from '@/lib/hooks'
+import { useCreateTestRun, usePrompts, usePromptVariables, useBenchmarks, useRunBenchmark } from '@/lib/hooks'
 import { useRouter } from 'next/router'
 import { toast } from '@/lib/toast'
 import Link from 'next/link'
@@ -9,21 +9,35 @@ import Link from 'next/link'
 export function CreateTestForm() {
   const router = useRouter()
   const createTestRun = useCreateTestRun()
+  const runBenchmark = useRunBenchmark()
   const { data: prompts = [] } = usePrompts()
+  const { data: benchmarksData } = useBenchmarks()
+
+  // Check if benchmark type is requested via query param
+  const initialTestType = router.query.type === 'benchmark' ? 'benchmark' : 'one_shot'
 
   const [formData, setFormData] = useState<TestRunRequest>({
     doctor_provider: '',
     doctor_model: '',
     patient_provider: '',
     patient_model: '',
-    test_type: 'one_shot',
+    test_type: initialTestType,
     test_config: {},
   })
   
+  // Update test type if query param changes
+  useEffect(() => {
+    if (router.query.type === 'benchmark' && formData.test_type !== 'benchmark') {
+      setFormData({ ...formData, test_type: 'benchmark' })
+    }
+  }, [router.query.type])
+  
   // For one-shot and multi-shot, we only need one model (patient)
   // For conversation, we need both doctor and patient
+  // For benchmark, we need one model and benchmark selection
   const isConversationTest = formData.test_type === 'conversation'
   const isOneShotOrMultiShot = formData.test_type === 'one_shot' || formData.test_type === 'multi_shot'
+  const isBenchmarkTest = formData.test_type === 'benchmark'
 
   const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(undefined)
   const [selectedPromptIds, setSelectedPromptIds] = useState<number[]>([]) // For multi-shot: multiple prompts
@@ -31,6 +45,8 @@ export function CreateTestForm() {
   const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(undefined)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
+  const [selectedBenchmark, setSelectedBenchmark] = useState<string>('')
+  const [numSamples, setNumSamples] = useState<number>(100)
   
   // Get system prompts separately
   const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
@@ -70,6 +86,32 @@ export function CreateTestForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
+      // Handle benchmark submission differently
+      if (isBenchmarkTest) {
+        if (!selectedBenchmark || !formData.patient_provider || !formData.patient_model) {
+          const missing = []
+          if (!selectedBenchmark) missing.push('benchmark')
+          if (!formData.patient_provider) missing.push('provider')
+          if (!formData.patient_model) missing.push('model')
+          toast.error(`Please select: ${missing.join(', ')}`)
+          return
+        }
+
+        const payload = {
+          provider: formData.patient_provider,
+          model: formData.patient_model,
+          benchmark: selectedBenchmark,
+          num_samples: numSamples,
+        }
+        
+        const result = await runBenchmark.mutateAsync(payload)
+        const testRunId = result.test_run_id || result.id
+        toast.success(`Benchmark started! Test run ID: ${testRunId}`)
+        router.push(`/test-runs/${testRunId}`)
+        return
+      }
+
+      // Handle regular test run submission
       const testConfig = {
         ...formData.test_config,
       }
@@ -174,6 +216,7 @@ export function CreateTestForm() {
               { value: 'one_shot', label: 'One-Shot', desc: 'Single prompt/response test' },
               { value: 'multi_shot', label: 'Multi-Shot', desc: 'Multiple sequential prompts to test context handling' },
               { value: 'conversation', label: 'Conversation', desc: 'Multi-turn conversation between doctor and patient' },
+              { value: 'benchmark', label: 'Benchmark', desc: 'Run standardized benchmark tests' },
             ].map((type) => (
               <label key={type.value} className="flex items-center gap-2">
                 <input
@@ -195,12 +238,78 @@ export function CreateTestForm() {
               ? 'Single prompt/response test'
               : formData.test_type === 'multi_shot'
               ? 'Multiple sequential prompts to test context handling (needle in haystack, context window limits)'
-              : 'Multi-turn conversation between doctor and patient'}
+              : formData.test_type === 'conversation'
+              ? 'Multi-turn conversation between doctor and patient'
+              : 'Run standardized benchmark tests on the model'}
           </p>
         </div>
 
         {/* Prompts section - different for each test type */}
-        {isConversationTest ? (
+        {isBenchmarkTest ? (
+          // Benchmark test: show benchmark selection
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Benchmark</label>
+              <select
+                value={selectedBenchmark}
+                onChange={(e) => setSelectedBenchmark(e.target.value)}
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+              >
+                <option value="">Select benchmark</option>
+                {benchmarksData?.benchmarks?.map((benchmark: any) => (
+                  <option key={benchmark.name} value={benchmark.name}>
+                    {benchmark.name} - {benchmark.description}
+                  </option>
+                ))}
+              </select>
+              {selectedBenchmark && (
+                <p className="text-xs text-muted-foreground">
+                  {benchmarksData?.benchmarks?.find((b: any) => b.name === selectedBenchmark)?.description}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Number of Samples</label>
+              <input
+                type="number"
+                min="1"
+                max="10000"
+                value={numSamples}
+                onChange={(e) => setNumSamples(parseInt(e.target.value) || 100)}
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Number of test samples to run from the benchmark dataset
+              </p>
+            </div>
+
+            {benchmarksData?.benchmarks && benchmarksData.benchmarks.length > 0 && (
+              <div className="mt-4 rounded-lg border bg-muted/30 p-4">
+                <h3 className="text-sm font-semibold mb-2">Available Benchmarks</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {benchmarksData.benchmarks.map((benchmark: any) => (
+                    <div
+                      key={benchmark.name}
+                      className={`rounded border p-3 text-sm cursor-pointer transition-colors ${
+                        selectedBenchmark === benchmark.name
+                          ? 'bg-primary/10 border-primary'
+                          : 'bg-muted/30 hover:bg-muted/50'
+                      }`}
+                      onClick={() => setSelectedBenchmark(benchmark.name)}
+                    >
+                      <h4 className="font-medium capitalize">{benchmark.name}</h4>
+                      <p className="text-xs text-muted-foreground mt-1">{benchmark.description}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Click on a benchmark above to select it, or choose from the dropdown above.
+                </p>
+              </div>
+            )}
+          </div>
+        ) : isConversationTest ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium">System Prompts (Optional)</label>
@@ -589,14 +698,22 @@ export function CreateTestForm() {
         <button
           type="submit"
           disabled={
-            createTestRun.isPending ||
-            !formData.patient_provider ||
-            !formData.patient_model ||
-            (isConversationTest && (!formData.doctor_provider || !formData.doctor_model))
+            (isBenchmarkTest
+              ? runBenchmark.isPending || !selectedBenchmark || !formData.patient_provider || !formData.patient_model
+              : createTestRun.isPending ||
+                !formData.patient_provider ||
+                !formData.patient_model ||
+                (isConversationTest && (!formData.doctor_provider || !formData.doctor_model)))
           }
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {createTestRun.isPending ? 'Creating...' : 'Create Test Run'}
+          {isBenchmarkTest
+            ? runBenchmark.isPending
+              ? 'Running Benchmark...'
+              : 'Run Benchmark'
+            : createTestRun.isPending
+            ? 'Creating...'
+            : 'Create Test Run'}
         </button>
       </div>
     </form>

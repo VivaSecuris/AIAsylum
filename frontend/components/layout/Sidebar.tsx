@@ -17,8 +17,7 @@ const navigation = [
   { name: 'Create Test', href: '/create-test', icon: PlayCircle },
   { name: 'Test Runs', href: '/test-runs', icon: List },
   { name: 'Prompts', href: '/prompts', icon: FileText },
-  { name: 'Compare Models', href: '/compare', icon: GitCompare },
-  { name: 'Benchmarks', href: '/benchmarks', icon: TestTube },
+  { name: 'Models', href: '/compare', icon: GitCompare },
 ]
 
 export function Sidebar() {

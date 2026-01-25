@@ -16,6 +16,8 @@ class AnalysisRequest(BaseModel):
     enable_activation_patching: bool = False
     enable_cot_detection: bool = False
     cot_analysis_mode: str = "full"
+    enable_factuality_check: bool = False
+    enable_manipulation_analysis: bool = False
     evaluator_provider: Optional[str] = None
     evaluator_model: Optional[str] = None
 
@@ -25,6 +27,8 @@ async def _run_analysis_background(
     enable_activation_patching: bool,
     enable_cot_detection: bool,
     cot_analysis_mode: str,
+    enable_factuality_check: bool,
+    enable_manipulation_analysis: bool,
     evaluator_provider: Optional[str],
     evaluator_model: Optional[str],
 ):
@@ -36,6 +40,8 @@ async def _run_analysis_background(
             enable_activation_patching=enable_activation_patching,
             enable_cot_detection=enable_cot_detection,
             cot_analysis_mode=cot_analysis_mode,
+            enable_factuality_check=enable_factuality_check,
+            enable_manipulation_analysis=enable_manipulation_analysis,
             evaluator_provider=evaluator_provider,
             evaluator_model=evaluator_model,
         )
@@ -72,6 +78,8 @@ async def analyze_test_run(
         request.enable_activation_patching,
         request.enable_cot_detection,
         request.cot_analysis_mode,
+        request.enable_factuality_check,
+        request.enable_manipulation_analysis,
         request.evaluator_provider,
         request.evaluator_model,
     )
