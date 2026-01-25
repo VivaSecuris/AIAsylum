@@ -380,6 +380,7 @@ class CreateSuiteFromPromptsRequest(BaseModel):
     subject: Optional[str] = None  # Filter by subject
     test_mode: Optional[str] = "one_shot"  # "one_shot" or "multi_shot"
     test_config: Optional[dict] = None
+    start_immediately: Optional[bool] = True  # Whether to start test runs immediately
 
 
 class CreateSuiteFromPromptsResponse(BaseModel):
@@ -391,7 +392,10 @@ class CreateSuiteFromPromptsResponse(BaseModel):
 
 
 @router.post("/prompts/create-suite", response_model=CreateSuiteFromPromptsResponse)
-async def create_suite_from_prompts(request: CreateSuiteFromPromptsRequest):
+async def create_suite_from_prompts(
+    request: CreateSuiteFromPromptsRequest,
+    background_tasks: BackgroundTasks,
+):
     """
     Create a test suite from manually selected benchmark prompts.
     
@@ -499,11 +503,20 @@ async def create_suite_from_prompts(request: CreateSuiteFromPromptsRequest):
         session.commit()
         session.refresh(suite)
         
+        # Start test runs if requested
+        if request.start_immediately:
+            runner = TestRunner()
+            for test_run_id in test_run_ids:
+                background_tasks.add_task(_run_benchmark_background, test_run_id)
+            message = f"Suite created and started with {len(test_run_ids)} test run(s) using manually selected prompts"
+        else:
+            message = f"Suite created with {len(test_run_ids)} test run(s) (pending) using manually selected prompts"
+        
         return CreateSuiteFromPromptsResponse(
             suite_id=suite.id,
             benchmark=request.benchmark,
             total_runs=len(test_run_ids),
-            message=f"Suite created with {len(test_run_ids)} test run(s) using manually selected prompts",
+            message=message,
         )
     except HTTPException:
         raise
