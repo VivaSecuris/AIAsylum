@@ -1,5 +1,6 @@
 """Analysis routes."""
 
+from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -14,6 +15,8 @@ class AnalysisRequest(BaseModel):
     enable_activation_patching: bool = False
     enable_cot_detection: bool = False
     cot_analysis_mode: str = "full"
+    evaluator_provider: Optional[str] = None
+    evaluator_model: Optional[str] = None
 
 
 @router.post("/test-run/{test_run_id}")
@@ -27,6 +30,8 @@ async def analyze_test_run(test_run_id: int, request: AnalysisRequest):
             enable_activation_patching=request.enable_activation_patching,
             enable_cot_detection=request.enable_cot_detection,
             cot_analysis_mode=request.cot_analysis_mode,
+            evaluator_provider=request.evaluator_provider,
+            evaluator_model=request.evaluator_model,
         )
         return assessment
     except ValueError as e:
