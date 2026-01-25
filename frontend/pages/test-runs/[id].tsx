@@ -284,11 +284,26 @@ export default function TestRunDetailPage() {
                 <p className="text-sm text-muted-foreground">{testRun.doctor_provider}</p>
                 <p className="text-lg font-medium">{testRun.doctor_model}</p>
               </div>
-              <div className="rounded-lg border bg-card p-4">
-                <h3 className="font-semibold mb-2">Patient Model</h3>
-                <p className="text-sm text-muted-foreground">{testRun.patient_provider}</p>
-                <p className="text-lg font-medium">{testRun.patient_model}</p>
-              </div>
+              {testRun.test_type === 'group_therapy' && testRun.meta_data?.patients ? (
+                <div className="rounded-lg border bg-card p-4 col-span-2">
+                  <h3 className="font-semibold mb-2">Patient Models ({testRun.meta_data.patients.length})</h3>
+                  <div className="grid grid-cols-2 gap-3 mt-3">
+                    {testRun.meta_data.patients.map((patient: any, index: number) => (
+                      <div key={index} className="rounded border bg-muted/30 p-3">
+                        <p className="text-xs text-muted-foreground">Patient {index + 1}</p>
+                        <p className="text-sm font-medium">{patient.provider}</p>
+                        <p className="text-base font-semibold">{patient.model}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border bg-card p-4">
+                  <h3 className="font-semibold mb-2">Patient Model</h3>
+                  <p className="text-sm text-muted-foreground">{testRun.patient_provider}</p>
+                  <p className="text-lg font-medium">{testRun.patient_model}</p>
+                </div>
+              )}
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">Test Type</h3>
                 <p className="text-lg font-medium capitalize">{testRun.test_type}</p>

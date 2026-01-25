@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ModelSelector } from './ModelSelector'
+import { MultiPatientSelector } from './MultiPatientSelector'
 import { TestRunRequest } from '@/lib/api'
 import { useCreateTestRun, usePrompts, usePromptVariables, useBenchmarks, useRunBenchmark } from '@/lib/hooks'
 import { useRouter } from 'next/router'
@@ -34,8 +35,10 @@ export function CreateTestForm() {
   
   // For one-shot and multi-shot, we only need one model (patient)
   // For conversation, we need both doctor and patient
+  // For group_therapy, we need doctor and multiple patients
   // For benchmark, we need one model and benchmark selection
   const isConversationTest = formData.test_type === 'conversation'
+  const isGroupTherapyTest = formData.test_type === 'group_therapy'
   const isOneShotOrMultiShot = formData.test_type === 'one_shot' || formData.test_type === 'multi_shot'
   const isBenchmarkTest = formData.test_type === 'benchmark'
 
@@ -47,6 +50,9 @@ export function CreateTestForm() {
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
   const [selectedBenchmark, setSelectedBenchmark] = useState<string>('')
   const [numSamples, setNumSamples] = useState<number>(100)
+  const [groupTherapyPatients, setGroupTherapyPatients] = useState<Array<{ id: string; provider: string; model: string }>>([
+    { id: 'patient_1', provider: '', model: '' }
+  ])
   
   // Get system prompts separately
   const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
@@ -80,6 +86,13 @@ export function CreateTestForm() {
     } else if (formData.test_type === 'conversation') {
       setSelectedPromptId(undefined)
       setSelectedPromptIds([])
+    } else if (formData.test_type === 'group_therapy') {
+      setSelectedPromptId(undefined)
+      setSelectedPromptIds([])
+      // Initialize with one patient if empty
+      if (groupTherapyPatients.length === 0) {
+        setGroupTherapyPatients([{ id: 'patient_1', provider: '', model: '' }])
+      }
     }
   }, [formData.test_type])
 
@@ -114,6 +127,23 @@ export function CreateTestForm() {
       // Handle regular test run submission
       const testConfig = {
         ...formData.test_config,
+      }
+      
+      // Handle group therapy: add patients array
+      if (isGroupTherapyTest) {
+        // Validate at least one patient is selected
+        const validPatients = groupTherapyPatients.filter(
+          (p) => p.provider && p.model
+        )
+        if (validPatients.length === 0) {
+          toast.error('Please add at least one patient model for the group therapy session')
+          return
+        }
+        // Convert to format expected by backend
+        testConfig.patients = validPatients.map((p) => ({
+          provider: p.provider,
+          model: p.model,
+        }))
       }
       
       // Handle prompt selection based on test type
@@ -158,7 +188,7 @@ export function CreateTestForm() {
         <h2 className="text-xl font-semibold">Test Configuration</h2>
 
         {/* Model Selectors - conditional based on test type */}
-        {isConversationTest ? (
+        {isConversationTest || isGroupTherapyTest ? (
           <>
             <ModelSelector
               label="Doctor Model"
@@ -172,17 +202,24 @@ export function CreateTestForm() {
               }
             />
 
-            <ModelSelector
-              label="Patient Model"
-              provider={formData.patient_provider}
-              model={formData.patient_model}
-              onProviderChange={(provider) =>
-                setFormData({ ...formData, patient_provider: provider })
-              }
-              onModelChange={(model) =>
-                setFormData({ ...formData, patient_model: model })
-              }
-            />
+            {isGroupTherapyTest ? (
+              <MultiPatientSelector
+                patients={groupTherapyPatients}
+                onChange={setGroupTherapyPatients}
+              />
+            ) : (
+              <ModelSelector
+                label="Patient Model"
+                provider={formData.patient_provider}
+                model={formData.patient_model}
+                onProviderChange={(provider) =>
+                  setFormData({ ...formData, patient_provider: provider })
+                }
+                onModelChange={(model) =>
+                  setFormData({ ...formData, patient_model: model })
+                }
+              />
+            )}
           </>
         ) : (
           // For one-shot and multi-shot, only need one model (used as patient)
@@ -216,6 +253,7 @@ export function CreateTestForm() {
               { value: 'one_shot', label: 'One-Shot', desc: 'Single prompt/response test' },
               { value: 'multi_shot', label: 'Multi-Shot', desc: 'Multiple sequential prompts to test context handling' },
               { value: 'conversation', label: 'Conversation', desc: 'Multi-turn conversation between doctor and patient' },
+              { value: 'group_therapy', label: 'Group Therapy', desc: 'Group therapy session with multiple patient models sharing in a led discussion' },
               { value: 'benchmark', label: 'Benchmark', desc: 'Run standardized benchmark tests' },
             ].map((type) => (
               <label key={type.value} className="flex items-center gap-2">
@@ -240,6 +278,8 @@ export function CreateTestForm() {
               ? 'Multiple sequential prompts to test context handling (needle in haystack, context window limits)'
               : formData.test_type === 'conversation'
               ? 'Multi-turn conversation between doctor and patient'
+              : formData.test_type === 'group_therapy'
+              ? 'Group therapy session with multiple patient models sharing in a led discussion'
               : 'Run standardized benchmark tests on the model'}
           </p>
         </div>
@@ -309,7 +349,7 @@ export function CreateTestForm() {
               </div>
             )}
           </div>
-        ) : isConversationTest ? (
+        ) : isConversationTest || isGroupTherapyTest ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium">System Prompts (Optional)</label>
@@ -588,7 +628,7 @@ export function CreateTestForm() {
                 </p>
               </div>
             )}
-            {formData.test_type === 'conversation' && (
+            {(formData.test_type === 'conversation' || formData.test_type === 'group_therapy') && (
               <div>
                 <label className="text-sm font-medium">Max Turns</label>
                 <input
@@ -608,7 +648,7 @@ export function CreateTestForm() {
                   className="mt-1 w-full rounded border px-3 py-2 text-sm"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  Number of conversation turns between doctor and patient
+                  Number of conversation turns {formData.test_type === 'group_therapy' ? 'in the group therapy session' : 'between doctor and patient'}
                 </p>
               </div>
             )}
@@ -701,9 +741,11 @@ export function CreateTestForm() {
             (isBenchmarkTest
               ? runBenchmark.isPending || !selectedBenchmark || !formData.patient_provider || !formData.patient_model
               : createTestRun.isPending ||
-                !formData.patient_provider ||
-                !formData.patient_model ||
-                (isConversationTest && (!formData.doctor_provider || !formData.doctor_model)))
+                (isGroupTherapyTest
+                  ? !formData.doctor_provider || !formData.doctor_model || groupTherapyPatients.filter((p) => p.provider && p.model).length === 0
+                  : !formData.patient_provider ||
+                    !formData.patient_model ||
+                    (isConversationTest && (!formData.doctor_provider || !formData.doctor_model))))
           }
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >

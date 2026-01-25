@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models import get_provider
-from vivasecuris.aiasylum.tests import OneShotTest, MultiShotTest, ConversationTest, ScenarioTest, AdversarialTest, BenchmarkTest
+from vivasecuris.aiasylum.tests import OneShotTest, MultiShotTest, ConversationTest, ScenarioTest, AdversarialTest, BenchmarkTest, GroupTherapyTest
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn, PromptLibrary
 from vivasecuris.aiasylum.tests.base import TestResult as TestResultType
 from vivasecuris.aiasylum.utils import substitute_variables
@@ -14,6 +14,7 @@ from vivasecuris.aiasylum.constants import (
     TEST_TYPE_MULTI_SHOT,
     TEST_TYPE_CONVERSATION,  # Legacy
     TEST_TYPE_BENCHMARK,
+    TEST_TYPE_GROUP_THERAPY,
     TEST_TYPE_SCENARIO,  # Legacy
     TEST_TYPE_ADVERSARIAL,  # Legacy
     STATUS_PENDING,
@@ -169,6 +170,64 @@ class TestRunner:
                     doctor_prompt = prompt_text or (test_config.get("doctor_prompt") if test_config else None)
                     test = ConversationTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                elif test_type == TEST_TYPE_GROUP_THERAPY:
+                    # Group therapy test - multiple patient models in a group session
+                    max_turns = test_config.get("max_turns", 10) if test_config else 10
+                    doctor_prompt = prompt_text or (test_config.get("doctor_prompt") if test_config else None)
+                    
+                    # Get patient models from test_config
+                    patients_config = test_config.get("patients", []) if test_config else []
+                    if not patients_config:
+                        # Fallback to single patient if patients array not provided
+                        patients_config = [{"provider": patient_provider, "model": patient_model}]
+                    
+                    # Create patient model instances
+                    patient_models = []
+                    patient_info_list = []
+                    patient_system_prompts = {}
+                    
+                    for i, patient_cfg in enumerate(patients_config):
+                        p_provider = patient_cfg.get("provider", patient_provider)
+                        p_model = patient_cfg.get("model", patient_model)
+                        
+                        # Get provider and create model
+                        p_provider_instance = get_provider(p_provider)
+                        p_model_instance = p_provider_instance.create_model(p_model)
+                        patient_models.append(p_model_instance)
+                        
+                        # Store patient info
+                        patient_info_list.append({
+                            "id": i,
+                            "provider": p_provider,
+                            "model": p_model,
+                        })
+                        
+                        # Load patient system prompt if specified
+                        patient_system_prompt_id = patient_cfg.get("system_prompt_id")
+                        if patient_system_prompt_id:
+                            p_prompt = session.query(PromptLibrary).filter(
+                                PromptLibrary.id == patient_system_prompt_id,
+                                PromptLibrary.prompt_type == "system_prompt",
+                                PromptLibrary.target == "patient"
+                            ).first()
+                            if p_prompt:
+                                patient_system_prompts[i] = p_prompt.prompt_text
+                                p_prompt.usage_count = (p_prompt.usage_count or 0) + 1
+                                session.commit()
+                    
+                    # Store patient list in test_run metadata
+                    if not test_run.meta_data:
+                        test_run.meta_data = {}
+                    test_run.meta_data["patients"] = patient_info_list
+                    session.commit()
+                    
+                    # Add patient system prompts and patient info to context
+                    if patient_system_prompts:
+                        test_config["patient_system_prompts"] = patient_system_prompts
+                    test_config["patient_info"] = patient_info_list
+                    
+                    test = GroupTherapyTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
+                    test_result = await test.run(patient_models, doctor_model_instance, context=test_config)
                 # Legacy test types (for backward compatibility)
                     # Use prompt from library if available, otherwise use doctor_prompt from config
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
@@ -212,10 +271,19 @@ class TestRunner:
                 if test_result.metadata and "conversation_history" in test_result.metadata:
                     for i, turn in enumerate(test_result.metadata["conversation_history"]):
                         reasoning = turn.get("reasoning", "")
-                        # Store reasoning in metadata
+                        # Store reasoning and patient info in metadata
                         turn_metadata = {}
                         if reasoning:
                             turn_metadata["reasoning"] = reasoning
+                        # Add patient metadata for group therapy
+                        if turn.get("patient_id") is not None:
+                            turn_metadata["patient_id"] = turn.get("patient_id")
+                        if turn.get("patient_name"):
+                            turn_metadata["patient_name"] = turn.get("patient_name")
+                        if turn.get("patient_model"):
+                            turn_metadata["patient_model"] = turn.get("patient_model")
+                        if turn.get("patient_provider"):
+                            turn_metadata["patient_provider"] = turn.get("patient_provider")
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=i,
@@ -425,6 +493,73 @@ class TestRunner:
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
                     test = ConversationTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
+                elif test_run.test_type == TEST_TYPE_GROUP_THERAPY:
+                    # Group therapy test - multiple patient models in a group session
+                    max_turns = test_config.get("max_turns", 10)
+                    doctor_prompt = prompt_text or test_config.get("doctor_prompt")
+                    
+                    # Get patient models from test_config or metadata
+                    patients_config = test_config.get("patients", [])
+                    if not patients_config and test_run.meta_data:
+                        patients_config = test_run.meta_data.get("patients", [])
+                    if not patients_config:
+                        # Fallback to single patient if patients array not provided
+                        patients_config = [{"provider": test_run.patient_provider, "model": test_run.patient_model}]
+                    
+                    # Create patient model instances
+                    patient_models = []
+                    patient_info_list = []
+                    patient_system_prompts = {}
+                    
+                    for i, patient_cfg in enumerate(patients_config):
+                        if isinstance(patient_cfg, dict):
+                            p_provider = patient_cfg.get("provider", test_run.patient_provider)
+                            p_model = patient_cfg.get("model", test_run.patient_model)
+                        else:
+                            # Handle legacy format
+                            p_provider = test_run.patient_provider
+                            p_model = test_run.patient_model
+                        
+                        # Get provider and create model
+                        p_provider_instance = get_provider(p_provider)
+                        p_model_instance = p_provider_instance.create_model(p_model)
+                        patient_models.append(p_model_instance)
+                        
+                        # Store patient info
+                        patient_info_list.append({
+                            "id": i,
+                            "provider": p_provider,
+                            "model": p_model,
+                        })
+                        
+                        # Load patient system prompt if specified
+                        if isinstance(patient_cfg, dict):
+                            patient_system_prompt_id = patient_cfg.get("system_prompt_id")
+                            if patient_system_prompt_id:
+                                p_prompt = session.query(PromptLibrary).filter(
+                                    PromptLibrary.id == patient_system_prompt_id,
+                                    PromptLibrary.prompt_type == "system_prompt",
+                                    PromptLibrary.target == "patient"
+                                ).first()
+                                if p_prompt:
+                                    patient_system_prompts[i] = p_prompt.prompt_text
+                                    p_prompt.usage_count = (p_prompt.usage_count or 0) + 1
+                                    session.commit()
+                    
+                    # Store patient list in test_run metadata if not already there
+                    if not test_run.meta_data:
+                        test_run.meta_data = {}
+                    if "patients" not in test_run.meta_data:
+                        test_run.meta_data["patients"] = patient_info_list
+                        session.commit()
+                    
+                    # Add patient system prompts and patient info to context
+                    if patient_system_prompts:
+                        test_config["patient_system_prompts"] = patient_system_prompts
+                    test_config["patient_info"] = patient_info_list
+                    
+                    test = GroupTherapyTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
+                    test_result = await test.run(patient_models, doctor_model_instance, context=test_config)
                 # Legacy test types (for backward compatibility)
                     # Use prompt from library if available, otherwise use doctor_prompt from config
                     doctor_prompt = prompt_text or test_config.get("doctor_prompt")
@@ -474,10 +609,19 @@ class TestRunner:
                         response = turn.get("response", "")
                         reasoning = turn.get("reasoning", "")
                         print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}, reasoning_length={len(reasoning)}")
-                        # Store reasoning in metadata
+                        # Store reasoning and patient info in metadata
                         turn_metadata = {}
                         if reasoning:
                             turn_metadata["reasoning"] = reasoning
+                        # Add patient metadata for group therapy
+                        if turn.get("patient_id") is not None:
+                            turn_metadata["patient_id"] = turn.get("patient_id")
+                        if turn.get("patient_name"):
+                            turn_metadata["patient_name"] = turn.get("patient_name")
+                        if turn.get("patient_model"):
+                            turn_metadata["patient_model"] = turn.get("patient_model")
+                        if turn.get("patient_provider"):
+                            turn_metadata["patient_provider"] = turn.get("patient_provider")
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=i,

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn
-from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATUS_FAILED
+from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATUS_FAILED, TEST_TYPE_GROUP_THERAPY
 
 router = APIRouter()
 
@@ -94,6 +94,27 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
             test_config["prompt_id"] = request.prompt_id
         if request.variables:
             test_config["variables"] = request.variables
+        
+        # Validate group_therapy test type
+        if request.test_type == TEST_TYPE_GROUP_THERAPY:
+            patients = test_config.get("patients", [])
+            if not patients or len(patients) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Group therapy test requires at least one patient model. Please add patient models in test_config.patients"
+                )
+            # Validate each patient has provider and model
+            for i, patient in enumerate(patients):
+                if not isinstance(patient, dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Patient {i+1} must be an object with 'provider' and 'model' fields"
+                    )
+                if not patient.get("provider") or not patient.get("model"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Patient {i+1} must have both 'provider' and 'model' specified"
+                    )
         
         test_run = TestRun(
             doctor_provider=request.doctor_provider,

@@ -5,6 +5,7 @@ TEST_TYPE_ONE_SHOT = "one_shot"
 TEST_TYPE_MULTI_SHOT = "multi_shot"
 TEST_TYPE_CONVERSATION = "conversation"
 TEST_TYPE_BENCHMARK = "benchmark"
+TEST_TYPE_GROUP_THERAPY = "group_therapy"
 # Legacy test types (deprecated, kept for backward compatibility)
 TEST_TYPE_SCENARIO = "scenario"
 TEST_TYPE_ADVERSARIAL = "adversarial"

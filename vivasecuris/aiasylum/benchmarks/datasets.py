@@ -2,6 +2,7 @@
 
 from typing import Dict, List, Optional, Any
 import logging
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -175,13 +176,18 @@ async def load_benchmark_dataset(
                 print(f"[load_benchmark_dataset] Failed to load dataset: {e2}")
                 raise
         
-        # Limit samples if specified
+        # Limit samples if specified - randomize selection
+        total_samples = len(dataset)
         if num_samples:
-            max_samples = min(num_samples, len(dataset))
-            dataset = dataset.select(range(max_samples))
-            print(f"[load_benchmark_dataset] Limited to {max_samples} samples")
+            max_samples = min(num_samples, total_samples)
+            # Randomly select samples instead of always taking the first N
+            all_indices = list(range(total_samples))
+            random.shuffle(all_indices)
+            selected_indices = all_indices[:max_samples]
+            dataset = dataset.select(selected_indices)
+            print(f"[load_benchmark_dataset] Randomly selected {max_samples} samples from {total_samples} total")
         else:
-            print(f"[load_benchmark_dataset] Using all {len(dataset)} samples")
+            print(f"[load_benchmark_dataset] Using all {total_samples} samples")
         
         # Standardize format
         standardized = []
