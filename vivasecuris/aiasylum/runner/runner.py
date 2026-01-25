@@ -452,13 +452,44 @@ class TestRunner:
                     
                     test_mode = test_config.get("test_mode", "one_shot")  # one_shot or multi_shot
                     
+                    # Check for manually selected indices or subject
+                    selected_indices = None
+                    selected_subject = None
+                    if test_run.meta_data:
+                        # Prefer selected_indices_list (already parsed) over selected_indices (string)
+                        indices_list = test_run.meta_data.get("selected_indices_list")
+                        if indices_list and isinstance(indices_list, list):
+                            selected_indices = indices_list
+                        else:
+                            # Fallback to parsing string format
+                            indices_data = test_run.meta_data.get("selected_indices")
+                            if indices_data:
+                                if isinstance(indices_data, str):
+                                    # Parse string format
+                                    from vivasecuris.aiasylum.benchmarks.datasets import parse_index_selection
+                                    # We need to know max index, but we'll load all first to get it
+                                    # For now, assume a reasonable max (will be validated when loading)
+                                    try:
+                                        selected_indices = parse_index_selection(indices_data, 100000)  # Large max, will be validated
+                                    except:
+                                        pass
+                                elif isinstance(indices_data, list):
+                                    selected_indices = indices_data
+                        selected_subject = test_run.meta_data.get("selected_subject")
+                    
                     print(f"[execute_test_run] Benchmark: {benchmark_name}, samples: {num_samples}, mode: {test_mode}")
+                    if selected_indices:
+                        print(f"[execute_test_run] Using manually selected indices: {selected_indices}")
+                    if selected_subject:
+                        print(f"[execute_test_run] Filtering by subject: {selected_subject}")
                     
                     test = BenchmarkTest(
                         name=f"benchmark_{benchmark_name}",
                         benchmark_name=benchmark_name,
                         num_samples=num_samples,
                         test_mode=test_mode,
+                        selected_indices=selected_indices,
+                        selected_subject=selected_subject,
                     )
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                     print(f"[execute_test_run] Benchmark test completed: {test_result.test_name}, score: {test_result.score}")

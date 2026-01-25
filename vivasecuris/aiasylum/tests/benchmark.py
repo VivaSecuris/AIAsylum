@@ -4,7 +4,12 @@ from typing import Any, Dict, List, Optional
 
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
-from vivasecuris.aiasylum.benchmarks.datasets import load_benchmark_dataset
+from vivasecuris.aiasylum.benchmarks.datasets import (
+    load_benchmark_dataset,
+    load_benchmark_dataset_all,
+    parse_index_selection,
+    filter_prompts_by_selection,
+)
 from vivasecuris.aiasylum.benchmarks.base import BenchmarkResult
 
 
@@ -17,6 +22,8 @@ class BenchmarkTest(TestCase):
         benchmark_name: str = "mmlu",
         num_samples: Optional[int] = None,
         test_mode: str = "one_shot",  # "one_shot" or "multi_shot"
+        selected_indices: Optional[List[int]] = None,  # Specific indices to use
+        selected_subject: Optional[str] = None,  # Filter by subject
     ):
         """
         Initialize benchmark test.
@@ -26,11 +33,15 @@ class BenchmarkTest(TestCase):
             benchmark_name: Name of benchmark (mmlu, gsm8k, etc.)
             num_samples: Number of samples to test
             test_mode: "one_shot" (each question independently) or "multi_shot" (sequential)
+            selected_indices: Specific indices to use (overrides num_samples and randomization)
+            selected_subject: Filter by subject (e.g., "abstract_algebra" for MMLU)
         """
         super().__init__(name, category="benchmark")
         self.benchmark_name = benchmark_name
         self.num_samples = num_samples
         self.test_mode = test_mode
+        self.selected_indices = selected_indices
+        self.selected_subject = selected_subject
     
     async def run(
         self,
@@ -47,7 +58,21 @@ class BenchmarkTest(TestCase):
         
         # Load benchmark dataset
         try:
-            dataset = await load_benchmark_dataset(self.benchmark_name, self.num_samples)
+            # If specific indices or subject are provided, use manual selection
+            if self.selected_indices is not None or self.selected_subject:
+                # Load all prompts without randomization
+                all_prompts = await load_benchmark_dataset_all(self.benchmark_name)
+                # Filter by selection criteria
+                dataset = filter_prompts_by_selection(
+                    all_prompts,
+                    indices=self.selected_indices,
+                    subject=self.selected_subject,
+                )
+                print(f"[BenchmarkTest] Loaded {len(dataset)} manually selected samples from {len(all_prompts)} total")
+            else:
+                # Use standard loading with randomization
+                dataset = await load_benchmark_dataset(self.benchmark_name, self.num_samples)
+                print(f"[BenchmarkTest] Loaded {len(dataset)} samples for benchmark {self.benchmark_name}")
         except Exception as e:
             import traceback
             error_msg = f"Error loading benchmark dataset {self.benchmark_name}: {e}\n{traceback.format_exc()}"
@@ -56,8 +81,6 @@ class BenchmarkTest(TestCase):
         
         if not dataset:
             raise ValueError(f"No dataset loaded for benchmark {self.benchmark_name}")
-        
-        print(f"[BenchmarkTest] Loaded {len(dataset)} samples for benchmark {self.benchmark_name}")
         
         results = []
         correct = 0

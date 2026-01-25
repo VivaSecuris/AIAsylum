@@ -271,3 +271,199 @@ def _get_fallback_questions(benchmark_name: str, num_samples: Optional[int] = No
         questions = questions[:num_samples]
     
     return questions
+
+
+async def load_benchmark_dataset_all(
+    benchmark_name: str,
+) -> List[Dict[str, Any]]:
+    """
+    Load all benchmark dataset items without randomization.
+    
+    Args:
+        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k")
+    
+    Returns:
+        List of all dataset items with standardized format (no randomization)
+    """
+    # Call the main function with None for num_samples to get all items
+    # But we need to modify it to skip randomization
+    # We'll duplicate the logic but skip the random selection part
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        logger.error("datasets library not installed. Install with: pip install datasets")
+        raise ImportError("datasets library required for benchmark loading")
+    
+    if benchmark_name.lower() not in BENCHMARK_DATASETS:
+        raise ValueError(f"Unknown benchmark: {benchmark_name}. Available: {list(BENCHMARK_DATASETS.keys())}")
+    
+    config = BENCHMARK_DATASETS[benchmark_name.lower()]
+    dataset_name = config["dataset"]
+    split = config.get("split", "test")
+    dataset_config = config.get("config")
+    
+    logger.info(f"Loading all benchmark dataset: {dataset_name} (split: {split}, config: {dataset_config})")
+    
+    try:
+        # Load dataset - same logic as load_benchmark_dataset but without randomization
+        try:
+            if dataset_config:
+                try:
+                    dataset = load_dataset(dataset_name, dataset_config, split=split)
+                except Exception:
+                    dataset = load_dataset(dataset_name, name=dataset_config, split=split)
+            else:
+                dataset = load_dataset(dataset_name, split=split)
+        except Exception as e:
+            logger.warning(f"Failed to load {dataset_name} with split {split}, trying without split: {e}")
+            try:
+                if dataset_config:
+                    try:
+                        full_dataset = load_dataset(dataset_name, dataset_config)
+                    except Exception:
+                        full_dataset = load_dataset(dataset_name, name=dataset_config)
+                else:
+                    full_dataset = load_dataset(dataset_name)
+                
+                if split in full_dataset:
+                    dataset = full_dataset[split]
+                elif "test" in full_dataset:
+                    dataset = full_dataset["test"]
+                elif "validation" in full_dataset:
+                    dataset = full_dataset["validation"]
+                else:
+                    available_split = list(full_dataset.keys())[0]
+                    dataset = full_dataset[available_split]
+                    logger.warning(f"Using split {available_split} instead of {split}")
+            except Exception as e2:
+                logger.error(f"Failed to load dataset {dataset_name}: {e2}")
+                raise
+        
+        # NO randomization - use all samples
+        print(f"[load_benchmark_dataset_all] Using all {len(dataset)} samples (no randomization)")
+        
+        # Standardize format (same as load_benchmark_dataset)
+        standardized = []
+        question_field = config["question_field"]
+        answer_field = config.get("answer_field")
+        choices_field = config.get("choices_field")
+        
+        for i, item in enumerate(dataset):
+            standardized_item = {
+                "question": item.get(question_field, ""),
+                "answer": item.get(answer_field) if answer_field else None,
+            }
+            
+            # Handle answer field conversion (class labels to indices/letters)
+            if answer_field and standardized_item["answer"] is not None:
+                answer = standardized_item["answer"]
+                if isinstance(answer, (int, str)) and str(answer).isdigit():
+                    answer_int = int(answer)
+                    if 0 <= answer_int <= 25:  # A-Z
+                        standardized_item["answer_letter"] = chr(65 + answer_int)
+                        standardized_item["answer_index"] = answer_int
+            
+            # Add choices if available
+            if choices_field:
+                if isinstance(choices_field, str) and "," in choices_field:
+                    fields = [f.strip() for f in choices_field.split(",")]
+                    choices = [item.get(f) for f in fields if item.get(f)]
+                    standardized_item["choices"] = choices
+                else:
+                    choices = item.get(choices_field)
+                    if choices:
+                        standardized_item["choices"] = choices if isinstance(choices, list) else [choices]
+            
+            # Add subject/category if available
+            subject_field = config.get("subject_field")
+            if subject_field and item.get(subject_field):
+                standardized_item["subject"] = item.get(subject_field)
+            
+            # Add raw item for reference
+            standardized_item["raw"] = item
+            
+            standardized.append(standardized_item)
+        
+        logger.info(f"Loaded {len(standardized)} samples from {benchmark_name} (all samples, no randomization)")
+        return standardized
+        
+    except Exception as e:
+        logger.error(f"Error loading dataset {dataset_name}: {e}")
+        logger.warning(f"Falling back to simple questions for {benchmark_name}")
+        return _get_fallback_questions(benchmark_name, None)
+
+
+def parse_index_selection(index_string: str, max_index: int) -> List[int]:
+    """
+    Parse index selection string into a list of indices.
+    
+    Supports formats like:
+    - "0,5,10" -> [0, 5, 10]
+    - "0,5,10,15-20" -> [0, 5, 10, 15, 16, 17, 18, 19, 20]
+    - "0-10" -> [0, 1, 2, ..., 10]
+    
+    Args:
+        index_string: String with comma-separated indices and ranges
+        max_index: Maximum valid index (exclusive)
+    
+    Returns:
+        Sorted list of unique indices
+    """
+    if not index_string:
+        return []
+    
+    indices = set()
+    parts = [p.strip() for p in index_string.split(",")]
+    
+    for part in parts:
+        if "-" in part:
+            # Range: "15-20"
+            try:
+                start, end = part.split("-", 1)
+                start_idx = int(start.strip())
+                end_idx = int(end.strip())
+                if start_idx < 0 or end_idx >= max_index:
+                    raise ValueError(f"Index out of range: {part}")
+                indices.update(range(start_idx, end_idx + 1))
+            except ValueError as e:
+                raise ValueError(f"Invalid range format '{part}': {e}")
+        else:
+            # Single index
+            try:
+                idx = int(part)
+                if idx < 0 or idx >= max_index:
+                    raise ValueError(f"Index out of range: {idx}")
+                indices.add(idx)
+            except ValueError as e:
+                raise ValueError(f"Invalid index '{part}': {e}")
+    
+    return sorted(indices)
+
+
+def filter_prompts_by_selection(
+    prompts: List[Dict[str, Any]],
+    indices: Optional[List[int]] = None,
+    subject: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Filter prompts by indices or subject.
+    
+    Args:
+        prompts: List of prompt dictionaries
+        indices: Optional list of indices to select (from original list)
+        subject: Optional subject to filter by
+    
+    Returns:
+        Filtered list of prompts
+    """
+    filtered = prompts
+    
+    # Filter by indices first (indices refer to original list positions)
+    if indices is not None:
+        filtered = [prompts[i] for i in indices if 0 <= i < len(prompts)]
+    
+    # Filter by subject (applied after index filtering)
+    if subject:
+        filtered = [p for p in filtered if p.get("subject") == subject]
+    
+    return filtered

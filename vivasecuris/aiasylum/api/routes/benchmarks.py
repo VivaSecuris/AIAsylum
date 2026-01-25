@@ -1,12 +1,19 @@
 """Benchmark routes."""
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from vivasecuris.aiasylum.runner import TestRunner
-from vivasecuris.aiasylum.database import get_session, TestRun
-from vivasecuris.aiasylum.constants import STATUS_PENDING
+from vivasecuris.aiasylum.database import get_session, TestRun, PromptLibrary, TestSuite
+from vivasecuris.aiasylum.constants import STATUS_PENDING, TEST_TYPE_BENCHMARK
+from vivasecuris.aiasylum.suites import SuiteRunner
+from vivasecuris.aiasylum.benchmarks.datasets import (
+    load_benchmark_dataset_all,
+    parse_index_selection,
+    filter_prompts_by_selection,
+    BENCHMARK_DATASETS,
+)
 
 router = APIRouter()
 
@@ -104,5 +111,404 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
             message=f"Benchmark {request.benchmark} started for model {request.model}",
             test_run_id=test_run.id,
         )
+    finally:
+        session.close()
+
+
+@router.get("/prompts/metadata")
+async def get_prompts_metadata(
+    benchmark: str = Query(..., description="Benchmark name (e.g., 'mmlu', 'gsm8k')"),
+):
+    """Get metadata about prompts in a benchmark dataset without loading all data."""
+    if benchmark.lower() not in BENCHMARK_DATASETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown benchmark: {benchmark}. Available: {list(BENCHMARK_DATASETS.keys())}"
+        )
+    
+    try:
+        # Load all prompts to get metadata
+        all_prompts = await load_benchmark_dataset_all(benchmark)
+        
+        # Extract unique subjects if available
+        subjects = set()
+        for prompt in all_prompts:
+            if "subject" in prompt and prompt["subject"]:
+                subjects.add(prompt["subject"])
+        
+        # Count prompts by subject
+        subject_counts = {}
+        for prompt in all_prompts:
+            subject = prompt.get("subject", "unknown")
+            subject_counts[subject] = subject_counts.get(subject, 0) + 1
+        
+        return {
+            "benchmark": benchmark,
+            "total_samples": len(all_prompts),
+            "subjects": sorted(list(subjects)) if subjects else None,
+            "subject_counts": subject_counts,
+            "has_choices": any("choices" in p and p["choices"] for p in all_prompts),
+            "has_answers": any("answer" in p and p["answer"] is not None for p in all_prompts),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading benchmark metadata: {str(e)}")
+
+
+@router.get("/prompts")
+async def get_prompts(
+    benchmark: str = Query(..., description="Benchmark name (e.g., 'mmlu', 'gsm8k')"),
+    indices: Optional[str] = Query(None, description="Comma-separated indices or ranges (e.g., '0,5,10,15-20')"),
+    subject: Optional[str] = Query(None, description="Filter by subject (e.g., 'abstract_algebra' for MMLU)"),
+    num_samples: Optional[int] = Query(None, description="Number of samples to return (random selection if indices not specified)"),
+):
+    """
+    Get prompts from a benchmark dataset.
+    
+    Supports manual selection via indices or subject filtering.
+    If neither indices nor subject is specified, returns first num_samples (or all if num_samples not specified).
+    """
+    if benchmark.lower() not in BENCHMARK_DATASETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown benchmark: {benchmark}. Available: {list(BENCHMARK_DATASETS.keys())}"
+        )
+    
+    try:
+        # Load all prompts
+        all_prompts = await load_benchmark_dataset_all(benchmark)
+        total_samples = len(all_prompts)
+        
+        # Parse indices if provided
+        selected_indices = None
+        if indices:
+            try:
+                selected_indices = parse_index_selection(indices, total_samples)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid indices format: {str(e)}")
+        
+        # Filter prompts
+        if selected_indices is not None or subject:
+            filtered_prompts = filter_prompts_by_selection(
+                all_prompts,
+                indices=selected_indices,
+                subject=subject,
+            )
+        else:
+            # If no manual selection, use num_samples or all
+            if num_samples:
+                filtered_prompts = all_prompts[:num_samples]
+            else:
+                filtered_prompts = all_prompts
+        
+        # Format response
+        formatted_prompts = []
+        for i, prompt in enumerate(filtered_prompts):
+            formatted_prompt = {
+                "index": i,
+                "question": prompt.get("question", ""),
+                "choices": prompt.get("choices"),
+                "answer": prompt.get("answer"),
+                "answer_letter": prompt.get("answer_letter"),
+                "answer_index": prompt.get("answer_index"),
+                "subject": prompt.get("subject"),
+            }
+            # Optionally include raw data (can be large, so make it optional)
+            # formatted_prompt["raw"] = prompt.get("raw")
+            formatted_prompts.append(formatted_prompt)
+        
+        return {
+            "benchmark": benchmark,
+            "total_samples": total_samples,
+            "returned_samples": len(formatted_prompts),
+            "prompts": formatted_prompts,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading prompts: {str(e)}")
+
+
+class PromptExportRequest(BaseModel):
+    """Request to export prompts to prompt library."""
+    benchmark: str
+    indices: Optional[str] = None  # Comma-separated indices or ranges
+    subject: Optional[str] = None  # Filter by subject
+    num_samples: Optional[int] = None  # Number of samples (if indices/subject not specified)
+    name_pattern: Optional[str] = "{benchmark} Question {index}"  # Pattern for prompt names
+    category: Optional[str] = "benchmark"
+    tags: Optional[List[str]] = None
+    description: Optional[str] = None
+
+
+class PromptExportResponse(BaseModel):
+    """Response from prompt export."""
+    benchmark: str
+    exported_count: int
+    prompt_ids: List[int]
+    message: str
+
+
+@router.post("/prompts/export", response_model=PromptExportResponse)
+async def export_prompts(request: PromptExportRequest):
+    """
+    Export prompts from a benchmark dataset to the prompt library.
+    
+    Supports manual selection via indices or subject filtering.
+    """
+    if request.benchmark.lower() not in BENCHMARK_DATASETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown benchmark: {request.benchmark}. Available: {list(BENCHMARK_DATASETS.keys())}"
+        )
+    
+    try:
+        # Load all prompts
+        all_prompts = await load_benchmark_dataset_all(request.benchmark)
+        total_samples = len(all_prompts)
+        
+        # Parse indices if provided
+        selected_indices = None
+        if request.indices:
+            try:
+                selected_indices = parse_index_selection(request.indices, total_samples)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid indices format: {str(e)}")
+        
+        # Filter prompts
+        if selected_indices is not None or request.subject:
+            filtered_prompts = filter_prompts_by_selection(
+                all_prompts,
+                indices=selected_indices,
+                subject=request.subject,
+            )
+        else:
+            # If no manual selection, use num_samples or all
+            if request.num_samples:
+                filtered_prompts = all_prompts[:request.num_samples]
+            else:
+                filtered_prompts = all_prompts
+        
+        if not filtered_prompts:
+            raise HTTPException(status_code=400, detail="No prompts match the selection criteria")
+        
+        # Create prompt library entries
+        session = get_session()
+        prompt_ids = []
+        default_tags = request.tags or [request.benchmark.lower(), "benchmark"]
+        
+        try:
+            # Track original indices
+            # If indices were specified, use those as original indices
+            # Otherwise, we can't reliably determine original indices (e.g., when filtering by subject)
+            original_indices_list = selected_indices if selected_indices is not None else None
+            
+            for i, prompt in enumerate(filtered_prompts):
+                # Get original index if available, otherwise use filtered position
+                if original_indices_list and i < len(original_indices_list):
+                    original_index = original_indices_list[i]
+                else:
+                    # Can't determine original index (filtered by subject or no index selection)
+                    original_index = None
+                
+                # Format prompt text - include question and choices if available
+                prompt_text = prompt.get("question", "")
+                if prompt.get("choices"):
+                    choices_text = "\n".join([f"{chr(65+j)}. {choice}" for j, choice in enumerate(prompt["choices"])])
+                    prompt_text = f"{prompt_text}\n\n{choices_text}"
+                
+                # Format name using pattern (use filtered index for naming)
+                name = request.name_pattern.format(
+                    benchmark=request.benchmark.upper(),
+                    index=i,
+                    subject=prompt.get("subject", "unknown"),
+                )
+                
+                # Check if name already exists
+                existing = session.query(PromptLibrary).filter(PromptLibrary.name == name).first()
+                if existing:
+                    # Append index to make it unique
+                    name = f"{name} ({i})"
+                
+                # Create prompt library entry
+                db_prompt = PromptLibrary(
+                    name=name,
+                    description=request.description or f"Question from {request.benchmark.upper()} benchmark",
+                    prompt_text=prompt_text,
+                    prompt_type="test_prompt",
+                    target=None,
+                    category=request.category or "benchmark",
+                    tags=default_tags,
+                    meta_data={
+                        "benchmark": request.benchmark,
+                        "original_index": original_index,
+                        "export_index": i,
+                        "subject": prompt.get("subject"),
+                        "answer": prompt.get("answer"),
+                        "answer_letter": prompt.get("answer_letter"),
+                        "answer_index": prompt.get("answer_index"),
+                    },
+                )
+                session.add(db_prompt)
+                session.flush()  # Get the ID
+                prompt_ids.append(db_prompt.id)
+            
+            session.commit()
+            
+            return PromptExportResponse(
+                benchmark=request.benchmark,
+                exported_count=len(prompt_ids),
+                prompt_ids=prompt_ids,
+                message=f"Successfully exported {len(prompt_ids)} prompts to prompt library",
+            )
+        except Exception as e:
+            session.rollback()
+            raise HTTPException(status_code=500, detail=f"Error exporting prompts: {str(e)}")
+        finally:
+            session.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading benchmark: {str(e)}")
+
+
+class CreateSuiteFromPromptsRequest(BaseModel):
+    """Request to create a suite from manually selected benchmark prompts."""
+    benchmark: str
+    name: Optional[str] = None
+    models: List[dict]  # [{"provider": "ollama", "model": "llama3.2"}, ...]
+    indices: Optional[str] = None  # Comma-separated indices or ranges (e.g., "0,5,10,15-20")
+    subject: Optional[str] = None  # Filter by subject
+    test_mode: Optional[str] = "one_shot"  # "one_shot" or "multi_shot"
+    test_config: Optional[dict] = None
+
+
+class CreateSuiteFromPromptsResponse(BaseModel):
+    """Response from suite creation."""
+    suite_id: int
+    benchmark: str
+    total_runs: int
+    message: str
+
+
+@router.post("/prompts/create-suite", response_model=CreateSuiteFromPromptsResponse)
+async def create_suite_from_prompts(request: CreateSuiteFromPromptsRequest):
+    """
+    Create a test suite from manually selected benchmark prompts.
+    
+    This creates a suite that can be run again later with the same selected prompts.
+    """
+    if request.benchmark.lower() not in BENCHMARK_DATASETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown benchmark: {request.benchmark}. Available: {list(BENCHMARK_DATASETS.keys())}"
+        )
+    
+    if not request.models:
+        raise HTTPException(status_code=400, detail="At least one model must be specified")
+    
+    # Validate models
+    for i, model in enumerate(request.models):
+        if not isinstance(model, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model {i+1} must be an object with 'provider' and 'model' fields"
+            )
+        if not model.get("provider") or not model.get("model"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model {i+1} must have both 'provider' and 'model' specified"
+            )
+    
+    # Validate that either indices or subject is provided (or both)
+    if not request.indices and not request.subject:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'indices' or 'subject' must be specified for manual selection"
+        )
+    
+    # Parse indices if provided
+    selected_indices = None
+    if request.indices:
+        try:
+            # Load all prompts to get max index for validation
+            all_prompts = await load_benchmark_dataset_all(request.benchmark)
+            max_index = len(all_prompts)
+            selected_indices = parse_index_selection(request.indices, max_index)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid indices format: {str(e)}")
+    
+    # Create suite
+    session = get_session()
+    try:
+        suite_name = request.name or f"{request.benchmark.upper()} Suite (Selected Prompts)"
+        
+        # Create suite record
+        suite = TestSuite(
+            name=suite_name,
+            status="pending",
+            total_runs=0,
+            completed_runs=0,
+            failed_runs=0,
+            running_runs=0,
+            pending_runs=0,
+            meta_data={
+                "benchmark": request.benchmark,
+                "selected_indices": request.indices,  # Store as string for reference
+                "selected_indices_list": selected_indices,  # Store as list for use
+                "selected_subject": request.subject,
+                "test_mode": request.test_mode,
+                "models": request.models,
+                "test_config": request.test_config or {},
+            },
+        )
+        session.add(suite)
+        session.commit()
+        session.refresh(suite)
+        
+        # Create test runs for each model
+        test_run_ids = []
+        for model in request.models:
+            test_run = TestRun(
+                doctor_provider=model["provider"],
+                doctor_model=model["model"],
+                patient_provider=model["provider"],
+                patient_model=model["model"],
+                test_type=TEST_TYPE_BENCHMARK,
+                status=STATUS_PENDING,
+                suite_id=suite.id,
+                meta_data={
+                    "benchmark": request.benchmark,
+                    "selected_indices": request.indices,  # Store string format
+                    "selected_indices_list": selected_indices,  # Store parsed list
+                    "selected_subject": request.subject,
+                    "test_config": {
+                        "benchmark_name": request.benchmark,
+                        "test_mode": request.test_mode,
+                        **(request.test_config or {}),
+                    },
+                    "suite_id": suite.id,
+                },
+            )
+            session.add(test_run)
+            test_run_ids.append(test_run.id)
+        
+        # Update suite total_runs
+        suite.total_runs = len(test_run_ids)
+        suite.pending_runs = len(test_run_ids)
+        suite.meta_data["test_run_ids"] = test_run_ids
+        session.commit()
+        session.refresh(suite)
+        
+        return CreateSuiteFromPromptsResponse(
+            suite_id=suite.id,
+            benchmark=request.benchmark,
+            total_runs=len(test_run_ids),
+            message=f"Suite created with {len(test_run_ids)} test run(s) using manually selected prompts",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"Error creating suite: {str(e)}")
     finally:
         session.close()
