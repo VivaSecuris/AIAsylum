@@ -364,6 +364,7 @@ def import_forbidden_questions(
             'scenario': content_policy_name,
             'import_date': datetime.utcnow().isoformat(),
             'is_forbidden_question': True,
+            'approved': False,  # Require approval before showing
         }
         
         if not dry_run:

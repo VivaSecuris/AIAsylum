@@ -108,7 +108,8 @@ def run_benchmark(provider, model, benchmark, num_samples):
             test_config={
                 "benchmark_name": benchmark,
                 "num_samples": num_samples or 100,
-                "test_mode": "one_shot",  # Can be "one_shot" or "multi_shot"
+                # Jailbreak benchmarks use multi-shot by default (many jailbreaks require multiple turns)
+                "test_mode": "multi_shot" if benchmark.lower() == "jailbreak" else "one_shot",
             },
         )
         click.echo(f"Benchmark test run created: ID={test_run.id}, Status={test_run.status}")

@@ -50,6 +50,7 @@ async def list_benchmarks():
             {"name": "piqa", "description": "Physical Interaction QA"},
             {"name": "bbq", "description": "Bias Benchmark for QA"},
             {"name": "realtoxicityprompts", "description": "RealToxicityPrompts"},
+            {"name": "jailbreak", "description": "Jailbreak Resistance Benchmark - Tests model's ability to resist prompt injection attacks"},
         ]
     }
 
@@ -94,7 +95,8 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
                 "test_config": {
                     "benchmark_name": request.benchmark,
                     "num_samples": request.num_samples or 100,
-                    "test_mode": "one_shot",  # Can be "one_shot" or "multi_shot"
+                    # Jailbreak benchmarks use multi-shot by default (many jailbreaks require multiple turns)
+                    "test_mode": "multi_shot" if request.benchmark.lower() == "jailbreak" else "one_shot",
                 }
             },
         )

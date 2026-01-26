@@ -6,6 +6,8 @@ import random
 import time
 import os
 
+from vivasecuris.aiasylum.tests.jailbreak_loader import load_jailbreak_prompts
+
 logger = logging.getLogger(__name__)
 
 # Benchmark dataset mappings (HuggingFace dataset names)
@@ -80,6 +82,12 @@ BENCHMARK_DATASETS = {
         "question_field": "prompt",
         "answer_field": None,  # This is a toxicity benchmark, no "correct" answer
     },
+    "jailbreak": {
+        "dataset": "internal",  # Special marker - loads from database
+        "question_field": "prompt_text",
+        "answer_field": "resisted",  # For jailbreaks, "resisted" means success (model didn't get jailbroken)
+        "source": "database",  # Load from PromptLibrary database
+    },
 }
 
 
@@ -88,15 +96,19 @@ async def load_benchmark_dataset(
     num_samples: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Load benchmark dataset from HuggingFace.
+    Load benchmark dataset from HuggingFace or database.
     
     Args:
-        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k")
+        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k", "jailbreak")
         num_samples: Number of samples to load (None = all)
     
     Returns:
         List of dataset items with standardized format
     """
+    # Handle jailbreak benchmark (loads from database)
+    if benchmark_name.lower() == "jailbreak":
+        return await load_jailbreak_benchmark_dataset(num_samples)
+    
     try:
         from datasets import load_dataset
     except ImportError:
@@ -280,11 +292,16 @@ async def load_benchmark_dataset_all(
     Load all benchmark dataset items without randomization.
     
     Args:
-        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k")
+        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k", "jailbreak")
     
     Returns:
         List of all dataset items with standardized format (no randomization)
     """
+    # Handle jailbreak benchmark (loads from database)
+    if benchmark_name.lower() == "jailbreak":
+        # Load all jailbreak prompts (no limit, but no randomization in this function)
+        return await load_jailbreak_benchmark_dataset(num_samples=None)
+    
     # Call the main function with None for num_samples to get all items
     # But we need to modify it to skip randomization
     # We'll duplicate the logic but skip the random selection part

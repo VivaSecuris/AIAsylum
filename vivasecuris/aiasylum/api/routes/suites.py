@@ -1,5 +1,6 @@
 """Test suite routes."""
 
+import logging
 from datetime import datetime
 from typing import List, Optional
 
@@ -10,6 +11,9 @@ from vivasecuris.aiasylum.suites import SuiteRunner, ProgressTracker
 from vivasecuris.aiasylum.database import get_session, TestRun, TestSuite
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.constants import STATUS_PENDING
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -66,14 +70,53 @@ class SuiteProgressResponse(BaseModel):
 
 async def _run_suite_test_background(test_run_id: int, suite_id: int):
     """Background task to run a test and update suite progress."""
-    runner = TestRunner()
+    # Get test run details for logging
+    session = get_session()
     try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if test_run:
+            test_info = f"{test_run.test_type} on {test_run.patient_provider}/{test_run.patient_model}"
+            if test_run.meta_data and test_run.meta_data.get("benchmark"):
+                test_info += f" (benchmark: {test_run.meta_data.get('benchmark')})"
+            suite_id_str = str(suite_id) if suite_id else "N/A"
+            logger.info(f"🚀 Starting test run #{test_run_id}: {test_info} [Suite #{suite_id_str}]")
+        else:
+            suite_id_str = str(suite_id) if suite_id else "N/A"
+            logger.warning(f"⚠️  Test run #{test_run_id} not found [Suite #{suite_id_str}]")
+    finally:
+        session.close()
+    
+    runner = TestRunner()
+    start_time = datetime.utcnow()
+    try:
+        suite_id_str = str(suite_id) if suite_id else "N/A"
+        logger.info(f"▶️  Executing test run #{test_run_id}... [Suite #{suite_id_str}]")
         await runner.execute_test_run(test_run_id)
+        elapsed = (datetime.utcnow() - start_time).total_seconds()
+        suite_id_str = str(suite_id) if suite_id else "N/A"
+        logger.info(f"✅ Test run #{test_run_id} completed successfully in {elapsed:.1f}s [Suite #{suite_id_str}]")
     except Exception as e:
-        print(f"Error running test {test_run_id} in suite {suite_id}: {e}")
+        elapsed = (datetime.utcnow() - start_time).total_seconds()
+        suite_id_str = str(suite_id) if suite_id else "N/A"
+        logger.error(f"❌ Test run #{test_run_id} failed after {elapsed:.1f}s: {e} [Suite #{suite_id_str}]", exc_info=True)
     finally:
         # Update suite progress after test run completes
         ProgressTracker.update_suite_progress(suite_id)
+        
+        # Log suite progress update
+        session = get_session()
+        try:
+            suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
+            if suite:
+                progress_pct = (suite.completed_runs / suite.total_runs * 100) if suite.total_runs > 0 else 0
+                suite_id_str = str(suite_id) if suite_id else "N/A"
+                logger.info(
+                    f"📊 Suite progress: {suite.completed_runs}/{suite.total_runs} completed "
+                    f"({progress_pct:.1f}%), {suite.running_runs} running, {suite.pending_runs} pending, "
+                    f"{suite.failed_runs} failed [Suite #{suite_id_str}]"
+                )
+        finally:
+            session.close()
 
 
 @router.post("/", response_model=SuiteResponse)
@@ -119,8 +162,11 @@ async def create_suite(request: SuiteRequest, background_tasks: BackgroundTasks)
 
     # Get all test runs and start them in background
     test_runs = runner.get_suite_runs(suite_id)
+    suite_id_str = str(suite_id) if suite_id else "N/A"
+    logger.info(f"🚀 Starting suite #{suite_id} with {len(test_runs)} test runs [Suite #{suite_id_str}]")
     for test_run in test_runs:
         background_tasks.add_task(_run_suite_test_background, test_run.id, suite_id)
+    logger.info(f"📋 All {len(test_runs)} test runs queued for execution [Suite #{suite_id_str}]")
 
     # Re-fetch suite to ensure it's attached to a session for serialization
     # This ensures FastAPI can properly serialize the response

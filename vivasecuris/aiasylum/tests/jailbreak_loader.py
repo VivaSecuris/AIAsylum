@@ -77,6 +77,7 @@ def load_forbidden_questions(
     scenario: Optional[str] = None,
     limit: Optional[int] = None,
     random: bool = False,
+    approved_only: bool = True,  # Only return approved questions by default
 ) -> List[str]:
     """
     Load forbidden questions from the database.
@@ -85,36 +86,41 @@ def load_forbidden_questions(
         scenario: Filter by content policy name (e.g., "Illegal Activity", "Hate Speech")
         limit: Maximum number of questions to return
         random: If True, return random selection; otherwise return in order
+        approved_only: If True, only return approved questions (default: True)
     
     Returns:
         List of question texts
     """
     session = get_session()
     try:
-        # Build query
+        # Build query - filter by category first
         query = session.query(PromptLibrary).filter(
             PromptLibrary.category == "forbidden_question"
         )
         
-        # Apply scenario filter
-        if scenario:
-            query = query.filter(
-                PromptLibrary.meta_data.contains({"content_policy_name": scenario})
-            )
+        # Execute query and filter in Python (SQLite JSON limitation)
+        all_questions = query.all()
         
-        # Execute query
-        questions = query.all()
+        # Filter by approval status
+        if approved_only:
+            questions = [q for q in all_questions if q.meta_data and q.meta_data.get("approved", False)]
+        else:
+            questions = all_questions
+        
+        # Apply scenario filter in Python
+        if scenario:
+            questions = [q for q in questions if q.meta_data and q.meta_data.get("content_policy_name") == scenario]
         
         # Extract question texts
         question_texts = [q.prompt_text for q in questions]
         
-        # Apply limit and randomization
-        if random and limit and len(question_texts) > limit:
-            question_texts = sample(question_texts, limit)
-        elif limit:
-            question_texts = question_texts[:limit]
-        elif random:
+        # Apply randomization first if requested
+        if random:
             question_texts = sample(question_texts, len(question_texts))
+        
+        # Apply limit after filtering and randomization
+        if limit:
+            question_texts = question_texts[:limit]
         
         return question_texts
     finally:

@@ -16,6 +16,11 @@ export function CreateTestForm() {
 
   // Check if benchmark type is requested via query param
   const initialTestType = router.query.type === 'benchmark' ? 'benchmark' : 'one_shot'
+  
+  // Check if prompt ID is provided via query param
+  const promptIdFromQuery = router.query.promptId 
+    ? parseInt(Array.isArray(router.query.promptId) ? router.query.promptId[0] : router.query.promptId)
+    : undefined
 
   const [formData, setFormData] = useState<TestRunRequest>({
     doctor_provider: '',
@@ -26,13 +31,6 @@ export function CreateTestForm() {
     test_config: {},
   })
   
-  // Update test type if query param changes
-  useEffect(() => {
-    if (router.query.type === 'benchmark' && formData.test_type !== 'benchmark') {
-      setFormData({ ...formData, test_type: 'benchmark' })
-    }
-  }, [router.query.type])
-  
   // For one-shot and multi-shot, we only need one model (patient)
   // For conversation, we need both doctor and patient
   // For group_therapy, we need doctor and multiple patients
@@ -42,8 +40,11 @@ export function CreateTestForm() {
   const isOneShotOrMultiShot = formData.test_type === 'one_shot' || formData.test_type === 'multi_shot'
   const isBenchmarkTest = formData.test_type === 'benchmark'
 
-  const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(undefined)
-  const [selectedPromptIds, setSelectedPromptIds] = useState<number[]>([]) // For multi-shot: multiple prompts
+  // Initialize prompt selection with query parameter if provided
+  const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(promptIdFromQuery)
+  const [selectedPromptIds, setSelectedPromptIds] = useState<number[]>(
+    promptIdFromQuery ? [promptIdFromQuery] : []
+  ) // For multi-shot: multiple prompts
   const [selectedDoctorSystemPromptId, setSelectedDoctorSystemPromptId] = useState<number | undefined>(undefined)
   const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(undefined)
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -61,6 +62,36 @@ export function CreateTestForm() {
   // Get variables from selected prompt
   const { data: promptVariablesData } = usePromptVariables(selectedPromptId)
   const promptVariables = promptVariablesData?.variables || []
+  
+  // Update test type if query param changes
+  useEffect(() => {
+    if (router.query.type === 'benchmark' && formData.test_type !== 'benchmark') {
+      setFormData({ ...formData, test_type: 'benchmark' })
+    }
+  }, [router.query.type])
+  
+  // Pre-select prompt from query parameter when prompts are loaded
+  useEffect(() => {
+    if (promptIdFromQuery && prompts.length > 0) {
+      const prompt = prompts.find(p => p.id === promptIdFromQuery)
+      if (prompt && prompt.prompt_type === 'test_prompt') {
+        // Set the prompt selection based on test type
+        if (formData.test_type === 'one_shot') {
+          setSelectedPromptId(promptIdFromQuery)
+          setSelectedPromptIds([]) // Clear multi-shot selection
+        } else if (formData.test_type === 'multi_shot') {
+          setSelectedPromptIds([promptIdFromQuery])
+          setSelectedPromptId(undefined) // Clear one-shot selection
+        } else {
+          // Default to one_shot for single prompt
+          setFormData({ ...formData, test_type: 'one_shot' })
+          setSelectedPromptId(promptIdFromQuery)
+          setSelectedPromptIds([])
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptIdFromQuery, prompts.length])
   
   // Reset variable values when prompt changes
   useEffect(() => {

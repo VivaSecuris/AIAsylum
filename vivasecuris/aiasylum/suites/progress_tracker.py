@@ -1,5 +1,6 @@
 """Progress tracking for test suites."""
 
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -10,6 +11,8 @@ from vivasecuris.aiasylum.constants import (
     STATUS_COMPLETED,
     STATUS_FAILED,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ProgressTracker:
@@ -22,6 +25,7 @@ class ProgressTracker:
         try:
             suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
             if not suite:
+                logger.warning(f"Suite #{suite_id} not found for progress update")
                 return
 
             # Get all test runs in this suite
@@ -34,6 +38,13 @@ class ProgressTracker:
             completed = sum(1 for tr in test_runs if tr.status == STATUS_COMPLETED)
             failed = sum(1 for tr in test_runs if tr.status == STATUS_FAILED)
 
+            # Get details about running tests for verbose logging
+            running_tests = [
+                f"#{tr.id} ({tr.test_type} on {tr.patient_provider}/{tr.patient_model})"
+                for tr in test_runs
+                if tr.status == STATUS_RUNNING
+            ]
+
             # Update suite counters
             suite.total_runs = total
             suite.pending_runs = pending
@@ -45,8 +56,24 @@ class ProgressTracker:
             if running > 0 or completed > 0 or failed > 0:
                 if not suite.started_at:
                     suite.started_at = datetime.utcnow()
+                    logger.info(f"🏁 Suite #{suite_id} started: {total} total test runs [Suite #{suite_id}]")
+
+            # Calculate elapsed time if started
+            elapsed_str = ""
+            if suite.started_at:
+                elapsed = (datetime.utcnow() - suite.started_at).total_seconds()
+                hours = int(elapsed // 3600)
+                minutes = int((elapsed % 3600) // 60)
+                seconds = int(elapsed % 60)
+                if hours > 0:
+                    elapsed_str = f" ({hours}h {minutes}m {seconds}s elapsed)"
+                elif minutes > 0:
+                    elapsed_str = f" ({minutes}m {seconds}s elapsed)"
+                else:
+                    elapsed_str = f" ({seconds}s elapsed)"
 
             # Update suite status
+            old_status = suite.status
             if total == 0:
                 suite.status = "pending"
             elif running > 0:
@@ -65,6 +92,20 @@ class ProgressTracker:
                     suite.completed_at = datetime.utcnow()
             else:
                 suite.status = "pending"
+
+            # Log status changes
+            if old_status != suite.status:
+                logger.info(f"📈 Suite #{suite_id} status changed: {old_status} → {suite.status} [Suite #{suite_id}]")
+
+            # Verbose progress logging
+            if running > 0:
+                progress_pct = (completed / total * 100) if total > 0 else 0
+                logger.info(
+                    f"⏳ Suite #{suite_id}: {completed}/{total} completed ({progress_pct:.1f}%), "
+                    f"{running} running, {pending} pending, {failed} failed{elapsed_str} [Suite #{suite_id}]"
+                )
+                if running_tests:
+                    logger.info(f"   Running tests: {', '.join(running_tests)} [Suite #{suite_id}]")
 
             suite.updated_at = datetime.utcnow()
             session.commit()

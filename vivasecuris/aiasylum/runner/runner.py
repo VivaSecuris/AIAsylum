@@ -1,7 +1,7 @@
 """Test execution runner."""
 
-from typing import Dict, List, Optional
-
+import logging
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models import get_provider
@@ -23,6 +23,8 @@ from vivasecuris.aiasylum.constants import (
     STATUS_FAILED,
 )
 from vivasecuris.aiasylum.exceptions import TestExecutionError
+
+logger = logging.getLogger(__name__)
 
 
 class TestRunner:
@@ -328,6 +330,7 @@ class TestRunner:
         Returns:
             TestRun database record
         """
+        start_time = datetime.utcnow()
         session = get_session()
         try:
             test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
@@ -336,6 +339,14 @@ class TestRunner:
             
             if test_run.status not in (STATUS_PENDING, STATUS_FAILED):
                 raise TestExecutionError(f"Test run {test_run_id} is not in a startable state (current: {test_run.status})")
+            
+            # Log test start
+            suite_id = test_run.suite_id
+            test_info = f"{test_run.test_type} on {test_run.patient_provider}/{test_run.patient_model}"
+            if test_run.meta_data and test_run.meta_data.get("benchmark"):
+                test_info += f" (benchmark: {test_run.meta_data.get('benchmark')})"
+            suite_id_str = str(suite_id) if suite_id else "N/A"
+            logger.info(f"▶️  Starting test run #{test_run_id}: {test_info} [Suite #{suite_id_str}]")
             
             # Update status to running
             test_run.status = STATUS_RUNNING
@@ -431,7 +442,6 @@ class TestRunner:
                 
                 if is_benchmark:
                     # Benchmark test - load dataset and evaluate
-                    print(f"[execute_test_run] Running benchmark test (detected from test_type or metadata)")
                     benchmark_name = test_config.get("benchmark_name")
                     if not benchmark_name and test_run.meta_data:
                         benchmark_name = test_run.meta_data.get("benchmark")
@@ -441,7 +451,8 @@ class TestRunner:
                     
                     # Update test_type if it was wrong
                     if test_run.test_type != TEST_TYPE_BENCHMARK:
-                        print(f"[execute_test_run] Fixing test_type from '{test_run.test_type}' to '{TEST_TYPE_BENCHMARK}'")
+                        suite_id_str = str(suite_id) if suite_id else "N/A"
+                        logger.info(f"🔧 Fixing test_type from '{test_run.test_type}' to '{TEST_TYPE_BENCHMARK}' [Suite #{suite_id_str}] [Test #{test_run_id}]")
                         test_run.test_type = TEST_TYPE_BENCHMARK
                         session.commit()
                         session.refresh(test_run)
@@ -477,11 +488,12 @@ class TestRunner:
                                     selected_indices = indices_data
                         selected_subject = test_run.meta_data.get("selected_subject")
                     
-                    print(f"[execute_test_run] Benchmark: {benchmark_name}, samples: {num_samples}, mode: {test_mode}")
+                    suite_id_str = str(suite_id) if suite_id else "N/A"
+                    logger.info(f"📊 Running benchmark '{benchmark_name}' with {num_samples} samples (mode: {test_mode}) [Suite #{suite_id_str}] [Test #{test_run_id}]")
                     if selected_indices:
-                        print(f"[execute_test_run] Using manually selected indices: {selected_indices}")
+                        logger.info(f"   Using manually selected {len(selected_indices)} indices [Suite #{suite_id_str}] [Test #{test_run_id}]")
                     if selected_subject:
-                        print(f"[execute_test_run] Filtering by subject: {selected_subject}")
+                        logger.info(f"   Filtering by subject: {selected_subject} [Suite #{suite_id_str}] [Test #{test_run_id}]")
                     
                     test = BenchmarkTest(
                         name=f"benchmark_{benchmark_name}",
@@ -491,8 +503,15 @@ class TestRunner:
                         selected_indices=selected_indices,
                         selected_subject=selected_subject,
                     )
+                    
+                    # Log periodic updates for long-running benchmarks
+                    suite_id_str = str(suite_id) if suite_id else "N/A"
+                    logger.info(f"⏳ Benchmark test starting (this may take a while for {num_samples} samples)... [Suite #{suite_id_str}] [Test #{test_run_id}]")
+                    
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
-                    print(f"[execute_test_run] Benchmark test completed: {test_result.test_name}, score: {test_result.score}")
+                    
+                    elapsed = (datetime.utcnow() - start_time).total_seconds()
+                    logger.info(f"✅ Benchmark '{benchmark_name}' completed: score={test_result.score:.4f} ({elapsed:.1f}s elapsed) [Suite #{suite_id_str}] [Test #{test_run_id}]")
                 elif test_run.test_type == TEST_TYPE_ONE_SHOT:
                     # One-shot test - single prompt/response
                     if prompt_text:

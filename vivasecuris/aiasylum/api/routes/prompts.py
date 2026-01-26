@@ -119,7 +119,12 @@ async def list_prompts(
     limit: int = 100,
     offset: int = 0,
 ):
-    """List prompts from the library."""
+    """List prompts from the library.
+    
+    Note: Forbidden questions are completely excluded from this endpoint.
+    They should only be used AFTER a jailbreak is achieved, not in general searches.
+    Use /api/v1/prompts/forbidden-questions/list to access them in specific test contexts.
+    """
     session = get_session()
     try:
         query = session.query(PromptLibrary)
@@ -137,7 +142,16 @@ async def list_prompts(
         if target:
             query = query.filter(PromptLibrary.target == target)
         
-        prompts = query.order_by(PromptLibrary.created_at.desc()).limit(limit).offset(offset).all()
+        # Get all prompts and filter in Python (SQLite JSON limitation)
+        all_prompts = query.order_by(PromptLibrary.created_at.desc()).all()
+        
+        # Completely exclude forbidden questions from general prompt library
+        # They should only be used AFTER a jailbreak is achieved, not in general searches
+        prompts = [p for p in all_prompts if p.category != "forbidden_question"]
+        
+        # Apply pagination after filtering
+        prompts = prompts[offset:offset + limit]
+        
         return [PromptResponse.from_orm(p) for p in prompts]
     finally:
         session.close()
@@ -342,22 +356,92 @@ async def get_jailbreak_stats(
 @router.get("/forbidden-questions/list", response_model=List[PromptResponse])
 async def list_forbidden_questions(
     scenario: Optional[str] = None,
+    approved_only: bool = True,  # Only show approved by default
     limit: int = 100,
     offset: int = 0,
 ):
-    """List forbidden questions (test targets)."""
+    """List forbidden questions (test targets).
+    
+    IMPORTANT: These questions should only be used AFTER a jailbreak is achieved.
+    They are test targets to see what a jailbroken model will do, not jailbreak prompts themselves.
+    Only approved questions are shown by default.
+    """
     session = get_session()
     try:
+        # Build query - filter by category first
         query = session.query(PromptLibrary).filter(
             PromptLibrary.category == "forbidden_question"
         )
         
-        if scenario:
-            query = query.filter(
-                PromptLibrary.meta_data.contains({"content_policy_name": scenario})
-            )
+        # Get all questions and filter in Python (SQLite JSON limitation)
+        all_questions = query.order_by(PromptLibrary.created_at.desc()).all()
         
-        questions = query.order_by(PromptLibrary.created_at.desc()).limit(limit).offset(offset).all()
+        # Filter by approval status
+        if approved_only:
+            questions = [q for q in all_questions if q.meta_data and q.meta_data.get("approved", False)]
+        else:
+            questions = all_questions
+        
+        # Apply scenario filter in Python
+        if scenario:
+            questions = [q for q in questions if q.meta_data and q.meta_data.get("content_policy_name") == scenario]
+        
+        # Apply pagination after filtering
+        questions = questions[offset:offset + limit]
+        
         return [PromptResponse.from_orm(q) for q in questions]
+    finally:
+        session.close()
+
+
+@router.post("/forbidden-questions/{question_id}/approve")
+async def approve_forbidden_question(question_id: int):
+    """Approve a forbidden question to make it visible in searches."""
+    session = get_session()
+    try:
+        question = session.query(PromptLibrary).filter(
+            PromptLibrary.id == question_id,
+            PromptLibrary.category == "forbidden_question"
+        ).first()
+        
+        if not question:
+            raise HTTPException(status_code=404, detail="Forbidden question not found")
+        
+        # Update metadata to mark as approved
+        if not question.meta_data:
+            question.meta_data = {}
+        question.meta_data["approved"] = True
+        question.meta_data["approved_date"] = datetime.utcnow().isoformat()
+        
+        session.commit()
+        session.refresh(question)
+        
+        return PromptResponse.from_orm(question)
+    finally:
+        session.close()
+
+
+@router.post("/forbidden-questions/{question_id}/unapprove")
+async def unapprove_forbidden_question(question_id: int):
+    """Unapprove a forbidden question to hide it from searches."""
+    session = get_session()
+    try:
+        question = session.query(PromptLibrary).filter(
+            PromptLibrary.id == question_id,
+            PromptLibrary.category == "forbidden_question"
+        ).first()
+        
+        if not question:
+            raise HTTPException(status_code=404, detail="Forbidden question not found")
+        
+        # Update metadata to mark as unapproved
+        if not question.meta_data:
+            question.meta_data = {}
+        question.meta_data["approved"] = False
+        
+        session.commit()
+        session.refresh(question)
+        
+        return PromptResponse.from_orm(question)
     finally:
         session.close()
