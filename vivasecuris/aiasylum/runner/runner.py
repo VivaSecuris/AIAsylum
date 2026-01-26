@@ -4,6 +4,10 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.exc import PendingRollbackError
+
 from vivasecuris.aiasylum.models import get_provider
 from vivasecuris.aiasylum.tests import OneShotTest, MultiShotTest, ConversationTest, ScenarioTest, AdversarialTest, BenchmarkTest, GroupTherapyTest
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn, PromptLibrary
@@ -23,8 +27,51 @@ from vivasecuris.aiasylum.constants import (
     STATUS_FAILED,
 )
 from vivasecuris.aiasylum.exceptions import TestExecutionError
+from vivasecuris.aiasylum.api.progress_events import progress_event_manager
+from vivasecuris.aiasylum.api.cancellation import cancellation_manager
 
 logger = logging.getLogger(__name__)
+
+
+def safe_commit(session: Session, test_run_id: int, test_run: Optional[TestRun] = None):
+    """
+    Safely commit a session, handling cancellation and stale data errors.
+    
+    Args:
+        session: SQLAlchemy session
+        test_run_id: ID of the test run (for cancellation check)
+        test_run: Optional TestRun object to refresh if stale
+    """
+    # Check for cancellation before committing
+    if cancellation_manager.is_cancelled(test_run_id):
+        logger.warning(f"🛑 Cancellation detected before commit for test run {test_run_id}")
+        session.rollback()
+        raise TestExecutionError(f"Test run {test_run_id} was cancelled")
+    
+    try:
+        session.commit()
+    except (StaleDataError, PendingRollbackError) as e:
+        logger.warning(f"⚠️ Stale data or rollback error for test run {test_run_id}: {e}")
+        session.rollback()
+        
+        # Check for cancellation after rollback
+        if cancellation_manager.is_cancelled(test_run_id):
+            logger.warning(f"🛑 Cancellation detected after rollback for test run {test_run_id}")
+            raise TestExecutionError(f"Test run {test_run_id} was cancelled")
+        
+        # If we have a test_run object, refresh it from the database
+        if test_run:
+            try:
+                session.refresh(test_run)
+                # Check if it was cancelled by another process
+                if test_run.status == STATUS_FAILED and test_run.meta_data and test_run.meta_data.get("cancelled"):
+                    logger.info(f"🛑 Test run {test_run_id} was cancelled by another process")
+                    raise TestExecutionError(f"Test run {test_run_id} was cancelled")
+            except Exception as refresh_error:
+                logger.warning(f"Could not refresh test_run {test_run_id}: {refresh_error}")
+        
+        # Re-raise the original error if it wasn't a cancellation
+        raise
 
 
 class TestRunner:
@@ -331,6 +378,7 @@ class TestRunner:
             TestRun database record
         """
         start_time = datetime.utcnow()
+        progress_task = None  # Initialize progress task variable
         session = get_session()
         try:
             test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
@@ -348,10 +396,72 @@ class TestRunner:
             suite_id_str = str(suite_id) if suite_id else "N/A"
             logger.info(f"▶️  Starting test run #{test_run_id}: {test_info} [Suite #{suite_id_str}]")
             
+            # Check if already cancelled before starting
+            if cancellation_manager.is_cancelled(test_run_id):
+                test_run.status = STATUS_FAILED
+                if not test_run.meta_data:
+                    test_run.meta_data = {}
+                test_run.meta_data["cancelled"] = True
+                test_run.meta_data["error"] = "Test run was cancelled before execution"
+                safe_commit(session, test_run_id, test_run)
+                raise TestExecutionError(f"Test run {test_run_id} was cancelled")
+            
             # Update status to running
             test_run.status = STATUS_RUNNING
-            session.commit()
+            safe_commit(session, test_run_id, test_run)
             session.refresh(test_run)
+            
+            # Emit progress event: test started
+            await progress_event_manager.emit_event(
+                test_run_id,
+                "test_started",
+                {
+                    "status": STATUS_RUNNING,
+                    "test_type": test_run.test_type,
+                    "doctor_provider": test_run.doctor_provider,
+                    "doctor_model": test_run.doctor_model,
+                    "patient_provider": test_run.patient_provider,
+                    "patient_model": test_run.patient_model,
+                    "start_time": start_time.isoformat(),
+                },
+                f"Test run {test_run_id} started"
+            )
+            
+            # Start periodic progress updates with elapsed time
+            progress_task = None
+            async def emit_periodic_progress():
+                """Emit periodic progress updates to show test is still running."""
+                try:
+                    while True:
+                        await asyncio.sleep(5)  # Every 5 seconds
+                        # Check if test is still running
+                        check_session = get_session()
+                        try:
+                            check_run = check_session.query(TestRun).filter(TestRun.id == test_run_id).first()
+                            if not check_run or check_run.status != STATUS_RUNNING:
+                                break
+                            if cancellation_manager.is_cancelled(test_run_id):
+                                break
+                            
+                            # Emit heartbeat with elapsed time
+                            elapsed = (datetime.utcnow() - start_time).total_seconds()
+                            await progress_event_manager.emit_event(
+                                test_run_id,
+                                "test_progress",
+                                {
+                                    "elapsed_seconds": elapsed,
+                                    "status": "running",
+                                },
+                                f"Test running... ({int(elapsed)}s elapsed)"
+                            )
+                        finally:
+                            check_session.close()
+                except asyncio.CancelledError:
+                    pass
+            
+            # Start periodic progress task
+            import asyncio
+            progress_task = asyncio.create_task(emit_periodic_progress())
             
             try:
                 # Get providers and create models
@@ -429,6 +539,104 @@ class TestRunner:
                     if test_config.get("prompt"):
                         test_config["prompt"] = substitute_variables(test_config["prompt"], variables)
                 
+                # Create callback to save conversation turns incrementally
+                saved_turn_numbers = set()
+                async def save_conversation_turn(turn: Dict):
+                    """Save a conversation turn to database immediately."""
+                    turn_number = turn.get("turn_number", len(saved_turn_numbers))
+                    # Skip if already saved
+                    if turn_number in saved_turn_numbers:
+                        return
+                    
+                    # Use a new session for this operation to avoid conflicts
+                    turn_session = get_session()
+                    try:
+                        speaker = turn.get("speaker", "unknown")
+                        prompt = turn.get("prompt", "")
+                        response = turn.get("response", "")
+                        reasoning = turn.get("reasoning", "")
+                        
+                        # Store reasoning and patient info in metadata
+                        turn_metadata = {}
+                        if reasoning:
+                            turn_metadata["reasoning"] = reasoning
+                        # Add patient metadata for group therapy
+                        if turn.get("patient_id") is not None:
+                            turn_metadata["patient_id"] = turn.get("patient_id")
+                        if turn.get("patient_name"):
+                            turn_metadata["patient_name"] = turn.get("patient_name")
+                        if turn.get("patient_model"):
+                            turn_metadata["patient_model"] = turn.get("patient_model")
+                        if turn.get("patient_provider"):
+                            turn_metadata["patient_provider"] = turn.get("patient_provider")
+                        
+                        turn_record = ConversationTurn(
+                            test_run_id=test_run.id,
+                            turn_number=turn_number,
+                            speaker=speaker,
+                            prompt=prompt,
+                            response=response,
+                            meta_data=turn_metadata if turn_metadata else None,
+                        )
+                        turn_session.add(turn_record)
+                        turn_session.commit()
+                        saved_turn_numbers.add(turn_number)
+                        
+                        # Emit progress event for new conversation turn
+                        await progress_event_manager.emit_event(
+                            test_run_id,
+                            "conversation_turn",
+                            {
+                                "turn_number": turn_number,
+                                "speaker": speaker,
+                                "total_turns": len(saved_turn_numbers),
+                            },
+                            f"New conversation turn: {speaker} (turn {turn_number})"
+                        )
+                        logger.debug(f"Saved conversation turn {turn_number} for test run {test_run_id}")
+                    except Exception as e:
+                        logger.error(f"Error saving conversation turn: {e}", exc_info=True)
+                        turn_session.rollback()
+                    finally:
+                        turn_session.close()
+                
+                # Track max_turns for progress calculation (get from test_config or default)
+                max_turns = test_config.get("max_turns", 10)
+                test_config["max_turns"] = max_turns
+                
+                # Enhanced save callback that includes progress
+                async def save_conversation_turn_with_progress(turn: Dict):
+                    """Save conversation turn and emit progress."""
+                    await save_conversation_turn(turn)
+                    # Emit progress update with turn count
+                    turn_number = turn.get("turn_number", 0)
+                    progress_pct = int((turn_number / max_turns * 100)) if max_turns > 0 else 0
+                    await progress_event_manager.emit_event(
+                        test_run_id,
+                        "conversation_progress",
+                        {
+                            "turn_number": turn_number,
+                            "max_turns": max_turns,
+                            "progress": progress_pct,
+                            "speaker": turn.get("speaker"),
+                            "total_turns": len(saved_turn_numbers),
+                        },
+                        f"Conversation progress: {turn_number}/{max_turns} turns ({progress_pct}%)"
+                    )
+                
+                # Add enhanced callback to test config
+                test_config["save_conversation_turn_callback"] = save_conversation_turn_with_progress
+                
+                # Add cancellation check callback
+                def check_cancellation():
+                    """Check if test run is cancelled and raise exception if so."""
+                    if cancellation_manager.is_cancelled(test_run_id):
+                        logger.warning(f"🛑 Test run {test_run_id} cancellation detected, stopping execution")
+                        print(f"[CANCELLATION] Test run {test_run_id} cancellation detected, raising exception")
+                        raise TestExecutionError(f"Test run {test_run_id} was cancelled")
+                
+                test_config["check_cancellation"] = check_cancellation
+                
                 # Run appropriate test
                 test_result: TestResultType
                 print(f"[execute_test_run] Test type: {test_run.test_type}, TEST_TYPE_BENCHMARK: {TEST_TYPE_BENCHMARK}")
@@ -461,7 +669,13 @@ class TestRunner:
                     if not num_samples and test_run.meta_data:
                         num_samples = test_run.meta_data.get("num_samples")
                     
-                    test_mode = test_config.get("test_mode", "one_shot")  # one_shot or multi_shot
+                    # For jailbreak benchmarks, default to one_shot mode
+                    # Individual prompts will be handled based on their is_multi_shot flag
+                    # This allows single-shot and multi-shot prompts to be mixed
+                    if benchmark_name.lower() == "jailbreak":
+                        test_mode = test_config.get("test_mode", "one_shot")  # Default to one_shot for jailbreaks
+                    else:
+                        test_mode = test_config.get("test_mode", "one_shot")  # one_shot or multi_shot
                     
                     # Check for manually selected indices or subject
                     selected_indices = None
@@ -495,6 +709,9 @@ class TestRunner:
                     if selected_subject:
                         logger.info(f"   Filtering by subject: {selected_subject} [Suite #{suite_id_str}] [Test #{test_run_id}]")
                     
+                    # Add test_run_id to context for unique randomization
+                    test_config["test_run_id"] = test_run_id
+                    
                     test = BenchmarkTest(
                         name=f"benchmark_{benchmark_name}",
                         benchmark_name=benchmark_name,
@@ -508,10 +725,54 @@ class TestRunner:
                     suite_id_str = str(suite_id) if suite_id else "N/A"
                     logger.info(f"⏳ Benchmark test starting (this may take a while for {num_samples} samples)... [Suite #{suite_id_str}] [Test #{test_run_id}]")
                     
+                    # Emit progress event: benchmark started
+                    await progress_event_manager.emit_event(
+                        test_run_id,
+                        "benchmark_started",
+                        {
+                            "benchmark_name": benchmark_name,
+                            "num_samples": num_samples,
+                            "test_mode": test_mode,
+                        },
+                        f"Starting benchmark '{benchmark_name}' with {num_samples} samples"
+                    )
+                    
+                    # Add progress callback to context for benchmark tests
+                    async def emit_progress(current: int, total: int, message: str = None):
+                        """Emit progress update during benchmark execution."""
+                        progress_pct = int((current / total * 100)) if total > 0 else 0
+                        await progress_event_manager.emit_event(
+                            test_run_id,
+                            "benchmark_progress",
+                            {
+                                "benchmark_name": benchmark_name,
+                                "current": current,
+                                "total": total,
+                                "progress": progress_pct,
+                            },
+                            message or f"Processing question {current}/{total} ({progress_pct}%)"
+                        )
+                    
+                    # Add progress callback to test config
+                    test_config["progress_callback"] = emit_progress
+                    
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                     
                     elapsed = (datetime.utcnow() - start_time).total_seconds()
                     logger.info(f"✅ Benchmark '{benchmark_name}' completed: score={test_result.score:.4f} ({elapsed:.1f}s elapsed) [Suite #{suite_id_str}] [Test #{test_run_id}]")
+                    
+                    # Emit progress event: benchmark completed
+                    await progress_event_manager.emit_event(
+                        test_run_id,
+                        "benchmark_progress",
+                        {
+                            "benchmark_name": benchmark_name,
+                            "progress": 100,
+                            "score": test_result.score,
+                            "elapsed_seconds": elapsed,
+                        },
+                        f"Benchmark '{benchmark_name}' completed"
+                    )
                 elif test_run.test_type == TEST_TYPE_ONE_SHOT:
                     # One-shot test - single prompt/response
                     if prompt_text:
@@ -601,7 +862,7 @@ class TestRunner:
                         test_run.meta_data = {}
                     if "patients" not in test_run.meta_data:
                         test_run.meta_data["patients"] = patient_info_list
-                        session.commit()
+                        safe_commit(session, test_run_id, test_run)
                     
                     # Add patient system prompts and patient info to context
                     if patient_system_prompts:
@@ -649,55 +910,157 @@ class TestRunner:
                 )
                 session.add(db_result)
                 
-                # Save conversation turns if available
+                # Save conversation turns if available (only if not already saved incrementally)
                 if test_result.metadata and "conversation_history" in test_result.metadata:
                     conversation_history = test_result.metadata["conversation_history"]
-                    print(f"[execute_test_run] Saving {len(conversation_history)} conversation turns for test_run_id={test_run.id}")
-                    for i, turn in enumerate(conversation_history):
-                        speaker = turn.get("speaker", "unknown")
-                        prompt = turn.get("prompt", "")
-                        response = turn.get("response", "")
-                        reasoning = turn.get("reasoning", "")
-                        print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}, reasoning_length={len(reasoning)}")
-                        # Store reasoning and patient info in metadata
-                        turn_metadata = {}
-                        if reasoning:
-                            turn_metadata["reasoning"] = reasoning
-                        # Add patient metadata for group therapy
-                        if turn.get("patient_id") is not None:
-                            turn_metadata["patient_id"] = turn.get("patient_id")
-                        if turn.get("patient_name"):
-                            turn_metadata["patient_name"] = turn.get("patient_name")
-                        if turn.get("patient_model"):
-                            turn_metadata["patient_model"] = turn.get("patient_model")
-                        if turn.get("patient_provider"):
-                            turn_metadata["patient_provider"] = turn.get("patient_provider")
-                        turn_record = ConversationTurn(
-                            test_run_id=test_run.id,
-                            turn_number=i,
-                            speaker=speaker,
-                            prompt=prompt,
-                            response=response,
-                            meta_data=turn_metadata if turn_metadata else None,
-                        )
-                        session.add(turn_record)
+                    # Check if turns were already saved incrementally
+                    existing_turns = session.query(ConversationTurn).filter(
+                        ConversationTurn.test_run_id == test_run.id
+                    ).count()
+                    
+                    if existing_turns == 0:
+                        # No turns saved yet, save them all now
+                        print(f"[execute_test_run] Saving {len(conversation_history)} conversation turns for test_run_id={test_run.id}")
+                        for i, turn in enumerate(conversation_history):
+                            speaker = turn.get("speaker", "unknown")
+                            prompt = turn.get("prompt", "")
+                            response = turn.get("response", "")
+                            reasoning = turn.get("reasoning", "")
+                            print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}, reasoning_length={len(reasoning)}")
+                            # Store reasoning and patient info in metadata
+                            turn_metadata = {}
+                            if reasoning:
+                                turn_metadata["reasoning"] = reasoning
+                            # Add patient metadata for group therapy
+                            if turn.get("patient_id") is not None:
+                                turn_metadata["patient_id"] = turn.get("patient_id")
+                            if turn.get("patient_name"):
+                                turn_metadata["patient_name"] = turn.get("patient_name")
+                            if turn.get("patient_model"):
+                                turn_metadata["patient_model"] = turn.get("patient_model")
+                            if turn.get("patient_provider"):
+                                turn_metadata["patient_provider"] = turn.get("patient_provider")
+                            turn_record = ConversationTurn(
+                                test_run_id=test_run.id,
+                                turn_number=i,
+                                speaker=speaker,
+                                prompt=prompt,
+                                response=response,
+                                meta_data=turn_metadata if turn_metadata else None,
+                            )
+                            session.add(turn_record)
+                    else:
+                        print(f"[execute_test_run] {existing_turns} conversation turns already saved incrementally for test_run_id={test_run.id}, skipping batch save")
                 else:
                     print(f"[execute_test_run] No conversation_history in metadata for test_run_id={test_run.id}")
                     if test_result.metadata:
                         print(f"  Available metadata keys: {list(test_result.metadata.keys())}")
                 
+                # Stop periodic progress updates
+                if 'progress_task' in locals():
+                    progress_task.cancel()
+                    try:
+                        await progress_task
+                    except asyncio.CancelledError:
+                        pass
+                
                 # Update test run status
                 test_run.status = "completed"
-                session.commit()
+                safe_commit(session, test_run_id, test_run)
+                
+                # Emit progress event: test completed
+                elapsed = (datetime.utcnow() - start_time).total_seconds()
+                await progress_event_manager.emit_event(
+                    test_run_id,
+                    "test_completed",
+                    {
+                        "status": "completed",
+                        "elapsed_seconds": elapsed,
+                        "progress": 100,
+                        "score": test_result.score if hasattr(test_result, 'score') else None,
+                    },
+                    f"Test run {test_run_id} completed successfully"
+                )
                 
                 return test_run
             
+            except TestExecutionError as e:
+                # Stop periodic progress updates
+                if progress_task:
+                    progress_task.cancel()
+                    try:
+                        await progress_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                # Check if this was a cancellation
+                is_cancelled = cancellation_manager.is_cancelled(test_run_id) or "cancelled" in str(e).lower()
+                
+                logger.info(f"TestExecutionError caught for test run {test_run_id}: {e}, is_cancelled: {is_cancelled}")
+                print(f"[EXECUTE_TEST_RUN] TestExecutionError: {e}, is_cancelled: {is_cancelled}")
+                
+                test_run.status = "failed"
+                if not test_run.meta_data:
+                    test_run.meta_data = {}
+                if is_cancelled:
+                    test_run.meta_data["cancelled"] = True
+                    test_run.meta_data["error"] = "Test run was cancelled"
+                    logger.info(f"✅ Test run {test_run_id} successfully cancelled")
+                    print(f"[EXECUTE_TEST_RUN] Test run {test_run_id} marked as cancelled")
+                else:
+                    test_run.meta_data["error"] = str(e)
+                safe_commit(session, test_run_id, test_run)
+                
+                # Emit progress event: test failed or cancelled
+                elapsed = (datetime.utcnow() - start_time).total_seconds()
+                event_type = "test_cancelled" if is_cancelled else "test_failed"
+                await progress_event_manager.emit_event(
+                    test_run_id,
+                    event_type,
+                    {
+                        "status": "failed",
+                        "cancelled": is_cancelled,
+                        "error": str(e),
+                        "elapsed_seconds": elapsed,
+                    },
+                    f"Test run {test_run_id} {'cancelled' if is_cancelled else 'failed'}: {str(e)}"
+                )
+                
+                # Clear cancellation flag
+                cancellation_manager.clear(test_run_id)
+                
+                # Don't re-raise if it was a cancellation (expected behavior)
+                if not is_cancelled:
+                    raise
+                return test_run
             except Exception as e:
+                # Stop periodic progress updates
+                if progress_task:
+                    progress_task.cancel()
+                    try:
+                        await progress_task
+                    except asyncio.CancelledError:
+                        pass
+                
                 test_run.status = "failed"
                 if not test_run.meta_data:
                     test_run.meta_data = {}
                 test_run.meta_data["error"] = str(e)
-                session.commit()
+                safe_commit(session, test_run_id, test_run)
+                
+                # Emit progress event: test failed
+                elapsed = (datetime.utcnow() - start_time).total_seconds()
+                await progress_event_manager.emit_event(
+                    test_run_id,
+                    "test_failed",
+                    {
+                        "status": "failed",
+                        "error": str(e),
+                        "elapsed_seconds": elapsed,
+                    },
+                    f"Test run {test_run_id} failed: {str(e)}"
+                )
+                
                 raise
         finally:
             session.close()

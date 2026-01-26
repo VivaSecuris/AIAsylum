@@ -43,34 +43,66 @@ class ConversationTest(TestCase):
         
         conversation_history: List[Dict[str, str]] = []
         
+        # Get callback to save turns incrementally if available
+        save_turn_callback = context.get("save_conversation_turn_callback") if context else None
+        
+        # Get cancellation check callback if available
+        check_cancellation = context.get("check_cancellation") if context else None
+        
         # Initialize conversation
         if doctor:
             # Doctor starts the conversation
             doctor_response = await doctor.conduct_interview("", turn_number=0, context=context)
+            
+            # Check for cancellation after doctor response
+            if check_cancellation:
+                check_cancellation()
+            
             # Extract reasoning from metadata if available
             reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
-            conversation_history.append({
+            turn_data = {
                 "speaker": "doctor",
                 "prompt": "",
                 "response": doctor_response.content,
                 "reasoning": reasoning,
-            })
+                "turn_number": len(conversation_history),
+            }
+            conversation_history.append(turn_data)
+            
+            # Save turn immediately if callback available
+            if save_turn_callback:
+                await save_turn_callback(turn_data)
             
             # Patient responds
             patient_response = await patient.respond(doctor_response.content, context=context)
+            
+            # Check for cancellation after patient response
+            if check_cancellation:
+                check_cancellation()
+            
             # Extract reasoning from metadata if available
             reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
-            conversation_history.append({
+            turn_data = {
                 "speaker": "patient",
                 "prompt": doctor_response.content,
                 "response": patient_response.content,
                 "reasoning": reasoning,
-            })
+                "turn_number": len(conversation_history),
+            }
+            conversation_history.append(turn_data)
+            
+            # Save turn immediately if callback available
+            if save_turn_callback:
+                await save_turn_callback(turn_data)
         
         # Continue conversation for max_turns
         for turn in range(1, self.max_turns):
             if not doctor:
                 break
+            
+            # Check for cancellation
+            if check_cancellation:
+                check_cancellation()
             
             # Doctor analyzes and asks next question
             doctor_response = await doctor.conduct_interview(
@@ -78,25 +110,46 @@ class ConversationTest(TestCase):
                 turn_number=turn,
                 context=context,
             )
+            
+            # Check for cancellation after doctor response
+            if check_cancellation:
+                check_cancellation()
+            
             # Extract reasoning from metadata if available
             reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
-            conversation_history.append({
+            turn_data = {
                 "speaker": "doctor",
                 "prompt": patient_response.content,
                 "response": doctor_response.content,
                 "reasoning": reasoning,
-            })
+                "turn_number": len(conversation_history),
+            }
+            conversation_history.append(turn_data)
+            
+            # Save turn immediately if callback available
+            if save_turn_callback:
+                await save_turn_callback(turn_data)
             
             # Patient responds
             patient_response = await patient.respond(doctor_response.content, context=context)
+            
+            # Check for cancellation after patient response
+            if check_cancellation:
+                check_cancellation()
             # Extract reasoning from metadata if available
             reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
-            conversation_history.append({
+            turn_data = {
                 "speaker": "patient",
                 "prompt": doctor_response.content,
                 "response": patient_response.content,
                 "reasoning": reasoning,
-            })
+                "turn_number": len(conversation_history),
+            }
+            conversation_history.append(turn_data)
+            
+            # Save turn immediately if callback available
+            if save_turn_callback:
+                await save_turn_callback(turn_data)
         
         # Generate final assessment if doctor is available
         analysis = None

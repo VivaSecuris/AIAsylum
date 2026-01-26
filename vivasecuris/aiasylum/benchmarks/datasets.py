@@ -92,6 +92,7 @@ BENCHMARK_DATASETS = {
 async def load_benchmark_dataset(
     benchmark_name: str,
     num_samples: Optional[int] = None,
+    test_run_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     Load benchmark dataset from HuggingFace or database.
@@ -113,16 +114,17 @@ async def load_benchmark_dataset(
         logger.error("datasets library not installed. Install with: pip install datasets")
         raise ImportError("datasets library required for benchmark loading")
     
-    if benchmark_name.lower() not in BENCHMARK_DATASETS:
+    benchmark_key = benchmark_name.lower()
+    if benchmark_key not in BENCHMARK_DATASETS:
         raise ValueError(f"Unknown benchmark: {benchmark_name}. Available: {list(BENCHMARK_DATASETS.keys())}")
     
-    config = BENCHMARK_DATASETS[benchmark_name.lower()]
+    config = BENCHMARK_DATASETS[benchmark_key]
     dataset_name = config["dataset"]
     split = config.get("split", "test")
     dataset_config = config.get("config")  # Some datasets need config name (e.g., ARC)
     
-    logger.info(f"Loading benchmark dataset: {dataset_name} (split: {split}, config: {dataset_config})")
-    print(f"[load_benchmark_dataset] Starting download/load of {dataset_name} (split: {split}, config: {dataset_config})")
+    logger.info(f"Loading benchmark dataset '{benchmark_name}' -> {dataset_name} (split: {split}, config: {dataset_config}, test_run_id: {test_run_id})")
+    print(f"[load_benchmark_dataset] Loading benchmark '{benchmark_name}' -> dataset: {dataset_name} (split: {split}, config: {dataset_config}, test_run_id: {test_run_id})")
     
     try:
         # Load dataset - handle different dataset structures
@@ -192,15 +194,18 @@ async def load_benchmark_dataset(
         total_samples = len(dataset)
         if num_samples:
             max_samples = min(num_samples, total_samples)
-            # Use a unique seed based on time and process ID to ensure different selections each run
-            # This prevents the same questions from being selected when multiple tests run
-            seed = int(time.time() * 1000000) + os.getpid()
+            # Use a unique seed based on time, process ID, benchmark name, and test_run_id
+            # This ensures different selections each run and different questions for each test
+            seed_base = int(time.time() * 1000000) + os.getpid() + hash(benchmark_name)
+            if test_run_id:
+                seed_base += test_run_id * 1000  # Add test_run_id to make each test unique
+            seed = seed_base
             random.seed(seed)
             
             # Randomly select samples using sample() which is designed for this purpose
             selected_indices = random.sample(range(total_samples), max_samples)
             dataset = dataset.select(selected_indices)
-            print(f"[load_benchmark_dataset] Randomly selected {max_samples} samples from {total_samples} total (seed: {seed})")
+            print(f"[load_benchmark_dataset] Randomly selected {max_samples} samples from {total_samples} total (seed: {seed}, benchmark: {benchmark_name})")
             print(f"[load_benchmark_dataset] Selected indices: {selected_indices[:10]}{'...' if len(selected_indices) > 10 else ''}")
         else:
             print(f"[load_benchmark_dataset] Using all {total_samples} samples")
@@ -253,10 +258,30 @@ async def load_benchmark_dataset(
             
             standardized.append(standardized_item)
         
+        # Shuffle the standardized list to randomize the order of questions
+        # This ensures that even if the same indices are selected, the order is different
+        if len(standardized) > 1:
+            # Always shuffle to randomize order, even when using all samples
+            if num_samples:
+                # Use a different seed component for shuffling to ensure different order
+                shuffle_seed = seed + 12345  # Add offset to make shuffle different from selection
+            else:
+                # For full dataset, use time-based seed for shuffling
+                shuffle_seed = int(time.time() * 1000000) + os.getpid() + hash(benchmark_name)
+                if test_run_id:
+                    shuffle_seed += test_run_id * 1000
+            random.seed(shuffle_seed)
+            random.shuffle(standardized)
+            print(f"[load_benchmark_dataset] Shuffled {len(standardized)} samples (shuffle_seed: {shuffle_seed})")
+            if len(standardized) > 0:
+                print(f"[load_benchmark_dataset] First question after shuffle: {standardized[0].get('question', '')[:100]}...")
+                if len(standardized) > 1:
+                    print(f"[load_benchmark_dataset] Second question: {standardized[1].get('question', '')[:100]}...")
+        
         logger.info(f"Loaded {len(standardized)} samples from {benchmark_name}")
         print(f"[load_benchmark_dataset] Successfully standardized {len(standardized)} samples from {benchmark_name}")
-        if len(standardized) > 0:
-            print(f"[load_benchmark_dataset] First sample question: {standardized[0].get('question', '')[:100]}...")
+        if len(standardized) > 0 and not num_samples and len(standardized) == 1:
+            print(f"[load_benchmark_dataset] Sample question: {standardized[0].get('question', '')[:100]}...")
         return standardized
         
     except Exception as e:
@@ -519,28 +544,66 @@ async def load_jailbreak_benchmark_dataset(
         logger.error(error_msg)
         raise ValueError(error_msg)
     
-    # Load jailbreak prompts from database
+    # Load jailbreak prompts from database with metadata
     # Use random=True to get diverse selection
     try:
-        prompt_texts = load_jailbreak_prompts(
-            limit=num_samples,
-            random=True,
-        )
+        # We need to load prompts with their metadata to determine if they're multi-shot
+        from vivasecuris.aiasylum.database import get_session, PromptLibrary
+        
+        session = get_session()
+        try:
+            # Get prompts with metadata
+            all_prompts = session.query(PromptLibrary).filter(
+                PromptLibrary.category == "adversarial"
+            ).all()
+            
+            prompts = [p for p in all_prompts if p.tags and "jailbreak" in p.tags]
+            
+            # Apply randomization
+            import random
+            import time
+            import os
+            if len(prompts) > 1:
+                seed = int(time.time() * 1000000) + os.getpid()
+                random.seed(seed)
+                random.shuffle(prompts)
+            
+            # Apply limit
+            if num_samples:
+                prompts = prompts[:num_samples]
+            
+            # Convert to standardized format with metadata
+            standardized = []
+            for prompt in prompts:
+                technique = prompt.meta_data.get("jailbreak_technique") if prompt.meta_data else None
+                # Determine if this is a multi-shot technique based on constants
+                from vivasecuris.aiasylum.constants import JAILBREAK_TECHNIQUES
+                is_multi_shot = False
+                if technique:
+                    # Check if technique is in multi_shot list
+                    is_multi_shot = technique in JAILBREAK_TECHNIQUES.get("multi_shot", [])
+                
+                standardized.append({
+                    "question": prompt.prompt_text,
+                    "answer": "resisted",  # For jailbreaks, desired outcome is resistance
+                    "is_multi_shot": is_multi_shot,  # Flag indicating if this prompt needs multi-shot
+                    "technique": technique,
+                    "metadata": prompt.meta_data or {},
+                })
+            
+            logger.info(f"Loaded {len(standardized)} jailbreak prompts for benchmark")
+            multi_shot_count = sum(1 for p in standardized if p.get("is_multi_shot", False))
+            single_shot_count = len(standardized) - multi_shot_count
+            logger.info(f"Jailbreak prompts breakdown: {single_shot_count} single-shot, {multi_shot_count} multi-shot")
+            print(f"[load_jailbreak_benchmark_dataset] Loaded {len(standardized)} prompts: {single_shot_count} single-shot, {multi_shot_count} multi-shot")
+            
+            return standardized
+        finally:
+            session.close()
     except Exception as e:
         error_msg = f"Error loading jailbreak prompts from database: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise ValueError(error_msg) from e
-    
-    if not prompt_texts:
-        error_msg = (
-            f"No jailbreak prompts returned from database (total available: {total_count}). "
-            "This may indicate a filtering issue. Check that prompts are properly tagged with 'jailbreak' "
-            "and have category 'adversarial'."
-        )
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    
-    logger.info(f"Loaded {len(prompt_texts)} jailbreak prompts for benchmark")
     
     # Format as benchmark dataset items
     # For jailbreak benchmarks, the "answer" is "resisted" (model should resist)

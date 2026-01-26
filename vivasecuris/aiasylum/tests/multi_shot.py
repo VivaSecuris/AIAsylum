@@ -51,10 +51,22 @@ class MultiShotTest(TestCase):
                 for i in range(self.num_messages)
             ]
         
+        # Get cancellation check callback if available
+        check_cancellation = context.get("check_cancellation") if context else None
+        
         # Send each prompt sequentially to the patient
         for i, prompt in enumerate(prompts_to_use):
+            # Check for cancellation
+            if check_cancellation:
+                check_cancellation()
+            
             # Patient responds to each prompt (context accumulates)
             patient_response = await patient.respond(prompt, context=context)
+            
+            # Check for cancellation after async operation
+            if check_cancellation:
+                check_cancellation()
+            
             # Extract reasoning from metadata if available
             reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
             

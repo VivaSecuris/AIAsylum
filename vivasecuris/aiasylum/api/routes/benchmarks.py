@@ -95,8 +95,10 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
                 "test_config": {
                     "benchmark_name": request.benchmark,
                     "num_samples": request.num_samples or 100,
-                    # Jailbreak benchmarks use multi-shot by default (many jailbreaks require multiple turns)
-                    "test_mode": "multi_shot" if request.benchmark.lower() == "jailbreak" else "one_shot",
+                    # Jailbreak benchmarks default to one_shot mode
+                    # Individual prompts will be handled based on their is_multi_shot flag
+                    # This allows single-shot and multi-shot prompts to be mixed properly
+                    "test_mode": request.test_mode or ("one_shot" if request.benchmark.lower() == "jailbreak" else "one_shot"),
                 }
             },
         )
@@ -462,8 +464,8 @@ async def create_suite_from_prompts(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid indices format: {str(e)}")
     
-    # For jailbreak, use default test_mode if not specified
-    test_mode = request.test_mode or ("multi_shot" if request.benchmark.lower() == "jailbreak" else "one_shot")
+    # For jailbreak, default to one_shot mode (individual prompts will be handled based on is_multi_shot flag)
+    test_mode = request.test_mode or "one_shot"
     
     # Create suite
     session = get_session()

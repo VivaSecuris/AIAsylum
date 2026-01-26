@@ -2,13 +2,18 @@
 
 from datetime import datetime
 from typing import List, Optional
+import json
+import logging
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn
-from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATUS_FAILED, TEST_TYPE_GROUP_THERAPY
+from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATUS_FAILED, STATUS_COMPLETED, TEST_TYPE_GROUP_THERAPY
+from vivasecuris.aiasylum.api.progress_events import progress_event_manager
+from vivasecuris.aiasylum.api.cancellation import cancellation_manager
 
 router = APIRouter()
 
@@ -35,6 +40,7 @@ class TestRunResponse(BaseModel):
     patient_model: str
     test_type: str
     status: str
+    meta_data: Optional[dict] = None
     
     class Config:
         from_attributes = True
@@ -74,12 +80,47 @@ class ConversationTurnResponse(BaseModel):
 
 async def _run_test_background(test_run_id: int):
     """Background task to run a test."""
+    import asyncio
+    
     runner = TestRunner()
     try:
         await runner.execute_test_run(test_run_id)
+    except asyncio.CancelledError:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"🛑 Test run {test_run_id} task was cancelled")
+        print(f"[BACKGROUND] Test run {test_run_id} task was cancelled")
+        # Update status in database
+        session = get_session()
+        try:
+            test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+            if test_run and test_run.status == STATUS_RUNNING:
+                test_run.status = STATUS_FAILED
+                if not test_run.meta_data:
+                    test_run.meta_data = {}
+                test_run.meta_data["cancelled"] = True
+                test_run.meta_data["error"] = "Test run was cancelled"
+                session.commit()
+                # Emit cancellation event
+                await progress_event_manager.emit_event(
+                    test_run_id,
+                    "test_cancelled",
+                    {
+                        "status": "failed",
+                        "cancelled": True,
+                    },
+                    "Test run was cancelled"
+                )
+        finally:
+            session.close()
+        raise
     except Exception as e:
         # Error is already handled in execute_test_run (sets status to failed)
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error running test {test_run_id}: {e}")
         print(f"Error running test {test_run_id}: {e}")
+    finally:
+        # Unregister task when done
+        cancellation_manager.unregister_task(test_run_id)
 
 
 @router.post("/", response_model=TestRunResponse)
@@ -131,8 +172,11 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
         session.commit()
         session.refresh(test_run)
         
-        # Run test in background
-        background_tasks.add_task(_run_test_background, test_run.id)
+        # Create and register the asyncio task so we can cancel it later
+        # Use create_task to get a reference to the task - it will run in the background
+        import asyncio
+        task = asyncio.create_task(_run_test_background(test_run.id))
+        cancellation_manager.register_task(test_run.id, task)
         
         return test_run
     finally:
@@ -175,13 +219,28 @@ async def delete_test_run(test_run_id: int):
         
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Found test run, status: {test_run.status}")
         
-        # Check if test run is currently running
+        # If test run is running, stop it first (mark as cancelled)
         if test_run.status == STATUS_RUNNING:
-            print(f"DELETE /api/v1/test-runs/{test_run_id} - Cannot delete running test run")
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete a test run that is currently running. Please wait for it to complete or fail."
+            print(f"DELETE /api/v1/test-runs/{test_run_id} - Stopping running test run before deletion")
+            cancellation_manager.cancel(test_run_id)
+            test_run.status = STATUS_FAILED
+            if not test_run.meta_data:
+                test_run.meta_data = {}
+            test_run.meta_data["cancelled"] = True
+            test_run.meta_data["error"] = "Test run was cancelled during deletion"
+            test_run.meta_data["stopped_at"] = datetime.utcnow().isoformat()
+            session.commit()
+            # Emit cancellation event
+            await progress_event_manager.emit_event(
+                test_run_id,
+                "test_cancelled",
+                {
+                    "status": "failed",
+                    "cancelled": True,
+                },
+                "Test run was cancelled during deletion"
             )
+            # Continue with deletion - don't return here
         
         # Delete the test run (cascade will handle related records)
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Deleting test run from database")
@@ -242,6 +301,8 @@ async def get_conversation(test_run_id: int):
 @router.post("/{test_run_id}/start", response_model=TestRunResponse)
 async def start_test_run(test_run_id: int, background_tasks: BackgroundTasks):
     """Start/execute a pending test run."""
+    import asyncio
+    
     runner = TestRunner()
     test_run = runner.get_test_run(test_run_id)
     if not test_run:
@@ -253,8 +314,117 @@ async def start_test_run(test_run_id: int, background_tasks: BackgroundTasks):
             detail=f"Cannot start test run in status: {test_run.status}. Only pending or failed test runs can be started."
         )
     
-    # Run test in background
-    background_tasks.add_task(_run_test_background, test_run_id)
+    # Clear any previous cancellation flag
+    cancellation_manager.clear(test_run_id)
+    
+    # Create and register the asyncio task so we can cancel it later
+    # Use create_task to get a reference to the task - it will run in the background
+    task = asyncio.create_task(_run_test_background(test_run_id))
+    cancellation_manager.register_task(test_run_id, task)
     
     # Return the test run (status will be updated by background task)
     return test_run
+
+
+@router.post("/{test_run_id}/stop")
+async def stop_test_run(test_run_id: int):
+    """Stop/cancel a running test run."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    session = get_session()
+    try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if not test_run:
+            raise HTTPException(status_code=404, detail="Test run not found")
+        
+        if test_run.status != STATUS_RUNNING:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot stop test run in status: {test_run.status}. Only running test runs can be stopped."
+            )
+        
+        # Mark for cancellation immediately and cancel the asyncio task
+        # This will both set the cancellation flag and cancel the running asyncio task
+        cancelled = cancellation_manager.cancel(test_run_id)
+        logger.info(f"🛑 Stop request for test run {test_run_id}, cancellation flag set: {cancelled}, task cancelled")
+        print(f"[STOP] Test run {test_run_id} marked for cancellation and asyncio task cancelled")
+        
+        # Immediately update status to failed (cancelled) - this makes it deletable right away
+        test_run.status = STATUS_FAILED
+        if not test_run.meta_data:
+            test_run.meta_data = {}
+        test_run.meta_data["cancelled"] = True
+        test_run.meta_data["error"] = "Test run was cancelled by user"
+        test_run.meta_data["stopped_at"] = datetime.utcnow().isoformat()
+        session.commit()
+        logger.info(f"✅ Test run {test_run_id} status immediately updated to failed (cancelled) - ready for deletion")
+        print(f"[STOP] Test run {test_run_id} status immediately updated to failed - can be deleted now")
+        
+        # Emit cancellation event immediately
+        await progress_event_manager.emit_event(
+            test_run_id,
+            "test_cancelled",
+            {
+                "status": "failed",
+                "cancelled": True,
+                "immediate": True,
+            },
+            "Test run was cancelled and stopped immediately"
+        )
+        
+        return {
+            "message": "Test run stopped immediately. Background execution will terminate at next checkpoint.",
+            "id": test_run_id,
+            "status": "failed",
+            "cancelled": True
+        }
+    finally:
+        session.close()
+
+
+@router.get("/{test_run_id}/progress")
+async def stream_test_run_progress(test_run_id: int):
+    """Stream real-time progress updates for a test run using Server-Sent Events."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Verify test run exists and get current status
+    session = get_session()
+    current_status = None
+    try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if not test_run:
+            logger.warning(f"Test run {test_run_id} not found for progress stream")
+            raise HTTPException(status_code=404, detail="Test run not found")
+        current_status = test_run.status
+        logger.info(f"Starting progress stream for test run {test_run_id} (status: {current_status})")
+    finally:
+        session.close()
+    
+    # Stream events as Server-Sent Events
+    async def stream_with_status():
+        # Send current status immediately when client connects
+        if current_status:
+            status_event = {
+                "test_run_id": test_run_id,
+                "event_type": "status_update",
+                "timestamp": datetime.utcnow().isoformat(),
+                "data": {"status": current_status},
+                "message": f"Current status: {current_status}"
+            }
+            yield f"data: {json.dumps(status_event)}\n\n"
+        
+        # Then stream live events
+        async for event in progress_event_manager.stream_events(test_run_id):
+            yield event
+    
+    return StreamingResponse(
+        stream_with_status(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable buffering in nginx
+        }
+    )

@@ -58,6 +58,15 @@ class BenchmarkTest(TestCase):
         
         # Load benchmark dataset
         try:
+            # Get test_run_id from context if available (for unique randomization)
+            test_run_id = context.get("test_run_id") if context else None
+            
+            # Validate benchmark name
+            if not self.benchmark_name:
+                raise ValueError("Benchmark name is required")
+            
+            print(f"[BenchmarkTest] Loading benchmark '{self.benchmark_name}' with {self.num_samples} samples (test_run_id: {test_run_id})")
+            
             # If specific indices or subject are provided, use manual selection
             if self.selected_indices is not None or self.selected_subject:
                 # Load all prompts without randomization
@@ -68,11 +77,26 @@ class BenchmarkTest(TestCase):
                     indices=self.selected_indices,
                     subject=self.selected_subject,
                 )
+                # Still shuffle manually selected items to randomize order
+                if len(dataset) > 1:
+                    import random
+                    import time
+                    import os
+                    shuffle_seed = int(time.time() * 1000000) + os.getpid()
+                    if test_run_id:
+                        shuffle_seed += test_run_id * 1000
+                    random.seed(shuffle_seed)
+                    random.shuffle(dataset)
+                    print(f"[BenchmarkTest] Shuffled {len(dataset)} manually selected samples (seed: {shuffle_seed})")
                 print(f"[BenchmarkTest] Loaded {len(dataset)} manually selected samples from {len(all_prompts)} total")
             else:
                 # Use standard loading with randomization
-                dataset = await load_benchmark_dataset(self.benchmark_name, self.num_samples)
-                print(f"[BenchmarkTest] Loaded {len(dataset)} samples for benchmark {self.benchmark_name}")
+                dataset = await load_benchmark_dataset(self.benchmark_name, self.num_samples, test_run_id=test_run_id)
+                print(f"[BenchmarkTest] Loaded {len(dataset)} samples for benchmark '{self.benchmark_name}' (test_run_id: {test_run_id})")
+                if len(dataset) > 0:
+                    print(f"[BenchmarkTest] First question: {dataset[0].get('question', '')[:100]}...")
+                    if len(dataset) > 1:
+                        print(f"[BenchmarkTest] Second question: {dataset[1].get('question', '')[:100]}...")
         except Exception as e:
             import traceback
             error_msg = f"Error loading benchmark dataset {self.benchmark_name}: {e}\n{traceback.format_exc()}"
@@ -97,9 +121,177 @@ class BenchmarkTest(TestCase):
         correct = 0
         conversation_history = []
         
-        if self.test_mode == "one_shot":
+        # Get progress callback from context if available
+        progress_callback = context.get("progress_callback") if context else None
+        total_items = len(dataset)
+        
+        # Get cancellation check callback if available
+        check_cancellation = context.get("check_cancellation") if context else None
+        
+        # For jailbreak benchmarks, determine test_mode per prompt if not explicitly set
+        is_jailbreak_benchmark = self.benchmark_name.lower() == "jailbreak"
+        use_per_prompt_mode = is_jailbreak_benchmark and self.test_mode == "one_shot"
+        
+        if use_per_prompt_mode:
+            # For jailbreak benchmarks in one_shot mode, check each prompt's is_multi_shot flag
+            # Each multi-shot prompt should be its own separate sequence
+            single_shot_prompts = []
+            multi_shot_groups = []
+            
+            for item in dataset:
+                is_multi_shot = item.get("is_multi_shot", False)
+                if is_multi_shot:
+                    # Each multi-shot prompt is its own separate group/sequence
+                    multi_shot_groups.append([item])
+                else:
+                    # Add single-shot prompt
+                    single_shot_prompts.append(item)
+            
+            total_prompts_to_process = len(single_shot_prompts) + sum(len(group) for group in multi_shot_groups)
+            print(f"[BenchmarkTest] Jailbreak prompts: {len(single_shot_prompts)} single-shot, {len(multi_shot_groups)} multi-shot groups")
+            print(f"[BenchmarkTest] Total prompts to process: {total_prompts_to_process} (dataset had {len(dataset)} items)")
+            
+            if total_prompts_to_process != len(dataset):
+                print(f"[BenchmarkTest] WARNING: Mismatch! Dataset has {len(dataset)} items but we're processing {total_prompts_to_process} prompts")
+            
+            # Process single-shot prompts
+            print(f"[BenchmarkTest] Processing {len(single_shot_prompts)} single-shot prompts")
+            for i, item in enumerate(single_shot_prompts):
+                # Check for cancellation
+                if check_cancellation:
+                    check_cancellation()
+                
+                question = item.get("question", "")
+                ground_truth = item.get("answer")
+                choices = item.get("choices", [])
+                
+                if not question:
+                    print(f"[BenchmarkTest] WARNING: Skipping single-shot prompt {i+1} - no question")
+                    continue
+                
+                # Emit progress update every 10 questions or at start
+                current_index = i + 1
+                if progress_callback and (current_index == 1 or current_index % 10 == 0 or current_index == len(single_shot_prompts)):
+                    await progress_callback(current_index, total_items)
+                
+                # Format question with choices if available
+                formatted_question = self._format_question(question, choices)
+                
+                # Get model response (single-shot, no context)
+                response_obj = await patient.respond(formatted_question, context=context)
+                
+                # Check for cancellation after async operation
+                if check_cancellation:
+                    check_cancellation()
+                
+                response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+                reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
+                
+                # Evaluate response
+                is_correct = self._evaluate_response(formatted_question, response, ground_truth, choices)
+                if is_correct:
+                    correct += 1
+                
+                results.append({
+                    "question_number": current_index,
+                    "question": formatted_question,
+                    "response": response,
+                    "ground_truth": ground_truth,
+                    "choices": choices,
+                    "correct": is_correct,
+                    "reasoning": reasoning,
+                })
+            
+            # Process multi-shot groups (each group is a separate sequence)
+            # Each multi-shot prompt is its own group, so we process them individually
+            print(f"[BenchmarkTest] Processing {len(multi_shot_groups)} multi-shot groups")
+            group_start_index = len(single_shot_prompts)
+            for group_idx, group in enumerate(multi_shot_groups):
+                print(f"[BenchmarkTest] Processing multi-shot group {group_idx + 1}/{len(multi_shot_groups)} with {len(group)} turns")
+                conversation_context = []
+                
+                for turn_idx, item in enumerate(group):
+                    # Check for cancellation
+                    if check_cancellation:
+                        check_cancellation()
+                    
+                    question = item.get("question", "")
+                    ground_truth = item.get("answer")
+                    choices = item.get("choices", [])
+                    
+                    if not question:
+                        print(f"[BenchmarkTest] WARNING: Skipping multi-shot group {group_idx+1}, turn {turn_idx+1} - no question")
+                        continue
+                    
+                    formatted_question = self._format_question(question, choices)
+                    
+                    # For multi-shot, include previous conversation context
+                    if conversation_context:
+                        context_with_history = context.copy() if context else {}
+                        context_with_history["conversation_history"] = conversation_context
+                        response_obj = await patient.respond(formatted_question, context=context_with_history)
+                    else:
+                        response_obj = await patient.respond(formatted_question, context=context)
+                    
+                    # Check for cancellation after async operation
+                    if check_cancellation:
+                        check_cancellation()
+                    
+                    response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+                    reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
+                    
+                    # Update conversation context for next turn (if this group has multiple turns)
+                    conversation_context.append({
+                        "role": "user",
+                        "content": formatted_question,
+                    })
+                    conversation_context.append({
+                        "role": "assistant",
+                        "content": response,
+                    })
+                    
+                    # Evaluate response
+                    is_correct = self._evaluate_response(formatted_question, response, ground_truth, choices)
+                    # For multi-shot jailbreaks, check if ANY turn in this group was successful
+                    # A jailbreak is successful if ANY turn resulted in harmful content
+                    if not is_correct:
+                        # Check previous turns in this group (look back at results from this group)
+                        group_results_start = len(results) - turn_idx
+                        for prev_result in results[group_results_start:]:
+                            if not prev_result.get("correct", True):
+                                is_correct = False
+                                break
+                    
+                    if is_correct:
+                        correct += 1
+                    
+                    current_index = group_start_index + turn_idx + 1
+                    results.append({
+                        "question_number": current_index,
+                        "question": formatted_question,
+                        "response": response,
+                        "ground_truth": ground_truth,
+                        "choices": choices,
+                        "correct": is_correct,
+                        "reasoning": reasoning,
+                    })
+                    
+                    # Emit progress update
+                    if progress_callback and (current_index == 1 or current_index % 10 == 0 or current_index == total_items):
+                        await progress_callback(current_index, total_items)
+                
+                # Update group_start_index for next group
+                group_start_index += len(group)
+            
+            print(f"[BenchmarkTest] Completed processing: {len(results)} total results (expected: {total_prompts_to_process})")
+        
+        elif self.test_mode == "one_shot":
             # One-shot: each question is independent
             for i, item in enumerate(dataset):
+                # Check for cancellation
+                if check_cancellation:
+                    check_cancellation()
+                
                 question = item.get("question", "")
                 # Handle both answer formats (direct answer or class label)
                 ground_truth = item.get("answer")
@@ -116,11 +308,20 @@ class BenchmarkTest(TestCase):
                 if not question:
                     continue
                 
+                # Emit progress update every 10 questions or at start
+                if progress_callback and (i == 0 or (i + 1) % 10 == 0 or i == total_items - 1):
+                    await progress_callback(i + 1, total_items)
+                
                 # Format question with choices if available
                 formatted_question = self._format_question(question, choices)
                 
                 # Get model response
                 response_obj = await patient.respond(formatted_question, context=context)
+                
+                # Check for cancellation after async operation
+                if check_cancellation:
+                    check_cancellation()
+                
                 response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
                 reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
                 
@@ -170,6 +371,14 @@ class BenchmarkTest(TestCase):
             
             # Run as sequential prompts (multi-turn conversation)
             for i, prompt_data in enumerate(conversation_prompts):
+                # Check for cancellation
+                if check_cancellation:
+                    check_cancellation()
+                
+                # Emit progress update every 10 questions or at start
+                if progress_callback and (i == 0 or (i + 1) % 10 == 0 or i == len(conversation_prompts) - 1):
+                    await progress_callback(i + 1, len(conversation_prompts))
+                
                 question = prompt_data["question"]
                 # Handle answer format (may be letter, index, or direct answer)
                 ground_truth = prompt_data["ground_truth"]
@@ -185,11 +394,15 @@ class BenchmarkTest(TestCase):
                 else:
                     response_obj = await patient.respond(question, context=context)
                 
+                # Check for cancellation after async operation
+                if check_cancellation:
+                    check_cancellation()
+                
                 response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
                 reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
                 
                 # Evaluate response
-                # For jailbreak benchmarks, check if model resisted across all turns
+                # For jailbreak benchmarks in multi_shot mode, check if model resisted across all turns
                 if is_jailbreak_benchmark:
                     # For jailbreaks, we evaluate resistance across the entire conversation so far
                     # A jailbreak is successful if ANY turn resulted in harmful content
@@ -236,6 +449,11 @@ class BenchmarkTest(TestCase):
                 })
         
         accuracy = correct / len(results) if results else 0.0
+        
+        # Log summary
+        print(f"[BenchmarkTest] Final summary: {len(results)} results processed, {correct} correct, accuracy: {accuracy:.2%}")
+        if len(results) != total_items:
+            print(f"[BenchmarkTest] WARNING: Processed {len(results)} results but dataset had {total_items} items!")
         
         # Format results text
         results_text = "\n\n".join([

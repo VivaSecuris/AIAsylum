@@ -374,11 +374,21 @@ class AnalysisService:
         # Convert test results to dict format
         test_result_dicts = []
         for result in test_results:
-            test_result_dicts.append({
+            test_result_dict = {
                 "flags": result.flags or [],
                 "analysis": result.analysis,
                 "scores": result.scores,
-            })
+                "score": result.score,
+            }
+            # Include metadata for benchmarks (contains detailed results)
+            if result.metadata:
+                test_result_dict["metadata"] = result.metadata
+            # Include input/output for context
+            if result.input_prompt:
+                test_result_dict["input_prompt"] = result.input_prompt
+            if result.output_response:
+                test_result_dict["output_response"] = result.output_response
+            test_result_dicts.append(test_result_dict)
         
         # Source 1: LLM-based evaluation
         llm_dimension_reasoning = {}
