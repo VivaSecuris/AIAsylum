@@ -70,28 +70,33 @@ export function CreateTestForm() {
     }
   }, [router.query.type])
   
-  // Pre-select prompt from query parameter when prompts are loaded
+  // Pre-select prompt from query parameter when prompts are loaded or query changes
   useEffect(() => {
-    if (promptIdFromQuery && prompts.length > 0) {
-      const prompt = prompts.find(p => p.id === promptIdFromQuery)
+    // Re-read promptId from query in case it changed
+    const currentPromptId = router.query.promptId 
+      ? parseInt(Array.isArray(router.query.promptId) ? router.query.promptId[0] : router.query.promptId)
+      : undefined
+    
+    if (currentPromptId && prompts.length > 0) {
+      const prompt = prompts.find(p => p.id === currentPromptId)
       if (prompt && prompt.prompt_type === 'test_prompt') {
         // Set the prompt selection based on test type
         if (formData.test_type === 'one_shot') {
-          setSelectedPromptId(promptIdFromQuery)
+          setSelectedPromptId(currentPromptId)
           setSelectedPromptIds([]) // Clear multi-shot selection
         } else if (formData.test_type === 'multi_shot') {
-          setSelectedPromptIds([promptIdFromQuery])
+          setSelectedPromptIds([currentPromptId])
           setSelectedPromptId(undefined) // Clear one-shot selection
         } else {
           // Default to one_shot for single prompt
-          setFormData({ ...formData, test_type: 'one_shot' })
-          setSelectedPromptId(promptIdFromQuery)
+          setFormData(prev => ({ ...prev, test_type: 'one_shot' }))
+          setSelectedPromptId(currentPromptId)
           setSelectedPromptIds([])
         }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptIdFromQuery, prompts.length])
+  }, [router.query.promptId, prompts.length])
   
   // Reset variable values when prompt changes
   useEffect(() => {
@@ -108,8 +113,25 @@ export function CreateTestForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPromptId, promptVariablesData])
   
-  // Reset prompt selections when test type changes
+  // Reset prompt selections when test type changes (but preserve if coming from query param)
   useEffect(() => {
+    // Don't reset if we have a promptId from query and prompts are loaded
+    if (promptIdFromQuery && prompts.length > 0) {
+      const prompt = prompts.find(p => p.id === promptIdFromQuery)
+      if (prompt && prompt.prompt_type === 'test_prompt') {
+        // Keep the prompt selected, just adjust based on test type
+        if (formData.test_type === 'one_shot') {
+          setSelectedPromptId(promptIdFromQuery)
+          setSelectedPromptIds([])
+        } else if (formData.test_type === 'multi_shot') {
+          setSelectedPromptIds([promptIdFromQuery])
+          setSelectedPromptId(undefined)
+        }
+        return // Don't reset if we have a valid prompt from query
+      }
+    }
+    
+    // Otherwise, reset as normal
     if (formData.test_type === 'one_shot') {
       setSelectedPromptIds([])
     } else if (formData.test_type === 'multi_shot') {
@@ -125,6 +147,7 @@ export function CreateTestForm() {
         setGroupTherapyPatients([{ id: 'patient_1', provider: '', model: '' }])
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formData.test_type])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -463,6 +486,19 @@ export function CreateTestForm() {
                             prompts: undefined,
                           },
                         })
+                        // Update URL to reflect selection (but don't push to avoid navigation)
+                        router.replace({
+                          pathname: router.pathname,
+                          query: { ...router.query, promptId: newPromptId },
+                        }, undefined, { shallow: true })
+                      } else {
+                        // Remove promptId from URL if deselected
+                        const newQuery = { ...router.query }
+                        delete newQuery.promptId
+                        router.replace({
+                          pathname: router.pathname,
+                          query: newQuery,
+                        }, undefined, { shallow: true })
                       }
                     }}
                     className="w-full rounded-lg border px-3 py-2 text-sm"
@@ -476,6 +512,11 @@ export function CreateTestForm() {
                         </option>
                       ))}
                   </select>
+                  {promptIdFromQuery && selectedPromptId === promptIdFromQuery && (
+                    <p className="text-xs text-primary mt-1">
+                      ✓ Prompt pre-selected from prompt library
+                    </p>
+                  )}
                 </div>
                 
                 {!selectedPromptId && (

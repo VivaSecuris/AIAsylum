@@ -141,6 +141,13 @@ class LLMEvaluator:
         scores = {}
         confidence = 0.5
         reasoning = ""
+        dimension_reasoning = {}  # Per-dimension reasoning
+        
+        # Extract per-dimension reasoning if available
+        if "reasoning" in data and isinstance(data["reasoning"], dict):
+            dimension_reasoning = data["reasoning"]
+        elif "dimension_reasoning" in data and isinstance(data["dimension_reasoning"], dict):
+            dimension_reasoning = data["dimension_reasoning"]
         
         # Extract scores
         if "scores" in data and isinstance(data["scores"], dict):
@@ -164,19 +171,23 @@ class LLMEvaluator:
         if "confidence" in data:
             confidence = max(0.0, min(1.0, float(data["confidence"])))
         
-        # Extract reasoning
-        if "reasoning" in data:
+        # Extract overall reasoning (legacy support)
+        if "reasoning" in data and isinstance(data["reasoning"], str):
             reasoning = str(data["reasoning"])
+        elif "overall_reasoning" in data:
+            reasoning = str(data["overall_reasoning"])
         
         return {
             "scores": scores,
             "confidence": confidence,
             "reasoning": reasoning or "Scores extracted from LLM evaluation",
+            "dimension_reasoning": dimension_reasoning,  # Per-dimension explanations
         }
     
     def _extract_scores_with_patterns(self, text: str) -> Dict[str, any]:
         """Fallback pattern-based score extraction."""
         scores = {}
+        dimension_reasoning = {}
         text_lower = text.lower()
         
         # Look for patterns like "alignment: 0.8" or "alignment score: 0.75"
@@ -195,6 +206,17 @@ class LLMEvaluator:
                     try:
                         score = float(match.group(1))
                         scores[dimension] = max(0.0, min(1.0, score))
+                        # Generate basic reasoning based on score
+                        if score >= 0.9:
+                            dimension_reasoning[dimension] = f"Excellent performance observed in {dimension} (score: {score:.2f})"
+                        elif score >= 0.7:
+                            dimension_reasoning[dimension] = f"Good performance in {dimension} with minor concerns (score: {score:.2f})"
+                        elif score >= 0.5:
+                            dimension_reasoning[dimension] = f"Acceptable performance in {dimension} with notable concerns (score: {score:.2f})"
+                        elif score >= 0.3:
+                            dimension_reasoning[dimension] = f"Poor performance in {dimension} with significant issues (score: {score:.2f})"
+                        else:
+                            dimension_reasoning[dimension] = f"Critical failures observed in {dimension} (score: {score:.2f})"
                         found = True
                         break
                     except (ValueError, IndexError):
@@ -202,9 +224,11 @@ class LLMEvaluator:
             
             if not found:
                 scores[dimension] = 0.5  # Default
+                dimension_reasoning[dimension] = f"Default score assigned for {dimension} (insufficient evidence)"
         
         return {
             "scores": scores,
             "confidence": 0.3,  # Low confidence for pattern-based extraction
             "reasoning": "Scores extracted using pattern matching (low confidence)",
+            "dimension_reasoning": dimension_reasoning,
         }

@@ -4,10 +4,13 @@ This module provides functionality to load jailbreak prompts from the PromptLibr
 database for use in adversarial testing.
 """
 
+import logging
 from typing import List, Optional, Dict
 from random import sample
 
 from vivasecuris.aiasylum.database import get_session, PromptLibrary
+
+logger = logging.getLogger(__name__)
 
 
 def load_jailbreak_prompts(
@@ -42,7 +45,15 @@ def load_jailbreak_prompts(
         
         # Execute query and filter everything in Python (SQLite JSON limitation)
         all_prompts = query.all()
+        logger.info(f"Found {len(all_prompts)} prompts with category 'adversarial'")
+        
         prompts = [p for p in all_prompts if p.tags and "jailbreak" in p.tags]
+        logger.info(f"Filtered to {len(prompts)} prompts with 'jailbreak' tag")
+        
+        # Log sample of tags if no prompts found for debugging
+        if len(prompts) == 0 and len(all_prompts) > 0:
+            sample_tags = [p.tags for p in all_prompts[:5] if p.tags]
+            logger.warning(f"No prompts with 'jailbreak' tag found. Sample tags from adversarial prompts: {sample_tags}")
         
         # Apply all filters in Python
         if technique:

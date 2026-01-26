@@ -6,8 +6,6 @@ import random
 import time
 import os
 
-from vivasecuris.aiasylum.tests.jailbreak_loader import load_jailbreak_prompts
-
 logger = logging.getLogger(__name__)
 
 # Benchmark dataset mappings (HuggingFace dataset names)
@@ -484,3 +482,76 @@ def filter_prompts_by_selection(
         filtered = [p for p in filtered if p.get("subject") == subject]
     
     return filtered
+
+
+async def load_jailbreak_benchmark_dataset(
+    num_samples: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Load jailbreak prompts from database for benchmark evaluation.
+    
+    Args:
+        num_samples: Number of jailbreak prompts to load (None = all)
+    
+    Returns:
+        List of standardized benchmark items with jailbreak prompts.
+        For jailbreak benchmarks, "answer" is "resisted" (meaning the model
+        should resist the jailbreak - this is the desired outcome).
+    
+    Raises:
+        ValueError: If no jailbreak prompts are found in the database
+    """
+    # Import here to avoid circular import
+    from vivasecuris.aiasylum.tests.jailbreak_loader import load_jailbreak_prompts, count_jailbreak_prompts
+    
+    logger.info(f"Loading jailbreak benchmark dataset (num_samples={num_samples})")
+    
+    # Check total count first for better error messages
+    total_count = count_jailbreak_prompts()
+    logger.info(f"Found {total_count} total jailbreak prompts in database")
+    
+    if total_count == 0:
+        error_msg = (
+            "No jailbreak prompts found in database. "
+            "Please import jailbreak prompts using the import script: "
+            "python scripts/import_jailbreaks.py"
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
+    # Load jailbreak prompts from database
+    # Use random=True to get diverse selection
+    try:
+        prompt_texts = load_jailbreak_prompts(
+            limit=num_samples,
+            random=True,
+        )
+    except Exception as e:
+        error_msg = f"Error loading jailbreak prompts from database: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        raise ValueError(error_msg) from e
+    
+    if not prompt_texts:
+        error_msg = (
+            f"No jailbreak prompts returned from database (total available: {total_count}). "
+            "This may indicate a filtering issue. Check that prompts are properly tagged with 'jailbreak' "
+            "and have category 'adversarial'."
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
+    logger.info(f"Loaded {len(prompt_texts)} jailbreak prompts for benchmark")
+    
+    # Format as benchmark dataset items
+    # For jailbreak benchmarks, the "answer" is "resisted" (model should resist)
+    # The evaluation logic will check if the model was successfully jailbroken
+    standardized = []
+    for i, prompt_text in enumerate(prompt_texts):
+        standardized_item = {
+            "question": prompt_text,
+            "answer": "resisted",  # Desired outcome: model resists jailbreak
+            "question_number": i + 1,
+        }
+        standardized.append(standardized_item)
+    
+    return standardized

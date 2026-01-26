@@ -16,6 +16,7 @@ from vivasecuris.aiasylum.constants import (
     DEFAULT_EVALUATOR_PROVIDER,
     DEFAULT_EVALUATOR_MODEL,
 )
+from typing import Dict, List, Optional
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -144,13 +145,28 @@ class AnalysisService:
             raise ValueError(f"Failed to create evaluator model: {str(e)}")
         
         # Basic analysis (always performed)
-        scores = await self._calculate_scores(
+        scores_result = await self._calculate_scores(
             test_run,
             test_results,
             conversations,
             evaluator_model_instance,
         )
+        
+        # Extract dimension reasoning if present (stored temporarily in scores)
+        dimension_reasoning = scores_result.pop("_dimension_reasoning", {})
+        llm_confidence = scores_result.pop("_llm_confidence", 0.5)
+        
+        # Clean scores (remove any metadata fields)
+        scores = {k: v for k, v in scores_result.items() if k in SCORING_DIMENSIONS}
         overall_score = self._calculate_overall_score(scores)
+        
+        # Store dimension reasoning in metadata for later use
+        initial_metadata = {}
+        if dimension_reasoning:
+            initial_metadata["llm_evaluation"] = {
+                "dimension_reasoning": dimension_reasoning,
+                "confidence": llm_confidence,
+            }
         
         # Build assessment text (will be updated with metadata after analysis)
         assessment_text = self._generate_assessment_text(
@@ -159,6 +175,7 @@ class AnalysisService:
             conversations,
             scores,
             overall_score,
+            metadata=initial_metadata,
         )
         
         # Detect flags
@@ -169,7 +186,7 @@ class AnalysisService:
         recommendations = self._generate_recommendations(scores, flags)
         
         # Optional deep analysis
-        metadata = {}
+        metadata = initial_metadata.copy()
         if enable_cot_detection:
             metadata["cot_analysis"] = await self._detect_cot(
                 conversations, 
@@ -279,7 +296,7 @@ class AnalysisService:
         # Recalculate overall score with new dimensions
         overall_score = self._calculate_overall_score(scores)
         
-        # Regenerate assessment text with metadata
+        # Regenerate assessment text with updated metadata
         assessment_text = self._generate_assessment_text(
             test_run,
             test_results,
@@ -364,6 +381,8 @@ class AnalysisService:
             })
         
         # Source 1: LLM-based evaluation
+        llm_dimension_reasoning = {}
+        llm_confidence_value = 0.0
         try:
             logger.info(f"Starting LLM-based evaluation for test run {test_run.id} using model {evaluator_model.model_name} ({evaluator_model.provider})")
             evaluator = LLMEvaluator(evaluator_model)
@@ -372,12 +391,16 @@ class AnalysisService:
                 test_results=test_result_dicts,
                 test_type=test_run.test_type,
             )
-            logger.info(f"LLM evaluation completed with confidence {llm_result.get('confidence', 0.0):.2f}")
-            if llm_result.get("confidence", 0.0) >= MIN_CONFIDENCE_THRESHOLD:
+            llm_confidence_value = llm_result.get('confidence', 0.0)
+            logger.info(f"LLM evaluation completed with confidence {llm_confidence_value:.2f}")
+            if llm_confidence_value >= MIN_CONFIDENCE_THRESHOLD:
                 llm_scores = llm_result.get("scores", {})
+                llm_dimension_reasoning = llm_result.get("dimension_reasoning", {})
                 logger.info(f"Using LLM scores: {llm_scores}")
+                if llm_dimension_reasoning:
+                    logger.info(f"LLM provided detailed reasoning for {len(llm_dimension_reasoning)} dimensions")
             else:
-                logger.warning(f"LLM evaluation confidence too low ({llm_result.get('confidence', 0.0):.2f} < {MIN_CONFIDENCE_THRESHOLD}), skipping LLM scores")
+                logger.warning(f"LLM evaluation confidence too low ({llm_confidence_value:.2f} < {MIN_CONFIDENCE_THRESHOLD}), skipping LLM scores")
         except Exception as e:
             # Log error but continue with other sources
             logger.error(f"LLM evaluation failed for test run {test_run.id}: {str(e)}", exc_info=True)
@@ -440,6 +463,11 @@ class AnalysisService:
             rule_based_for_aggregation,
             rule_based_has_data,
         )
+        
+        # Store dimension reasoning temporarily (will be extracted by caller)
+        if llm_dimension_reasoning:
+            final_scores["_dimension_reasoning"] = llm_dimension_reasoning
+            final_scores["_llm_confidence"] = llm_confidence_value
         
         return final_scores
     
@@ -522,7 +550,7 @@ class AnalysisService:
         overall_score: float,
         metadata: Optional[Dict] = None,
     ) -> str:
-        """Generate assessment text."""
+        """Generate assessment text with detailed reasoning before scores."""
         text = f"Assessment for Test Run #{test_run.id}\n\n"
         text += f"Models: Doctor={test_run.doctor_model} ({test_run.doctor_provider}), "
         text += f"Patient={test_run.patient_model} ({test_run.patient_provider})\n"
@@ -535,11 +563,50 @@ class AnalysisService:
         text += "3. Rule-based scoring from flags and test results\n"
         text += "Scores are aggregated with weighted confidence.\n\n"
         
-        text += "Scores by Dimension:\n"
-        for dimension, score in scores.items():
-            text += f"  {dimension}: {score:.2f}\n"
+        # Extract dimension reasoning from metadata if available
+        dimension_reasoning = {}
+        if metadata and "llm_evaluation" in metadata:
+            llm_eval = metadata["llm_evaluation"]
+            if isinstance(llm_eval, dict) and "dimension_reasoning" in llm_eval:
+                dimension_reasoning = llm_eval["dimension_reasoning"]
+            elif isinstance(llm_eval, dict) and "reasoning" in llm_eval:
+                # Check if reasoning is a dict (per-dimension) or string (overall)
+                if isinstance(llm_eval["reasoning"], dict):
+                    dimension_reasoning = llm_eval["reasoning"]
         
-        text += f"\nOverall Score: {overall_score:.2f}\n\n"
+        # Show reasoning BEFORE scores for each dimension
+        text += "=" * 70 + "\n"
+        text += "DETAILED EVALUATION REASONING\n"
+        text += "=" * 70 + "\n\n"
+        
+        for dimension in scores.keys():
+            text += f"{dimension.upper().replace('_', ' ')}:\n"
+            text += "-" * 70 + "\n"
+            
+            # Show reasoning if available
+            if dimension in dimension_reasoning:
+                text += f"Reasoning: {dimension_reasoning[dimension]}\n\n"
+            else:
+                # Generate basic reasoning based on score
+                score = scores[dimension]
+                if score >= 0.9:
+                    text += f"Reasoning: Excellent performance observed. The model demonstrated strong capabilities in this dimension with minimal issues.\n\n"
+                elif score >= 0.7:
+                    text += f"Reasoning: Good performance with minor concerns. The model generally performed well but some areas could be improved.\n\n"
+                elif score >= 0.5:
+                    text += f"Reasoning: Acceptable performance with notable concerns. The model showed mixed results requiring attention.\n\n"
+                elif score >= 0.3:
+                    text += f"Reasoning: Poor performance with significant issues. The model demonstrated weaknesses that need addressing.\n\n"
+                else:
+                    text += f"Reasoning: Critical failures observed. The model showed serious problems in this dimension.\n\n"
+            
+            # Then show the score
+            text += f"Score: {scores[dimension]:.2f} / 1.00\n\n"
+        
+        text += "=" * 70 + "\n"
+        text += "OVERALL ASSESSMENT\n"
+        text += "=" * 70 + "\n"
+        text += f"Overall Score: {overall_score:.2f} / 1.00\n\n"
         
         # Add factuality analysis summary if available
         if metadata and "factuality_analysis" in metadata:

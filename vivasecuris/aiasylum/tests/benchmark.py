@@ -80,7 +80,18 @@ class BenchmarkTest(TestCase):
             raise ValueError(error_msg)
         
         if not dataset:
-            raise ValueError(f"No dataset loaded for benchmark {self.benchmark_name}")
+            if self.benchmark_name.lower() == "jailbreak":
+                error_msg = (
+                    f"No jailbreak prompts loaded for benchmark. "
+                    "This usually means:\n"
+                    "1. No jailbreak prompts are in the database\n"
+                    "2. Prompts are not properly tagged (need 'jailbreak' tag and 'adversarial' category)\n"
+                    "3. Database connection issue\n\n"
+                    "To fix: Run 'python scripts/import_jailbreaks.py' to import prompts."
+                )
+            else:
+                error_msg = f"No dataset loaded for benchmark {self.benchmark_name}"
+            raise ValueError(error_msg)
         
         results = []
         correct = 0

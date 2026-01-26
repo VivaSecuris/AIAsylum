@@ -119,9 +119,12 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
 
 @router.get("/prompts/metadata")
 async def get_prompts_metadata(
-    benchmark: str = Query(..., description="Benchmark name (e.g., 'mmlu', 'gsm8k')"),
+    benchmark: str = Query(..., description="Benchmark name (e.g., 'mmlu', 'gsm8k', 'jailbreak')"),
 ):
     """Get metadata about prompts in a benchmark dataset without loading all data."""
+    # Import here to avoid circular import
+    from vivasecuris.aiasylum.benchmarks.datasets import BENCHMARK_DATASETS
+    
     if benchmark.lower() not in BENCHMARK_DATASETS:
         raise HTTPException(
             status_code=400,
@@ -158,7 +161,7 @@ async def get_prompts_metadata(
 
 @router.get("/prompts")
 async def get_prompts(
-    benchmark: str = Query(..., description="Benchmark name (e.g., 'mmlu', 'gsm8k')"),
+    benchmark: str = Query(..., description="Benchmark name (e.g., 'mmlu', 'gsm8k', 'jailbreak')"),
     indices: Optional[str] = Query(None, description="Comma-separated indices or ranges (e.g., '0,5,10,15-20')"),
     subject: Optional[str] = Query(None, description="Filter by subject (e.g., 'abstract_algebra' for MMLU)"),
     num_samples: Optional[int] = Query(None, description="Number of samples to return (random selection if indices not specified)"),
@@ -168,11 +171,19 @@ async def get_prompts(
     
     Supports manual selection via indices or subject filtering.
     If neither indices nor subject is specified, returns first num_samples (or all if num_samples not specified).
+    Note: For 'jailbreak' benchmark, indices/subject filtering is not supported (loads from database).
     """
     if benchmark.lower() not in BENCHMARK_DATASETS:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown benchmark: {benchmark}. Available: {list(BENCHMARK_DATASETS.keys())}"
+        )
+    
+    # Jailbreak benchmark doesn't support indices/subject filtering (loads from database)
+    if benchmark.lower() == "jailbreak" and (indices or subject):
+        raise HTTPException(
+            status_code=400,
+            detail="Jailbreak benchmark does not support indices or subject filtering. Use num_samples to limit the number of prompts."
         )
     
     try:
@@ -426,15 +437,23 @@ async def create_suite_from_prompts(
             )
     
     # Validate that either indices or subject is provided (or both)
-    if not request.indices and not request.subject:
+    # Exception: jailbreak benchmark doesn't require indices/subject (loads from database)
+    if request.benchmark.lower() != "jailbreak" and not request.indices and not request.subject:
         raise HTTPException(
             status_code=400,
-            detail="Either 'indices' or 'subject' must be specified for manual selection"
+            detail="Either 'indices' or 'subject' must be specified for manual selection (not required for 'jailbreak' benchmark)"
         )
     
-    # Parse indices if provided
+    # Jailbreak benchmark doesn't support indices/subject filtering
+    if request.benchmark.lower() == "jailbreak" and (request.indices or request.subject):
+        raise HTTPException(
+            status_code=400,
+            detail="Jailbreak benchmark does not support indices or subject filtering. It loads prompts from the database."
+        )
+    
+    # Parse indices if provided (not applicable for jailbreak)
     selected_indices = None
-    if request.indices:
+    if request.indices and request.benchmark.lower() != "jailbreak":
         try:
             # Load all prompts to get max index for validation
             all_prompts = await load_benchmark_dataset_all(request.benchmark)
@@ -442,6 +461,9 @@ async def create_suite_from_prompts(
             selected_indices = parse_index_selection(request.indices, max_index)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid indices format: {str(e)}")
+    
+    # For jailbreak, use default test_mode if not specified
+    test_mode = request.test_mode or ("multi_shot" if request.benchmark.lower() == "jailbreak" else "one_shot")
     
     # Create suite
     session = get_session()
@@ -462,7 +484,7 @@ async def create_suite_from_prompts(
                 "selected_indices": request.indices,  # Store as string for reference
                 "selected_indices_list": selected_indices,  # Store as list for use
                 "selected_subject": request.subject,
-                "test_mode": request.test_mode,
+                "test_mode": test_mode,  # Use computed test_mode (multi_shot for jailbreak)
                 "models": request.models,
                 "test_config": request.test_config or {},
             },
@@ -489,7 +511,7 @@ async def create_suite_from_prompts(
                     "selected_subject": request.subject,
                     "test_config": {
                         "benchmark_name": request.benchmark,
-                        "test_mode": request.test_mode,
+                        "test_mode": test_mode,  # Use computed test_mode (multi_shot for jailbreak)
                         **(request.test_config or {}),
                     },
                     "suite_id": suite.id,

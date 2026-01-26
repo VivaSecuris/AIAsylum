@@ -78,6 +78,8 @@ class SuiteRunner:
             # For each benchmark + model combination
             for benchmark in benchmarks:
                 for model in models:
+                    # Jailbreak benchmarks use multi-shot by default (many jailbreaks require multiple turns)
+                    test_mode = "multi_shot" if benchmark.lower() == "jailbreak" else "one_shot"
                     test_run = TestRun(
                         doctor_provider=model["provider"],
                         doctor_model=model["model"],
@@ -92,7 +94,7 @@ class SuiteRunner:
                             "test_config": {
                                 "benchmark_name": benchmark,
                                 "num_samples": num_samples or 100,
-                                "test_mode": "one_shot",
+                                "test_mode": test_mode,
                             },
                             "suite_id": suite.id,
                         },
