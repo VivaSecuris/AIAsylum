@@ -6,6 +6,7 @@ import { useCreateTestRun, usePrompts, usePromptVariables, useBenchmarks, useRun
 import { useRouter } from 'next/router'
 import { toast } from '@/lib/toast'
 import Link from 'next/link'
+import { AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
 
 export function CreateTestForm() {
   const router = useRouter()
@@ -54,6 +55,16 @@ export function CreateTestForm() {
   const [groupTherapyPatients, setGroupTherapyPatients] = useState<Array<{ id: string; provider: string; model: string }>>([
     { id: 'patient_1', provider: '', model: '' }
   ])
+  
+  // Auto-analysis configuration
+  const [enableAutoAnalysis, setEnableAutoAnalysis] = useState(false)
+  const [showAnalysisConfig, setShowAnalysisConfig] = useState(false)
+  const [analysisConfig, setAnalysisConfig] = useState<AnalysisConfig>({
+    enable_cot_detection: true,
+    cot_analysis_mode: 'full',
+    enable_factuality_check: false,
+    enable_manipulation_analysis: false,
+  })
   
   // Get system prompts separately
   const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
@@ -225,10 +236,23 @@ export function CreateTestForm() {
       
       const submitData = {
         ...formData,
-        test_config: testConfig,
+        test_config: {
+          ...testConfig,
+          // Store auto-analysis config if enabled
+          ...(enableAutoAnalysis ? {
+            auto_analysis: true,
+            analysis_config: analysisConfig,
+          } : {}),
+        },
         variables: Object.keys(variableValues).length > 0 ? variableValues : undefined,
       }
       const result = await createTestRun.mutateAsync(submitData)
+      
+      // If auto-analysis is enabled, inform the user
+      if (enableAutoAnalysis) {
+        toast.success(`Test run created! Analysis will start automatically when the test completes.`)
+      }
+      
       router.push(`/test-runs/${result.id}`)
     } catch (error) {
       console.error('Failed to create test run:', error)
@@ -664,6 +688,127 @@ export function CreateTestForm() {
             )}
           </div>
         )}
+
+        {/* Auto-Analysis Section */}
+        <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={enableAutoAnalysis}
+              onChange={(e) => {
+                setEnableAutoAnalysis(e.target.checked)
+                if (e.target.checked) {
+                  setShowAnalysisConfig(true)
+                }
+              }}
+              className="rounded"
+            />
+            <div className="flex-1">
+              <span className="text-sm font-medium">Enable Automatic Analysis</span>
+              <p className="text-xs text-muted-foreground">
+                Automatically run analysis when the test completes. Configure analysis options below.
+              </p>
+            </div>
+          </label>
+
+          {enableAutoAnalysis && (
+            <div className="mt-4 space-y-4 rounded-lg border bg-card p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Analysis Configuration</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowAnalysisConfig(!showAnalysisConfig)}
+                  className="text-xs text-primary hover:underline"
+                >
+                  {showAnalysisConfig ? 'Hide' : 'Show'} Options
+                </button>
+              </div>
+
+              {showAnalysisConfig && (
+                <div className="space-y-4">
+                  {/* Evaluator Model Selection */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-muted-foreground">Evaluator Model (Optional)</label>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Select an AI model to analyze the conversation. If not specified, the doctor model will be used.
+                    </p>
+                    <ModelSelector
+                      label=""
+                      provider={analysisConfig.evaluator_provider || ''}
+                      model={analysisConfig.evaluator_model || ''}
+                      onProviderChange={(provider) =>
+                        setAnalysisConfig({ ...analysisConfig, evaluator_provider: provider || undefined })
+                      }
+                      onModelChange={(model) =>
+                        setAnalysisConfig({ ...analysisConfig, evaluator_model: model || undefined })
+                      }
+                    />
+                  </div>
+
+                  {/* Chain of Thought Detection */}
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={analysisConfig.enable_cot_detection}
+                        onChange={(e) =>
+                          setAnalysisConfig({ ...analysisConfig, enable_cot_detection: e.target.checked })
+                        }
+                        className="rounded"
+                      />
+                      <span className="text-sm font-medium">Enable Chain of Thought Detection</span>
+                    </label>
+                    {analysisConfig.enable_cot_detection && (
+                      <div className="ml-6 space-y-2">
+                        <label className="text-xs font-medium text-muted-foreground">Analysis Mode</label>
+                        <select
+                          value={analysisConfig.cot_analysis_mode}
+                          onChange={(e) =>
+                            setAnalysisConfig({
+                              ...analysisConfig,
+                              cot_analysis_mode: e.target.value as 'full' | 'partial' | 'none',
+                            })
+                          }
+                          className="w-full rounded border px-3 py-2 text-sm"
+                        >
+                          <option value="full">Full Analysis</option>
+                          <option value="partial">Partial Analysis</option>
+                          <option value="none">None</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Factuality Check */}
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={analysisConfig.enable_factuality_check}
+                      onChange={(e) =>
+                        setAnalysisConfig({ ...analysisConfig, enable_factuality_check: e.target.checked })
+                      }
+                      className="rounded"
+                    />
+                    <span className="text-sm font-medium">Enable Factuality/Hallucination Detection</span>
+                  </label>
+
+                  {/* Manipulation Analysis */}
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={analysisConfig.enable_manipulation_analysis}
+                      onChange={(e) =>
+                        setAnalysisConfig({ ...analysisConfig, enable_manipulation_analysis: e.target.checked })
+                      }
+                      className="rounded"
+                    />
+                    <span className="text-sm font-medium">Enable Manipulation Analysis</span>
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <button
           type="button"

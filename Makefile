@@ -1,4 +1,4 @@
-.PHONY: install install-dev init migrate migrate-create run-api run-frontend test test-coverage lint format backup restore clean
+.PHONY: install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean
 
 # Installation
 install:
@@ -35,6 +35,12 @@ test:
 
 test-coverage:
 	pytest tests/ --cov=vivasecuris --cov-report=html --cov-report=term
+
+test-cli:
+	python scripts/test_cli.py
+
+test-cli:
+	python scripts/test_cli.py
 
 # Linting & Formatting
 lint:

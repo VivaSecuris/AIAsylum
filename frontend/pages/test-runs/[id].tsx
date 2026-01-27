@@ -1,4 +1,5 @@
 import { useRouter } from 'next/router'
+import Link from 'next/link'
 import { useState, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Layout } from '@/components/layout/Layout'
@@ -8,7 +9,7 @@ import { ConversationViewer } from '@/components/conversation/ConversationViewer
 import { DataTable } from '@/components/common/DataTable'
 import { AnalysisConfigDialog, AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
 import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis, useStartTestRun, useStopTestRun, useDeleteTestRun, useTestRunProgress } from '@/lib/hooks'
-import { formatDate } from '@/lib/utils'
+import { formatDate, formatDateTime } from '@/lib/utils'
 import { TestResult, Assessment } from '@/lib/api'
 import { Play, Download, GitCompare, Trash2, Square } from 'lucide-react'
 import * as Tabs from '@radix-ui/react-tabs'
@@ -32,10 +33,11 @@ export default function TestRunDetailPage() {
   // State declarations (must be before useEffect hooks that use them)
   const [activeTab, setActiveTab] = useState('overview')
   const [showAnalysisDialog, setShowAnalysisDialog] = useState(false)
+  const [analysisProgress, setAnalysisProgress] = useState<{step?: string; message?: string} | null>(null)
   
-  // Use SSE for live progress monitoring when test is running or pending (to catch when it starts)
-  // Enable if testRun is loading (undefined) or if status is running/pending
-  const shouldMonitor = !testRun || testRun?.status === 'running' || testRun?.status === 'pending'
+  // Use SSE for live progress monitoring when test is running, pending, or when analysis is running
+  // Enable if testRun is loading (undefined) or if status is running/pending, OR if analysis is pending
+  const shouldMonitor = !testRun || testRun?.status === 'running' || testRun?.status === 'pending' || runAnalysis.isPending
   const { progress, isConnected, error: progressError } = useTestRunProgress(
     testRunId, 
     shouldMonitor && testRunId > 0
@@ -76,23 +78,51 @@ export default function TestRunDetailPage() {
   
   // Also refresh when progress events indicate activity
   useEffect(() => {
-    if (progress && testRun?.status === 'running') {
-      // Refresh conversation and results when we get any progress update
-      // Especially for conversation_turn events, refetch immediately
-      if (progress.event_type === 'conversation_turn') {
-        queryClient.refetchQueries({ queryKey: ['conversation', testRunId] })
-      } else {
-        queryClient.invalidateQueries({ queryKey: ['conversation', testRunId] })
+    if (progress) {
+      console.log('[TestRunDetailPage] Progress event received:', progress.event_type, progress)
+      
+      // Handle analysis progress events
+      if (progress.event_type === 'analysis_started') {
+        console.log('[TestRunDetailPage] Analysis started event')
+        setAnalysisProgress({ step: 'started', message: progress.message || 'Analysis started...' })
+        queryClient.refetchQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
+      } else if (progress.event_type === 'analysis_progress') {
+        const data = progress.data || {}
+        console.log('[TestRunDetailPage] Analysis progress event:', data)
+        setAnalysisProgress({ 
+          step: data.step || 'progress', 
+          message: data.message || progress.message || 'Analysis in progress...' 
+        })
+        queryClient.refetchQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
+      } else if (progress.event_type === 'analysis_completed') {
+        console.log('[TestRunDetailPage] Analysis completed event')
+        setAnalysisProgress(null) // Clear progress when done
+        queryClient.refetchQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
+        toast.success(progress.message || 'Analysis completed!')
       }
-      queryClient.invalidateQueries({ queryKey: ['test-results', testRunId] })
+      
+      // Handle test run progress events
+      if (testRun?.status === 'running') {
+        // Refresh conversation and results when we get any progress update
+        // Especially for conversation_turn events, refetch immediately
+        if (progress.event_type === 'conversation_turn') {
+          queryClient.refetchQueries({ queryKey: ['conversation', testRunId] })
+        } else {
+          queryClient.invalidateQueries({ queryKey: ['conversation', testRunId] })
+        }
+        queryClient.invalidateQueries({ queryKey: ['test-results', testRunId] })
+      }
     }
   }, [progress, testRun?.status, testRunId, queryClient])
 
   // Poll for assessments when analysis might be running
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null
-    if (runAnalysis.isPending || (assessments.length === 0 && testRun?.status === 'completed')) {
-      // Poll more aggressively when analysis is pending
+    if (runAnalysis.isPending || analysisProgress || (assessments.length === 0 && testRun?.status === 'completed')) {
+      // Poll more aggressively when analysis is pending or in progress
       interval = setInterval(() => {
         queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
         queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
@@ -101,7 +131,7 @@ export default function TestRunDetailPage() {
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [runAnalysis.isPending, testRunId, queryClient, assessments.length, testRun?.status])
+  }, [runAnalysis.isPending, analysisProgress, testRunId, queryClient, assessments.length, testRun?.status])
 
   const handleRunAnalysis = async (config: AnalysisConfig) => {
     if (!testRunId) {
@@ -110,6 +140,8 @@ export default function TestRunDetailPage() {
     }
     try {
       console.log('Starting analysis with config:', config)
+      // Set initial progress state immediately
+      setAnalysisProgress({ step: 'starting', message: 'Starting analysis...' })
       const result = await runAnalysis.mutateAsync({
         testRunId,
         config: {
@@ -122,13 +154,32 @@ export default function TestRunDetailPage() {
         },
       })
       console.log('Analysis started, result:', result)
-      toast.success('Analysis started! Results will appear when complete.')
+      
+      // Invalidate test runs to show the new analysis test run
+      queryClient.invalidateQueries({ queryKey: ['test-runs'] })
+      
+      // If analysis_test_run_id is returned, navigate to it or show a link
+      if (result.analysis_test_run_id) {
+        toast.success(`Analysis started! View progress at test run #${result.analysis_test_run_id}`, {
+          action: {
+            label: 'View',
+            onClick: () => router.push(`/test-runs/${result.analysis_test_run_id}`)
+          }
+        })
+        // Optionally navigate to the analysis test run
+        // router.push(`/test-runs/${result.analysis_test_run_id}`)
+      } else {
+        toast.success('Analysis started! Results will appear when complete.')
+      }
+      
       // Start polling for results
       queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
     } catch (error: any) {
       console.error('Failed to run analysis:', error)
       const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run analysis'
       toast.error(`Failed to run analysis: ${errorMessage}`)
+      // Clear progress on error
+      setAnalysisProgress(null)
     }
   }
 
@@ -277,16 +328,33 @@ export default function TestRunDetailPage() {
       },
     ]
 
+  // Check if this is an analysis test run
+  const isAnalysisRun = testRun.test_type === 'analysis'
+  const sourceTestRunId = testRun.meta_data?.source_test_run_id
+
   return (
     <Layout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold">Test Run #{testRun.id}</h1>
+            <h1 className="text-3xl font-bold">
+              {isAnalysisRun ? 'Analysis' : 'Test Run'} #{testRun.id}
+            </h1>
+            {isAnalysisRun && sourceTestRunId && (
+              <p className="text-sm text-muted-foreground mt-1">
+                Analyzing{' '}
+                <Link 
+                  href={`/test-runs/${sourceTestRunId}`}
+                  className="text-primary hover:underline"
+                >
+                  test run #{sourceTestRunId}
+                </Link>
+              </p>
+            )}
             <div className="mt-2 flex items-center gap-3">
               <StatusBadge status={testRun.status} />
               <span className="text-sm text-muted-foreground">
-                Created: {testRun.created_at ? formatDate(testRun.created_at) : 'N/A'}
+                Created: {testRun.created_at ? formatDateTime(testRun.created_at) : 'N/A'}
               </span>
             </div>
           </div>
@@ -321,7 +389,7 @@ export default function TestRunDetailPage() {
                 {deleteTestRun.isPending ? 'Deleting...' : 'Delete Run'}
               </button>
             )}
-            {testRun.status === 'completed' && (
+            {testRun.status === 'completed' && !isAnalysisRun && (
               <>
                 <button
                   onClick={() => {
@@ -397,8 +465,43 @@ export default function TestRunDetailPage() {
           </Tabs.List>
 
           <Tabs.Content value="overview" className="space-y-4">
+            {/* Analysis Progress Indicator - Show when analysis is running */}
+            {(analysisProgress || (isAnalysisRun && testRun.status === 'running')) && (
+              <div className="rounded-lg border bg-purple-50 dark:bg-purple-950 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-purple-500 animate-pulse" />
+                    <span className="text-sm font-medium text-purple-900 dark:text-purple-100">
+                      Analysis in Progress
+                    </span>
+                  </div>
+                  {progress && (
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(progress.timestamp).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+                {analysisProgress ? (
+                  <>
+                    <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">
+                      {analysisProgress.message || 'Processing...'}
+                    </p>
+                    {analysisProgress.step && (
+                      <p className="text-xs text-purple-600 dark:text-purple-400 mt-1">
+                        Step: {analysisProgress.step.replace(/_/g, ' ')}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">
+                    Analysis is running... waiting for progress updates
+                  </p>
+                )}
+              </div>
+            )}
+            
             {/* Live Progress Indicator */}
-            {(testRun.status === 'running' || testRun.status === 'pending') && (
+            {(testRun.status === 'running' || testRun.status === 'pending') && !isAnalysisRun && (
               <div className="rounded-lg border bg-blue-50 dark:bg-blue-950 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -467,8 +570,37 @@ export default function TestRunDetailPage() {
                       </div>
                     )}
                     
+                    {/* Test progress with attempt count */}
+                    {progress.data && progress.event_type === 'test_progress' && (
+                      <div className="mt-2">
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <span>Attempt Progress</span>
+                          {typeof progress.data.attempt === 'number' && typeof progress.data.total_attempts === 'number' && (
+                            <span className="text-sm font-semibold">
+                              {progress.data.attempt} / {progress.data.total_attempts}
+                            </span>
+                          )}
+                        </div>
+                        {typeof progress.data.progress === 'number' && (
+                          <div className="h-2 w-full rounded-full bg-blue-200 dark:bg-blue-800 overflow-hidden mt-1">
+                            <div
+                              className="h-full bg-blue-600 dark:bg-blue-400 transition-all duration-300"
+                              style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
+                            />
+                          </div>
+                        )}
+                        {typeof progress.data.attempt === 'number' && typeof progress.data.total_attempts === 'number' && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Attempt {progress.data.attempt} of {progress.data.total_attempts}
+                            {progress.data.test_type && ` (${progress.data.test_type.replace('_', ' ')})`}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     {/* General progress indicator for any running test */}
-                    {testRun?.status === 'running' && progress.data && typeof progress.data.elapsed_seconds === 'number' && (
+                    {testRun?.status === 'running' && progress.data && typeof progress.data.elapsed_seconds === 'number' && 
+                     progress.event_type !== 'test_progress' && (
                       <div className="mt-2">
                         <div className="flex items-center justify-between text-xs mb-1">
                           <span>Status</span>
@@ -476,7 +608,6 @@ export default function TestRunDetailPage() {
                         </div>
                         <p className="text-xs text-muted-foreground">
                           Elapsed: {Math.floor(progress.data.elapsed_seconds)}s
-                          {progress.event_type === 'test_progress' && ' • Test is active...'}
                         </p>
                       </div>
                     )}
@@ -507,7 +638,7 @@ export default function TestRunDetailPage() {
             
             <div className="grid grid-cols-2 gap-4">
               <div className="rounded-lg border bg-card p-4">
-                <h3 className="font-semibold mb-2">Doctor Model</h3>
+                <h3 className="font-semibold mb-2">{isAnalysisRun ? 'Evaluator Model' : 'Doctor Model'}</h3>
                 <p className="text-sm text-muted-foreground">{testRun.doctor_provider}</p>
                 <p className="text-lg font-medium">{testRun.doctor_model}</p>
               </div>
@@ -525,11 +656,11 @@ export default function TestRunDetailPage() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-lg border bg-card p-4">
-                  <h3 className="font-semibold mb-2">Patient Model</h3>
-                  <p className="text-sm text-muted-foreground">{testRun.patient_provider}</p>
-                  <p className="text-lg font-medium">{testRun.patient_model}</p>
-                </div>
+              <div className="rounded-lg border bg-card p-4">
+                <h3 className="font-semibold mb-2">{isAnalysisRun ? 'Model Being Analyzed' : 'Patient Model'}</h3>
+                <p className="text-sm text-muted-foreground">{testRun.patient_provider}</p>
+                <p className="text-lg font-medium">{testRun.patient_model}</p>
+              </div>
               )}
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">Test Type</h3>
@@ -609,6 +740,31 @@ export default function TestRunDetailPage() {
                         {progress.data.test_type && (
                           <p className="text-xs text-muted-foreground mt-1">
                             Type: {progress.data.test_type}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {progress.event_type === 'test_progress' && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">Test Progress</span>
+                          {typeof progress.data.progress === 'number' && (
+                            <span className="text-sm font-semibold">{progress.data.progress}%</span>
+                          )}
+                        </div>
+                        {typeof progress.data.progress === 'number' && (
+                          <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="h-full bg-primary transition-all duration-500"
+                              style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
+                            />
+                          </div>
+                        )}
+                        {typeof progress.data.attempt === 'number' && typeof progress.data.total_attempts === 'number' && (
+                          <p className="text-sm text-muted-foreground">
+                            Attempt {progress.data.attempt} of {progress.data.total_attempts}
+                            {progress.data.test_type && ` (${progress.data.test_type.replace('_', ' ')})`}
                           </p>
                         )}
                       </div>
@@ -724,43 +880,6 @@ export default function TestRunDetailPage() {
                 )}
               </div>
 
-              {/* Live Results Preview */}
-              {results.length > 0 && (
-                <div className="rounded-lg border bg-card p-4">
-                  <h3 className="font-semibold mb-4">Live Results ({results.length})</h3>
-                  <div className="space-y-2">
-                    {results.slice(-3).map((result) => (
-                      <div key={result.id} className="rounded border bg-muted/30 p-3">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm font-medium">{result.test_name}</span>
-                          {typeof result.score === 'number' && (
-                            <span className="text-sm font-semibold">
-                              {(result.score * 100).toFixed(1)}%
-                            </span>
-                          )}
-                        </div>
-                        {result.flags && result.flags.length > 0 && (
-                          <div className="flex gap-1 mt-2">
-                            {result.flags.map((flag, i) => (
-                              <span
-                                key={i}
-                                className="rounded bg-red-100 px-2 py-0.5 text-xs text-red-800"
-                              >
-                                {flag}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  {results.length > 3 && (
-                    <p className="text-xs text-muted-foreground mt-2 text-center">
-                      Showing last 3 results. View all in Results tab.
-                    </p>
-                  )}
-                </div>
-              )}
             </Tabs.Content>
           )}
 
@@ -795,14 +914,6 @@ export default function TestRunDetailPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {testRun.status === 'running' && (
-                  <div className="rounded-lg border bg-blue-50 dark:bg-blue-950 p-3 flex items-center gap-2">
-                    <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                    <span className="text-sm text-blue-900 dark:text-blue-100">
-                      Live updates enabled - results will appear here as they're generated
-                    </span>
-                  </div>
-                )}
                 <DataTable
                   data={results}
                   columns={resultsColumns}
@@ -813,7 +924,33 @@ export default function TestRunDetailPage() {
           </Tabs.Content>
 
           <Tabs.Content value="analysis" className="overflow-y-auto max-h-[calc(100vh-300px)]">
-            {runAnalysis.isPending && (
+            {/* Analysis Progress Indicator */}
+            {analysisProgress && (
+              <div className="mb-4 rounded-lg border bg-purple-50 dark:bg-purple-950 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-purple-500 animate-pulse" />
+                    <span className="text-sm font-medium text-purple-900 dark:text-purple-100">
+                      Analysis in Progress
+                    </span>
+                  </div>
+                  {progress && (
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(progress.timestamp).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-purple-700 dark:text-purple-300 mt-1">
+                  {analysisProgress.message || 'Processing...'}
+                </p>
+                {analysisProgress.step && (
+                  <p className="text-xs text-purple-600 dark:text-purple-400 mt-1">
+                    Step: {analysisProgress.step.replace(/_/g, ' ')}
+                  </p>
+                )}
+              </div>
+            )}
+            {runAnalysis.isPending && !analysisProgress && (
               <div className="mb-4 rounded-lg border bg-blue-50 p-4 text-sm text-blue-800">
                 <p className="font-medium">Analysis is running...</p>
                 <p className="text-xs mt-1">This may take a few minutes. Results will appear automatically when complete.</p>
@@ -991,13 +1128,15 @@ export default function TestRunDetailPage() {
             ) : (
               <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
                 <p className="mb-4">No analysis available yet.</p>
-                <button
-                  onClick={() => setShowAnalysisDialog(true)}
-                  disabled={runAnalysis.isPending}
-                  className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {runAnalysis.isPending ? 'Running Analysis...' : 'Run Analysis'}
-                </button>
+                {!isAnalysisRun && (
+                  <button
+                    onClick={() => setShowAnalysisDialog(true)}
+                    disabled={runAnalysis.isPending}
+                    className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {runAnalysis.isPending ? 'Running Analysis...' : 'Run Analysis'}
+                  </button>
+                )}
                 {runAnalysis.isPending && (
                   <p className="mt-4 text-sm text-muted-foreground">
                     Analysis is running in the background. Results will appear here when complete.

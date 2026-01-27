@@ -54,11 +54,19 @@ class MultiShotTest(TestCase):
         # Get cancellation check callback if available
         check_cancellation = context.get("check_cancellation") if context else None
         
+        # Get progress callback if available
+        progress_callback = context.get("progress_callback") if context else None
+        total_prompts = len(prompts_to_use)
+        
         # Send each prompt sequentially to the patient
         for i, prompt in enumerate(prompts_to_use):
             # Check for cancellation
             if check_cancellation:
                 check_cancellation()
+            
+            # Emit progress if callback available
+            if progress_callback:
+                await progress_callback(i + 1, total_prompts, f"Processing attempt {i + 1}/{total_prompts}")
             
             # Patient responds to each prompt (context accumulates)
             patient_response = await patient.respond(prompt, context=context)

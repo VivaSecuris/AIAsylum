@@ -6,7 +6,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { useSuite, useSuiteProgress, useSuiteRuns, useDeleteSuite } from '@/lib/hooks'
 import { SuiteProgress } from '@/components/suite/SuiteProgress'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
-import { formatDate } from '@/lib/utils'
+import { formatDate, formatDateTime } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import Link from 'next/link'
 import { Trash2, RefreshCw } from 'lucide-react'
@@ -184,7 +184,7 @@ export default function SuiteDetailPage() {
                         <StatusBadge status={run.status} />
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatDate(run.created_at)}
+                        {formatDateTime(run.created_at)}
                       </td>
                       <td className="px-4 py-3">
                         <Link

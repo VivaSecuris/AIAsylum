@@ -785,6 +785,31 @@ class TestRunner:
                             if single_prompt:
                                 prompts = [single_prompt]
                         test = OneShotTest(prompts=prompts)
+                    
+                    # Get total number of prompts for progress tracking
+                    total_prompts = len(test.prompts) if test.prompts else 1
+                    
+                    # Add progress callback to context for one-shot tests
+                    async def emit_one_shot_progress(current: int, total: int, message: str = None):
+                        """Emit progress update during one-shot test execution."""
+                        progress_pct = int((current / total * 100)) if total > 0 else 0
+                        await progress_event_manager.emit_event(
+                            test_run_id,
+                            "test_progress",
+                            {
+                                "test_type": "one_shot",
+                                "current": current,
+                                "total": total,
+                                "progress": progress_pct,
+                                "attempt": current,
+                                "total_attempts": total,
+                            },
+                            message or f"Processing attempt {current}/{total} ({progress_pct}%)"
+                        )
+                    
+                    # Add progress callback to test config
+                    test_config["progress_callback"] = emit_one_shot_progress
+                    
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 elif test_run.test_type == TEST_TYPE_MULTI_SHOT:
                     # Multi-shot test - multiple sequential prompts to test context handling
@@ -797,6 +822,31 @@ class TestRunner:
                             test = MultiShotTest(prompts=prompts)
                         else:
                             test = MultiShotTest(num_messages=num_messages)
+                    
+                    # Get total number of prompts for progress tracking
+                    total_prompts = len(test.prompts) if test.prompts else test.num_messages
+                    
+                    # Add progress callback to context for multi-shot tests
+                    async def emit_multi_shot_progress(current: int, total: int, message: str = None):
+                        """Emit progress update during multi-shot test execution."""
+                        progress_pct = int((current / total * 100)) if total > 0 else 0
+                        await progress_event_manager.emit_event(
+                            test_run_id,
+                            "test_progress",
+                            {
+                                "test_type": "multi_shot",
+                                "current": current,
+                                "total": total,
+                                "progress": progress_pct,
+                                "attempt": current,
+                                "total_attempts": total,
+                            },
+                            message or f"Processing attempt {current}/{total} ({progress_pct}%)"
+                        )
+                    
+                    # Add progress callback to test config
+                    test_config["progress_callback"] = emit_multi_shot_progress
+                    
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 elif test_run.test_type == TEST_TYPE_CONVERSATION:
                     # Conversation test - multi-turn conversation between doctor and patient
@@ -968,6 +1018,16 @@ class TestRunner:
                 test_run.status = "completed"
                 safe_commit(session, test_run_id, test_run)
                 
+                # Check if auto-analysis is enabled
+                auto_analysis_enabled = False
+                analysis_config = {}
+                if test_run.meta_data and test_run.meta_data.get("test_config"):
+                    test_config = test_run.meta_data.get("test_config", {})
+                    if test_config.get("auto_analysis"):
+                        auto_analysis_enabled = True
+                        analysis_config = test_config.get("analysis_config", {})
+                        logger.info(f"Auto-analysis enabled for test run {test_run_id} with config: {analysis_config}")
+                
                 # Emit progress event: test completed
                 elapsed = (datetime.utcnow() - start_time).total_seconds()
                 await progress_event_manager.emit_event(
@@ -978,9 +1038,37 @@ class TestRunner:
                         "elapsed_seconds": elapsed,
                         "progress": 100,
                         "score": test_result.score if hasattr(test_result, 'score') else None,
+                        "auto_analysis_enabled": auto_analysis_enabled,
                     },
                     f"Test run {test_run_id} completed successfully"
                 )
+                
+                # Trigger auto-analysis if enabled
+                if auto_analysis_enabled:
+                    try:
+                        logger.info(f"Triggering auto-analysis for test run {test_run_id}")
+                        from vivasecuris.aiasylum.analysis import AnalysisService
+                        import asyncio
+                        
+                        # Create analysis service and start analysis in background
+                        analysis_service = AnalysisService()
+                        
+                        # Start analysis as a background task
+                        asyncio.create_task(analysis_service.analyze_test_run(
+                            test_run_id=test_run_id,
+                            enable_activation_patching=False,
+                            enable_cot_detection=analysis_config.get("enable_cot_detection", True),
+                            cot_analysis_mode=analysis_config.get("cot_analysis_mode", "full"),
+                            enable_factuality_check=analysis_config.get("enable_factuality_check", False),
+                            enable_manipulation_analysis=analysis_config.get("enable_manipulation_analysis", False),
+                            evaluator_provider=analysis_config.get("evaluator_provider"),
+                            evaluator_model=analysis_config.get("evaluator_model"),
+                            analysis_test_run_id=None,
+                        ))
+                        logger.info(f"Auto-analysis task created for test run {test_run_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to trigger auto-analysis for test run {test_run_id}: {str(e)}", exc_info=True)
+                        # Don't fail the test run if analysis fails
                 
                 return test_run
             

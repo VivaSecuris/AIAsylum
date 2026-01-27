@@ -60,6 +60,13 @@ class LLMEvaluator:
         # Create evaluation prompt
         prompt = create_evaluation_prompt(conversations, test_results, test_type)
         
+        # Log what we're sending to the model
+        logger.info(f"Preparing evaluation for model {self.model.model_name} ({self.model.provider})")
+        logger.info(f"  - Conversation turns: {len(conversations)}")
+        logger.info(f"  - Test results: {len(test_results) if test_results else 0}")
+        logger.info(f"  - Test type: {test_type}")
+        logger.info(f"  - Prompt length: {len(prompt)} characters")
+        
         # Prepare messages
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -85,8 +92,11 @@ class LLMEvaluator:
                 raise Exception("LLM evaluation timed out after 5 minutes")
             
             # Parse response
+            logger.info(f"Received LLM response ({len(response.content)} chars), parsing scores...")
             parsed = self._parse_scores_from_response(response.content)
             logger.info(f"Parsed scores from LLM: {parsed.get('scores', {})}")
+            logger.info(f"Parsed confidence: {parsed.get('confidence', 0.0):.2f}")
+            logger.info(f"Parsed reasoning available: {bool(parsed.get('reasoning') or parsed.get('dimension_reasoning'))}")
             return parsed
             
         except Exception as e:

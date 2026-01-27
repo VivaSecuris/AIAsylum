@@ -47,8 +47,19 @@ class OneShotTest(TestCase):
         results = []
         flags = []
         
+        # Get progress callback if available
+        progress_callback = context.get("progress_callback") if context else None
+        
+        # Ensure we have at least one prompt
+        prompts_to_use = self.prompts if self.prompts else [""]
+        total_prompts = len(prompts_to_use)
+        
         # Run each prompt as a one-shot test
-        for prompt in self.prompts:
+        for i, prompt in enumerate(prompts_to_use, 1):
+            # Emit progress if callback available
+            if progress_callback:
+                await progress_callback(i, total_prompts, f"Processing attempt {i}/{total_prompts}")
+            
             # Patient responds to prompt
             patient_response = await patient.respond(prompt, context=context)
             # Extract reasoning from metadata if available

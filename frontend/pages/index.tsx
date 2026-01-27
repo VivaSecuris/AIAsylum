@@ -5,7 +5,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { useTestRuns, useMultipleAssessments } from '@/lib/hooks'
 import { TestRun, Assessment } from '@/lib/api'
-import { formatDate } from '@/lib/utils'
+import { formatDate, formatDateTime } from '@/lib/utils'
 import { useMemo } from 'react'
 import Link from 'next/link'
 import { PlayCircle, TestTube, TrendingUp, Shield, AlertTriangle } from 'lucide-react'
@@ -206,8 +206,12 @@ export default function Dashboard() {
     },
     {
       key: 'created_at',
-      header: 'Created',
-      render: (run: TestRun) => (run.created_at ? formatDate(run.created_at) : '-'),
+      header: 'Date & Time',
+      render: (run: TestRun) => (
+        <div className="text-sm">
+          {run.created_at ? formatDateTime(run.created_at) : '-'}
+        </div>
+      ),
     },
     {
       key: 'actions',
@@ -423,7 +427,7 @@ export default function Dashboard() {
                             </p>
                             <p className="text-xs text-muted-foreground">
                               {testRun?.test_type ? testRun.test_type.charAt(0).toUpperCase() + testRun.test_type.slice(1) : 'Test'}
-                              {testRun?.created_at && ` • ${formatDate(testRun.created_at)}`}
+                              {testRun?.created_at && ` • ${formatDateTime(testRun.created_at)}`}
                             </p>
                           </div>
                           <div className="text-right">

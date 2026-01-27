@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { TestRun } from '@/lib/api'
 import { DataTable } from '@/components/common/DataTable'
 import { StatusBadge } from './StatusBadge'
-import { formatDate } from '@/lib/utils'
+import { formatDateTime } from '@/lib/utils'
 import { MoreVertical, Eye, Trash2, Download } from 'lucide-react'
 
 interface TestRunTableProps {
@@ -53,9 +53,17 @@ export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
     },
     {
       key: 'created_at',
-      header: 'Created At',
+      header: 'Date & Time',
       render: (run: TestRun) => (
-        <span className="text-sm">{run.created_at ? formatDate(run.created_at) : '-'}</span>
+        <div className="text-sm">
+          {run.created_at ? (
+            <div>
+              <div className="font-medium">{formatDateTime(run.created_at)}</div>
+            </div>
+          ) : (
+            '-'
+          )}
+        </div>
       ),
     },
     {

@@ -1,5 +1,6 @@
 """Benchmark routes."""
 
+import logging
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -15,6 +16,7 @@ from vivasecuris.aiasylum.benchmarks.datasets import (
     BENCHMARK_DATASETS,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -58,12 +60,16 @@ async def list_benchmarks():
 async def _run_benchmark_background(test_run_id: int):
     """Background task to run a benchmark test run."""
     import traceback
+    logger.info(f"Starting benchmark background task for test run {test_run_id}")
     runner = TestRunner()
     try:
         await runner.execute_test_run(test_run_id)
+        logger.info(f"Benchmark test run {test_run_id} completed successfully")
     except Exception as e:
         # Error is already handled in execute_test_run (sets status to failed)
         error_trace = traceback.format_exc()
+        logger.error(f"Error running benchmark test {test_run_id}: {e}")
+        logger.error(f"Traceback: {error_trace}")
         print(f"Error running benchmark test {test_run_id}: {e}")
         print(f"Traceback: {error_trace}")
 
@@ -106,8 +112,15 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
         session.commit()
         session.refresh(test_run)
         
-        # Run benchmark in background
-        background_tasks.add_task(_run_benchmark_background, test_run.id)
+        # Run benchmark in background using asyncio.create_task (same as regular test runs)
+        import asyncio
+        from vivasecuris.aiasylum.api.cancellation import cancellation_manager
+        
+        # Create and register the asyncio task so we can cancel it later
+        task = asyncio.create_task(_run_benchmark_background(test_run.id))
+        cancellation_manager.register_task(test_run.id, task)
+        
+        logger.info(f"Benchmark test run {test_run.id} queued for execution")
         
         return BenchmarkResponse(
             id=test_run.id,
