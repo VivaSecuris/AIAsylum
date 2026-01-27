@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Request Limits
     max_request_size_mb: int = 10
     
+    # Concurrency Control
+    max_concurrent_workers: int = 5  # Maximum number of test runs that can execute simultaneously
+    
     # Logging
     log_level: str = "INFO"
     log_format: str = "json"

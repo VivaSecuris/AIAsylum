@@ -58,12 +58,19 @@ async def list_benchmarks():
 
 
 async def _run_benchmark_background(test_run_id: int):
-    """Background task to run a benchmark test run."""
+    """Background task to run a benchmark test run with worker pool limiting."""
     import traceback
+    from vivasecuris.aiasylum.api.worker_pool import worker_pool
+    
     logger.info(f"Starting benchmark background task for test run {test_run_id}")
     runner = TestRunner()
-    try:
+    
+    # Run with worker pool limit
+    async def _execute():
         await runner.execute_test_run(test_run_id)
+    
+    try:
+        await worker_pool.run_with_limit(test_run_id, _execute())
         logger.info(f"Benchmark test run {test_run_id} completed successfully")
     except Exception as e:
         # Error is already handled in execute_test_run (sets status to failed)

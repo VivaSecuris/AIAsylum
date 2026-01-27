@@ -31,6 +31,11 @@ class TestRunRequest(BaseModel):
     suite_id: Optional[int] = None  # Optional suite ID to link test run to a suite
 
 
+class TestRunUpdate(BaseModel):
+    """Test run update request."""
+    name: Optional[str] = None  # Custom name for the test run
+
+
 class TestRunResponse(BaseModel):
     """Test run response."""
     id: int
@@ -79,12 +84,18 @@ class ConversationTurnResponse(BaseModel):
 
 
 async def _run_test_background(test_run_id: int):
-    """Background task to run a test."""
+    """Background task to run a test with worker pool limiting."""
     import asyncio
+    from vivasecuris.aiasylum.api.worker_pool import worker_pool
     
     runner = TestRunner()
-    try:
+    
+    # Run with worker pool limit
+    async def _execute():
         await runner.execute_test_run(test_run_id)
+    
+    try:
+        await worker_pool.run_with_limit(test_run_id, _execute())
     except asyncio.CancelledError:
         logger = logging.getLogger(__name__)
         logger.warning(f"🛑 Test run {test_run_id} task was cancelled")
@@ -203,6 +214,32 @@ async def get_test_run(test_run_id: int):
     if not test_run:
         raise HTTPException(status_code=404, detail="Test run not found")
     return test_run
+
+
+@router.put("/{test_run_id}", response_model=TestRunResponse)
+async def update_test_run(test_run_id: int, update: TestRunUpdate):
+    """Update a test run (e.g., rename it)."""
+    session = get_session()
+    try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if not test_run:
+            raise HTTPException(status_code=404, detail="Test run not found")
+        
+        # Update name in meta_data
+        if update.name is not None:
+            if not test_run.meta_data:
+                test_run.meta_data = {}
+            if update.name.strip():
+                test_run.meta_data["name"] = update.name.strip()
+            elif "name" in test_run.meta_data:
+                # Remove name if empty string
+                del test_run.meta_data["name"]
+        
+        session.commit()
+        session.refresh(test_run)
+        return test_run
+    finally:
+        session.close()
 
 
 @router.delete("/{test_run_id}")

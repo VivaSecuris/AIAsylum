@@ -1,15 +1,119 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { useQueryClient } from '@tanstack/react-query'
 import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { useSuite, useSuiteProgress, useSuiteRuns, useDeleteSuite } from '@/lib/hooks'
+import { useSuite, useSuiteProgress, useSuiteRuns, useDeleteSuite, useUpdateTestRun } from '@/lib/hooks'
 import { SuiteProgress } from '@/components/suite/SuiteProgress'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { formatDate, formatDateTime } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import Link from 'next/link'
-import { Trash2, RefreshCw } from 'lucide-react'
+import { Trash2, RefreshCw, Edit2, Check, X } from 'lucide-react'
+
+interface TestRunRowProps {
+  run: any
+  onUpdate: (name: string) => void
+}
+
+function TestRunRow({ run, onUpdate }: TestRunRowProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [name, setName] = useState(run.meta_data?.name || '')
+
+  // Update name when run data changes
+  useEffect(() => {
+    if (!isEditing) {
+      setName(run.meta_data?.name || '')
+    }
+  }, [run.meta_data?.name, isEditing])
+
+  const handleSave = () => {
+    onUpdate(name)
+    setIsEditing(false)
+  }
+
+  const handleCancel = () => {
+    setName(run.meta_data?.name || '')
+    setIsEditing(false)
+  }
+
+  const displayName = run.meta_data?.name || `Test Run #${run.id}`
+
+  return (
+    <tr className="border-b hover:bg-muted/50">
+      <td className="px-4 py-3 text-sm">#{run.id}</td>
+      <td className="px-4 py-3 text-sm">
+        {isEditing ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="flex-1 rounded border px-2 py-1 text-sm"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSave()
+                } else if (e.key === 'Escape') {
+                  handleCancel()
+                }
+              }}
+            />
+            <button
+              onClick={handleSave}
+              className="p-1 text-green-600 hover:text-green-800"
+              title="Save"
+            >
+              <Check className="h-4 w-4" />
+            </button>
+            <button
+              onClick={handleCancel}
+              className="p-1 text-red-600 hover:text-red-800"
+              title="Cancel"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="flex-1">{displayName}</span>
+            <button
+              onClick={() => setIsEditing(true)}
+              className="p-1 text-muted-foreground hover:text-foreground"
+              title="Rename"
+            >
+              <Edit2 className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+      </td>
+      <td className="px-4 py-3 text-sm">
+        {run.patient_provider}/{run.patient_model}
+      </td>
+      <td className="px-4 py-3 text-sm">
+        {run.benchmark ? (
+          <span className="capitalize">{run.benchmark}</span>
+        ) : (
+          <span className="capitalize">{run.test_type}</span>
+        )}
+      </td>
+      <td className="px-4 py-3">
+        <StatusBadge status={run.status} />
+      </td>
+      <td className="px-4 py-3 text-sm text-muted-foreground">
+        {formatDateTime(run.created_at)}
+      </td>
+      <td className="px-4 py-3">
+        <Link
+          href={`/test-runs/${run.id}`}
+          className="text-primary hover:underline text-sm"
+        >
+          View
+        </Link>
+      </td>
+    </tr>
+  )
+}
 
 export default function SuiteDetailPage() {
   const router = useRouter()
@@ -24,6 +128,7 @@ export default function SuiteDetailPage() {
   )
   const { data: suiteRuns, isLoading: loadingRuns } = useSuiteRuns(id)
   const deleteSuite = useDeleteSuite()
+  const updateTestRun = useUpdateTestRun()
 
   // Auto-refresh when suite is running
   useEffect(() => {
@@ -159,6 +264,7 @@ export default function SuiteDetailPage() {
                 <thead>
                   <tr className="border-b">
                     <th className="px-4 py-3 text-left text-sm font-medium">ID</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Name</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Model</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Test Type</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
@@ -168,33 +274,23 @@ export default function SuiteDetailPage() {
                 </thead>
                 <tbody>
                   {suiteRuns.map((run: any) => (
-                    <tr key={run.id} className="border-b hover:bg-muted/50">
-                      <td className="px-4 py-3 text-sm">#{run.id}</td>
-                      <td className="px-4 py-3 text-sm">
-                        {run.patient_provider}/{run.patient_model}
-                      </td>
-                      <td className="px-4 py-3 text-sm">
-                        {run.benchmark ? (
-                          <span className="capitalize">{run.benchmark}</span>
-                        ) : (
-                          <span className="capitalize">{run.test_type}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge status={run.status} />
-                      </td>
-                      <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatDateTime(run.created_at)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <Link
-                          href={`/test-runs/${run.id}`}
-                          className="text-primary hover:underline text-sm"
-                        >
-                          View
-                        </Link>
-                      </td>
-                    </tr>
+                    <TestRunRow
+                      key={run.id}
+                      run={run}
+                      onUpdate={(name: string) => {
+                        updateTestRun.mutate(
+                          { id: run.id, data: { name } },
+                          {
+                            onSuccess: () => {
+                              toast.success('Test case renamed successfully')
+                            },
+                            onError: () => {
+                              toast.error('Failed to rename test case')
+                            },
+                          }
+                        )
+                      }}
+                    />
                   ))}
                 </tbody>
               </table>

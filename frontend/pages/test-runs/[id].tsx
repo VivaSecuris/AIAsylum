@@ -548,41 +548,67 @@ export default function TestRunDetailPage() {
                       </div>
                     )}
                     
-                    {/* Progress bar for conversation tests */}
+                    {/* Progress bar for conversation tests - Enhanced */}
                     {progress.data && progress.event_type === 'conversation_progress' && typeof progress.data.progress === 'number' && (
-                      <div className="mt-2">
-                        <div className="flex items-center justify-between text-xs mb-1">
-                          <span>Conversation Progress</span>
-                          <span>{progress.data.progress}%</span>
+                      <div className="mt-3 p-3 rounded-lg border bg-white dark:bg-gray-800">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-semibold">Conversation Progress</span>
+                          <span className="text-sm font-bold text-green-600 dark:text-green-400">
+                            {progress.data.progress}%
+                          </span>
                         </div>
-                        <div className="h-2 w-full rounded-full bg-green-200 dark:bg-green-800 overflow-hidden">
+                        <div className="h-3 w-full rounded-full bg-green-200 dark:bg-green-800 overflow-hidden mb-2">
                           <div
                             className="h-full bg-green-600 dark:bg-green-400 transition-all duration-300"
                             style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
                           />
                         </div>
                         {progress.data.turn_number !== undefined && progress.data.max_turns && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Turn {progress.data.turn_number} of {progress.data.max_turns}
-                            {progress.data.speaker && ` (${progress.data.speaker})`}
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">
+                              Turn {progress.data.turn_number} of {progress.data.max_turns}
+                              {progress.data.speaker && ` • ${progress.data.speaker}`}
+                            </span>
+                            {progress.data.total_turns && (
+                              <span className="text-muted-foreground">
+                                {progress.data.total_turns} total turns
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {progress.data.response_preview && (
+                          <div className="mt-2 p-2 rounded bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800">
+                            <p className="text-xs font-semibold text-green-700 dark:text-green-300 mb-1">Latest Response:</p>
+                            <p className="text-xs text-gray-700 dark:text-gray-300">
+                              {progress.data.response_preview}
+                            </p>
+                          </div>
+                        )}
+                        {progress.message && (
+                          <p className="text-xs text-muted-foreground mt-2 italic">
+                            {progress.message}
                           </p>
                         )}
                       </div>
                     )}
                     
-                    {/* Test progress with attempt count */}
+                    {/* Test progress with attempt count - Enhanced for visibility */}
                     {progress.data && progress.event_type === 'test_progress' && (
-                      <div className="mt-2">
-                        <div className="flex items-center justify-between text-xs mb-1">
-                          <span>Attempt Progress</span>
-                          {typeof progress.data.attempt === 'number' && typeof progress.data.total_attempts === 'number' && (
-                            <span className="text-sm font-semibold">
-                              {progress.data.attempt} / {progress.data.total_attempts}
+                      <div className="mt-3 p-3 rounded-lg border bg-white dark:bg-gray-800">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-semibold">
+                            {progress.data.test_type === 'one_shot' ? 'One-Shot Test' : 
+                             progress.data.test_type === 'multi_shot' ? 'Multi-Shot Test' : 
+                             'Test Progress'}
+                          </span>
+                          {typeof progress.data.progress === 'number' && (
+                            <span className="text-sm font-bold text-blue-600 dark:text-blue-400">
+                              {progress.data.progress}%
                             </span>
                           )}
                         </div>
                         {typeof progress.data.progress === 'number' && (
-                          <div className="h-2 w-full rounded-full bg-blue-200 dark:bg-blue-800 overflow-hidden mt-1">
+                          <div className="h-3 w-full rounded-full bg-blue-200 dark:bg-blue-800 overflow-hidden mb-2">
                             <div
                               className="h-full bg-blue-600 dark:bg-blue-400 transition-all duration-300"
                               style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
@@ -590,9 +616,20 @@ export default function TestRunDetailPage() {
                           </div>
                         )}
                         {typeof progress.data.attempt === 'number' && typeof progress.data.total_attempts === 'number' && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Attempt {progress.data.attempt} of {progress.data.total_attempts}
-                            {progress.data.test_type && ` (${progress.data.test_type.replace('_', ' ')})`}
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">
+                              Processing attempt {progress.data.attempt} of {progress.data.total_attempts}
+                            </span>
+                            {progress.data.current && progress.data.total && (
+                              <span className="text-muted-foreground">
+                                {progress.data.current}/{progress.data.total}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {progress.message && (
+                          <p className="text-xs text-muted-foreground mt-1 italic">
+                            {progress.message}
                           </p>
                         )}
                       </div>
@@ -834,7 +871,7 @@ export default function TestRunDetailPage() {
                 )}
               </div>
 
-              {/* Live Conversation Preview */}
+              {/* Live Conversation Preview - Enhanced with verbose output */}
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-4 flex items-center gap-2">
                   Live Conversation
@@ -847,18 +884,62 @@ export default function TestRunDetailPage() {
                     <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse ml-auto" />
                   )}
                 </h3>
+                
+                {/* Show latest conversation turn from progress events if available */}
+                {progress && progress.event_type === 'conversation_turn' && progress.data && (
+                  <div className="mb-4 rounded-lg border-2 border-green-500 bg-green-50 dark:bg-green-950 p-3 animate-pulse">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-bold text-green-700 dark:text-green-300">
+                        NEW: Turn {progress.data.turn_number} - {progress.data.speaker}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(progress.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    {progress.data.prompt_preview && (
+                      <div className="mb-2">
+                        <p className="text-xs font-semibold text-muted-foreground mb-1">Prompt:</p>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
+                          {progress.data.prompt_preview}
+                        </p>
+                      </div>
+                    )}
+                    {progress.data.response_preview && (
+                      <div>
+                        <p className="text-xs font-semibold text-muted-foreground mb-1">Response:</p>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
+                          {progress.data.response_preview}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
                 {conversation.length > 0 ? (
                   <>
-                    <div className="max-h-96 overflow-y-auto space-y-2">
+                    <div className="max-h-96 overflow-y-auto space-y-3">
                       {conversation.slice(-5).map((turn) => (
-                        <div key={turn.id} className="rounded border bg-muted/30 p-2 text-sm">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="font-medium capitalize">{turn.speaker}</span>
+                        <div key={turn.id} className="rounded-lg border bg-muted/30 p-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-semibold capitalize text-sm">{turn.speaker}</span>
                             <span className="text-xs text-muted-foreground">Turn {turn.turn_number}</span>
                           </div>
-                          <p className="text-xs text-muted-foreground line-clamp-3">
-                            {turn.response || turn.prompt || '(No content)'}
-                          </p>
+                          {turn.prompt && (
+                            <div className="mb-2">
+                              <p className="text-xs font-semibold text-muted-foreground mb-1">Prompt:</p>
+                              <p className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
+                                {turn.prompt}
+                              </p>
+                            </div>
+                          )}
+                          {turn.response && (
+                            <div>
+                              <p className="text-xs font-semibold text-muted-foreground mb-1">Response:</p>
+                              <p className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
+                                {turn.response}
+                              </p>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

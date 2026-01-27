@@ -277,11 +277,6 @@ class TestRunner:
                     
                     test = GroupTherapyTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
                     test_result = await test.run(patient_models, doctor_model_instance, context=test_config)
-                # Legacy test types (for backward compatibility)
-                    # Use prompt from library if available, otherwise use doctor_prompt from config
-                    doctor_prompt = prompt_text or test_config.get("doctor_prompt")
-                    test = ConversationTest(doctor_prompt=doctor_prompt)
-                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 elif test_type == TEST_TYPE_SCENARIO:
                     # Use prompt from library if available, otherwise use scenarios from config
                     if prompt_text:
@@ -582,7 +577,10 @@ class TestRunner:
                         turn_session.commit()
                         saved_turn_numbers.add(turn_number)
                         
-                        # Emit progress event for new conversation turn
+                        # Emit verbose progress event for new conversation turn
+                        # Include prompt and response snippets for live monitoring
+                        prompt_preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
+                        response_preview = response[:200] + "..." if len(response) > 200 else response
                         await progress_event_manager.emit_event(
                             test_run_id,
                             "conversation_turn",
@@ -590,8 +588,12 @@ class TestRunner:
                                 "turn_number": turn_number,
                                 "speaker": speaker,
                                 "total_turns": len(saved_turn_numbers),
+                                "prompt_preview": prompt_preview,
+                                "response_preview": response_preview,
+                                "prompt_length": len(prompt),
+                                "response_length": len(response),
                             },
-                            f"New conversation turn: {speaker} (turn {turn_number})"
+                            f"Turn {turn_number}: {speaker} - {response_preview}"
                         )
                         logger.debug(f"Saved conversation turn {turn_number} for test run {test_run_id}")
                     except Exception as e:
@@ -620,8 +622,10 @@ class TestRunner:
                             "progress": progress_pct,
                             "speaker": turn.get("speaker"),
                             "total_turns": len(saved_turn_numbers),
+                            "prompt_preview": turn.get("prompt", "")[:100] + "..." if len(turn.get("prompt", "")) > 100 else turn.get("prompt", ""),
+                            "response_preview": turn.get("response", "")[:100] + "..." if len(turn.get("response", "")) > 100 else turn.get("response", ""),
                         },
-                        f"Conversation progress: {turn_number}/{max_turns} turns ({progress_pct}%)"
+                        f"Turn {turn_number}/{max_turns} ({progress_pct}%): {turn.get('speaker', 'unknown')} responded"
                     )
                 
                 # Add enhanced callback to test config
@@ -921,11 +925,6 @@ class TestRunner:
                     
                     test = GroupTherapyTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
                     test_result = await test.run(patient_models, doctor_model_instance, context=test_config)
-                # Legacy test types (for backward compatibility)
-                    # Use prompt from library if available, otherwise use doctor_prompt from config
-                    doctor_prompt = prompt_text or test_config.get("doctor_prompt")
-                    test = ConversationTest(doctor_prompt=doctor_prompt)
-                    test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                 elif test_run.test_type == TEST_TYPE_SCENARIO:
                     # Use prompt from library if available, otherwise use scenarios from config
                     if prompt_text:

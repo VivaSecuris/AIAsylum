@@ -28,7 +28,7 @@ export function Sidebar() {
 
   return (
     <div className="flex h-screen w-64 flex-col border-r bg-card">
-      <div className="flex h-16 items-center gap-3 border-b px-6">
+      <Link href="/" className="flex h-16 items-center gap-3 border-b px-6 hover:bg-muted/50 transition-colors cursor-pointer">
         <Image
           src="/vivalogo.png?v=2"
           alt="Viva Securis Logo"
@@ -39,7 +39,7 @@ export function Sidebar() {
           unoptimized
         />
         <h1 className="text-xl font-bold whitespace-nowrap">AI Asylum</h1>
-      </div>
+      </Link>
       <nav className="flex-1 space-y-1 px-3 py-4">
         {navigation.map((item) => {
           const isActive = router.pathname === item.href

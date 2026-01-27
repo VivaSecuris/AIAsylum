@@ -69,7 +69,9 @@ class SuiteProgressResponse(BaseModel):
 
 
 async def _run_suite_test_background(test_run_id: int, suite_id: int):
-    """Background task to run a test and update suite progress."""
+    """Background task to run a test and update suite progress with worker pool limiting."""
+    from vivasecuris.aiasylum.api.worker_pool import worker_pool
+    
     # Get test run details for logging
     session = get_session()
     try:
@@ -88,10 +90,15 @@ async def _run_suite_test_background(test_run_id: int, suite_id: int):
     
     runner = TestRunner()
     start_time = datetime.utcnow()
-    try:
+    
+    # Run with worker pool limit
+    async def _execute():
         suite_id_str = str(suite_id) if suite_id else "N/A"
         logger.info(f"▶️  Executing test run #{test_run_id}... [Suite #{suite_id_str}]")
         await runner.execute_test_run(test_run_id)
+    
+    try:
+        await worker_pool.run_with_limit(test_run_id, _execute())
         elapsed = (datetime.utcnow() - start_time).total_seconds()
         suite_id_str = str(suite_id) if suite_id else "N/A"
         logger.info(f"✅ Test run #{test_run_id} completed successfully in {elapsed:.1f}s [Suite #{suite_id_str}]")
@@ -227,6 +234,7 @@ async def get_suite_runs(suite_id: int):
             "created_at": tr.created_at.isoformat() if tr.created_at else None,
             "updated_at": tr.updated_at.isoformat() if tr.updated_at else None,
             "benchmark": tr.meta_data.get("benchmark") if tr.test_type == "benchmark" else None,
+            "meta_data": tr.meta_data or {},
         }
         for tr in test_runs
     ]

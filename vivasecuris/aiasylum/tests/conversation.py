@@ -39,7 +39,14 @@ class ConversationTest(TestCase):
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         
         patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
-        doctor = Doctor(doctor_model, system_prompt=final_doctor_prompt, enable_cot=enable_doctor_cot) if doctor_model else None
+        # Enable dynamic strategies by default, but allow override from context
+        use_dynamic_strategies = context.get("use_dynamic_strategies", True) if context else True
+        doctor = Doctor(
+            doctor_model, 
+            system_prompt=final_doctor_prompt, 
+            enable_cot=enable_doctor_cot,
+            use_dynamic_strategies=use_dynamic_strategies
+        ) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []
         
