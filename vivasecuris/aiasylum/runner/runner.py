@@ -23,6 +23,7 @@ from vivasecuris.aiasylum.constants import (
     TEST_TYPE_ADVERSARIAL,  # Legacy
     STATUS_PENDING,
     STATUS_RUNNING,
+    STATUS_PAUSED,
     STATUS_COMPLETED,
     STATUS_FAILED,
 )
@@ -380,8 +381,13 @@ class TestRunner:
             if not test_run:
                 raise TestExecutionError(f"Test run {test_run_id} not found")
             
-            if test_run.status not in (STATUS_PENDING, STATUS_FAILED):
+            if test_run.status not in (STATUS_PENDING, STATUS_FAILED, STATUS_PAUSED):
                 raise TestExecutionError(f"Test run {test_run_id} is not in a startable state (current: {test_run.status})")
+            
+            # If resuming from paused, log it
+            is_resuming = test_run.status == STATUS_PAUSED
+            if is_resuming:
+                logger.info(f"▶️  Resuming paused test run #{test_run_id}")
             
             # Log test start
             suite_id = test_run.suite_id
@@ -631,10 +637,21 @@ class TestRunner:
                 # Add enhanced callback to test config
                 test_config["save_conversation_turn_callback"] = save_conversation_turn_with_progress
                 
-                # Add cancellation check callback
+                # Add cancellation/pause check callback
                 def check_cancellation():
-                    """Check if test run is cancelled and raise exception if so."""
+                    """Check if test run is cancelled or paused and raise exception if so."""
                     if cancellation_manager.is_cancelled(test_run_id):
+                        # Check if it's a pause
+                        session_check = get_session()
+                        try:
+                            test_run_check = session_check.query(TestRun).filter(TestRun.id == test_run_id).first()
+                            if test_run_check and test_run_check.status == STATUS_PAUSED:
+                                logger.info(f"⏸️ Test run {test_run_id} pause detected, stopping execution")
+                                print(f"[PAUSE] Test run {test_run_id} pause detected, raising exception")
+                                raise TestExecutionError(f"Test run {test_run_id} was paused", pause=True)
+                        finally:
+                            session_check.close()
+                        
                         logger.warning(f"🛑 Test run {test_run_id} cancellation detected, stopping execution")
                         print(f"[CANCELLATION] Test run {test_run_id} cancellation detected, raising exception")
                         raise TestExecutionError(f"Test run {test_run_id} was cancelled")
@@ -1129,11 +1146,31 @@ class TestRunner:
                     except asyncio.CancelledError:
                         pass
                 
+                # Get detailed error message
+                error_msg = str(e)
+                error_details = error_msg
+                
+                # For jailbreak benchmarks, provide helpful error message
+                if "jailbreak" in error_msg.lower() or (test_run.test_type == TEST_TYPE_BENCHMARK and test_run.meta_data and test_run.meta_data.get("benchmark", "").lower() == "jailbreak"):
+                    if "no jailbreak prompts" in error_msg.lower() or "no dataset loaded" in error_msg.lower():
+                        error_details = (
+                            "Jailbreak benchmark failed: No prompts found in database.\n\n"
+                            "To fix:\n"
+                            "1. Run: python scripts/import_jailbreaks.py\n"
+                            "2. Verify prompts were imported\n"
+                            "3. Check that prompts have category='adversarial' and 'jailbreak' tag\n\n"
+                            f"Original error: {error_msg}"
+                        )
+                
                 test_run.status = "failed"
                 if not test_run.meta_data:
                     test_run.meta_data = {}
-                test_run.meta_data["error"] = str(e)
+                test_run.meta_data["error"] = error_details
                 safe_commit(session, test_run_id, test_run)
+                
+                # Log detailed error
+                logger.error(f"❌ Test run {test_run_id} failed: {error_details}", exc_info=True)
+                print(f"[TestRunner] ❌ Test run {test_run_id} failed: {error_details}")
                 
                 # Emit progress event: test failed
                 elapsed = (datetime.utcnow() - start_time).total_seconds()
@@ -1142,10 +1179,10 @@ class TestRunner:
                     "test_failed",
                     {
                         "status": "failed",
-                        "error": str(e),
+                        "error": error_details,
                         "elapsed_seconds": elapsed,
                     },
-                    f"Test run {test_run_id} failed: {str(e)}"
+                    f"Test run {test_run_id} failed: {error_details[:200]}"
                 )
                 
                 raise

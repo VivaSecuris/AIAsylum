@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { usePrompts, useDeletePrompt } from '@/lib/hooks'
@@ -14,6 +14,8 @@ export default function PromptsPage() {
   const [promptTypeFilter, setPromptTypeFilter] = useState<string>('')
   const [targetFilter, setTargetFilter] = useState<string>('')
   const [techniqueFilter, setTechniqueFilter] = useState<string>('')
+  const [showJailbreaks, setShowJailbreaks] = useState(false) // Hide jailbreak prompts by default
+  const [showBenchmarks, setShowBenchmarks] = useState(false) // Hide benchmark prompts by default
   
   // Fetch prompts - increase limit to get all prompts
   // Pass category filter only if explicitly set by user
@@ -24,32 +26,99 @@ export default function PromptsPage() {
   const { data: prompts = [], isLoading, error } = usePrompts(promptParams)
   const deletePrompt = useDeletePrompt()
 
-  // Extract techniques from jailbreak prompts for filtering
+  // Helper function to check if a prompt is a jailbreak prompt
+  const isJailbreakPrompt = (prompt: Prompt) => {
+    const jailbreakCategories = ['adversarial', 'jailbreak', 'red_team', 'adversarial_prompt', 
+                                 'roleplay', 'direct_bypass', 'indirect_bypass', 'encoding']
+    return jailbreakCategories.includes(prompt.category || '') ||
+           (prompt.tags && prompt.tags.some(tag => tag === 'jailbreak' || tag === 'adversarial'))
+  }
+  
+  // Helper function to check if a prompt is a benchmark prompt
+  const isBenchmarkPrompt = (prompt: Prompt) => {
+    return prompt.category === 'benchmark' ||
+           (prompt.tags && prompt.tags.some(tag => tag === 'benchmark')) ||
+           (prompt.metadata && prompt.metadata.benchmark)
+  }
+
+  // Extract techniques from jailbreak prompts for filtering (use all prompts for accurate counts)
   const techniques = Array.from(
     new Set(
       prompts
-        .filter(p => p.category === 'adversarial' && p.metadata?.jailbreak_technique)
+        .filter(p => isJailbreakPrompt(p) && p.metadata?.jailbreak_technique)
         .map(p => p.metadata.jailbreak_technique)
         .filter(Boolean)
     )
   ).sort()
 
-  // Count prompts by technique
+  // Count prompts by technique (use all prompts for accurate counts)
   const techniqueCounts: Record<string, number> = {}
   prompts
-    .filter(p => p.category === 'adversarial' && p.metadata?.jailbreak_technique)
+    .filter(p => isJailbreakPrompt(p) && p.metadata?.jailbreak_technique)
     .forEach(p => {
       const tech = p.metadata.jailbreak_technique
       techniqueCounts[tech] = (techniqueCounts[tech] || 0) + 1
     })
-
-  const filteredPrompts = prompts.filter((prompt) => {
-    // Completely exclude forbidden questions from prompt library
-    // They should only be used AFTER a jailbreak is achieved, not in general searches
-    if (prompt.category === 'forbidden_question') {
-      return false
+  
+  // Filter and randomize prompts based on visibility settings
+  const visiblePrompts = useMemo(() => {
+    // First filter based on visibility settings
+    let filtered = prompts.filter((prompt) => {
+      // Completely exclude forbidden questions from prompt library
+      if (prompt.category === 'forbidden_question') {
+        return false
+      }
+      
+      // Hide jailbreak prompts unless explicitly requested
+      if (isJailbreakPrompt(prompt) && !showJailbreaks) {
+        return false
+      }
+      
+      // Hide benchmark prompts unless explicitly requested
+      if (isBenchmarkPrompt(prompt) && !showBenchmarks) {
+        return false
+      }
+      
+      return true
+    })
+    
+    // Randomize and deduplicate jailbreak/benchmark prompts when showing them
+    if (showJailbreaks || showBenchmarks) {
+      const jailbreakPrompts = filtered.filter(isJailbreakPrompt)
+      const benchmarkPrompts = filtered.filter(isBenchmarkPrompt)
+      const otherPrompts = filtered.filter(p => !isJailbreakPrompt(p) && !isBenchmarkPrompt(p))
+      
+      // Shuffle arrays for randomization
+      const shuffle = <T,>(array: T[]): T[] => {
+        const shuffled = [...array]
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+        }
+        return shuffled
+      }
+      
+      // Deduplicate by prompt_text hash (simple approach)
+      const deduplicate = (prompts: Prompt[]): Prompt[] => {
+        const seen = new Set<string>()
+        return prompts.filter(p => {
+          const key = p.prompt_text.trim().toLowerCase()
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+      }
+      
+      const randomizedJailbreaks = showJailbreaks ? deduplicate(shuffle(jailbreakPrompts)) : []
+      const randomizedBenchmarks = showBenchmarks ? deduplicate(shuffle(benchmarkPrompts)) : []
+      
+      filtered = [...otherPrompts, ...randomizedJailbreaks, ...randomizedBenchmarks]
     }
     
+    return filtered
+  }, [prompts, showJailbreaks, showBenchmarks])
+  
+  const filteredPrompts = visiblePrompts.filter((prompt) => {
     // If category filter is set, the API should already filter, but do client-side check too
     // (in case API filtering doesn't work or for additional safety)
     const matchesCategory = !categoryFilter || categoryFilter === '' || prompt.category === categoryFilter
@@ -71,9 +140,11 @@ export default function PromptsPage() {
   })
 
   // Count prompts by category (from loaded data)
-  const jailbreakCount = prompts.filter(p => p.category === 'adversarial').length
-  const otherCount = prompts.filter(p => p.category !== 'adversarial' && p.category !== 'forbidden_question').length
+  const jailbreakCount = prompts.filter(isJailbreakPrompt).length
+  const benchmarkCount = prompts.filter(isBenchmarkPrompt).length
+  const otherCount = prompts.filter(p => !isJailbreakPrompt(p) && !isBenchmarkPrompt(p) && p.category !== 'forbidden_question').length
   const totalLoaded = prompts.length
+  const visibleCount = visiblePrompts.length
 
   // Sort filtered prompts: jailbreak prompts first, then by technique, then others
   const sortedPrompts = [...filteredPrompts].sort((a, b) => {
@@ -92,10 +163,14 @@ export default function PromptsPage() {
     return a.name.localeCompare(b.name)
   })
 
-  // Sort categories: essential jailbreak categories first, then others
+  // Sort categories: regular categories first, then jailbreak/benchmark categories
   // Forbidden questions are completely excluded - they should only be used AFTER jailbreak is achieved
   const categoryOrder = [
-    'adversarial',  // Jailbreak prompts
+    'conversation',
+    'scenario',
+    'reasoning',
+    'safety',
+    'adversarial',  // Jailbreak prompts (hidden by default)
     'jailbreak',    // Alternative jailbreak category name
     'red_team',     // Red team prompts
     'adversarial_prompt', // Another jailbreak variant
@@ -103,13 +178,11 @@ export default function PromptsPage() {
     'direct_bypass', // Direct bypass techniques
     'indirect_bypass', // Indirect bypass techniques
     'encoding',     // Encoding-based jailbreaks
-    'conversation',
-    'scenario',
-    'reasoning',
-    'safety',
+    'benchmark',    // Benchmark prompts (hidden by default)
   ]
   
-  const allCategories = Array.from(new Set(prompts.map((p) => p.category).filter(Boolean)))
+  // Only show categories from visible prompts
+  const allCategories = Array.from(new Set(visiblePrompts.map((p) => p.category).filter(Boolean)))
   
   // Exclude forbidden_question from categories list - they're not for general use
   // Forbidden questions should only be used AFTER a jailbreak is achieved
@@ -163,7 +236,9 @@ export default function PromptsPage() {
               <p className="text-sm text-muted-foreground mt-1">
                 {totalLoaded > 0 ? (
                   <>
-                    {jailbreakCount} jailbreak prompts{otherCount > 0 && ` • ${otherCount} other prompts`}
+                    {visibleCount} visible prompts
+                    {!showJailbreaks && jailbreakCount > 0 && ` • ${jailbreakCount} jailbreak prompts hidden`}
+                    {!showBenchmarks && benchmarkCount > 0 && ` • ${benchmarkCount} benchmark prompts hidden`}
                     {categoryFilter === 'adversarial' && techniqueFilter && ` • Filtered by: ${techniqueFilter}`}
                   </>
                 ) : error ? (
@@ -174,13 +249,53 @@ export default function PromptsPage() {
               </p>
             </div>
           </div>
-          <Link
-            href="/prompts/create"
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" />
-            Create Prompt
-          </Link>
+          <div className="flex items-center gap-3">
+            {/* Toggle buttons for jailbreak and benchmark prompts */}
+            {jailbreakCount > 0 && (
+              <button
+                onClick={() => {
+                  setShowJailbreaks(!showJailbreaks)
+                  // Clear category filter when toggling to avoid conflicts
+                  if (!showJailbreaks) {
+                    setCategoryFilter('')
+                    setTechniqueFilter('')
+                  }
+                }}
+                className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+                  showJailbreaks
+                    ? 'bg-orange-500 text-white hover:bg-orange-600'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                {showJailbreaks ? 'Hide' : 'Show'} Jailbreaks ({jailbreakCount})
+              </button>
+            )}
+            {benchmarkCount > 0 && (
+              <button
+                onClick={() => {
+                  setShowBenchmarks(!showBenchmarks)
+                  // Clear category filter when toggling to avoid conflicts
+                  if (!showBenchmarks) {
+                    setCategoryFilter('')
+                  }
+                }}
+                className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+                  showBenchmarks
+                    ? 'bg-purple-500 text-white hover:bg-purple-600'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                {showBenchmarks ? 'Hide' : 'Show'} Benchmarks ({benchmarkCount})
+              </button>
+            )}
+            <Link
+              href="/prompts/create"
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" />
+              Create Prompt
+            </Link>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-4">
@@ -228,10 +343,11 @@ export default function PromptsPage() {
             >
               <option value="">All Categories ({totalLoaded} total)</option>
               {categories.map((cat) => {
-                const count = prompts.filter(p => p.category === cat).length
+                const count = visiblePrompts.filter(p => p.category === cat).length
                 return (
                   <option key={cat} value={cat}>
                     {cat === 'adversarial' ? `Jailbreak Prompts (${count})` : 
+                     cat === 'benchmark' ? `Benchmark Prompts (${count})` :
                      cat === 'forbidden_question' ? 'Forbidden Questions' :
                      `${cat.charAt(0).toUpperCase() + cat.slice(1).replace(/_/g, ' ')} (${count})`}
                   </option>
@@ -261,19 +377,19 @@ export default function PromptsPage() {
         </div>
 
         {/* Workflow info and technique summary for jailbreak prompts */}
-        {categoryFilter === 'adversarial' && (
+        {showJailbreaks && (categoryFilter === 'adversarial' || categoryFilter === '') && (
           <div className="space-y-4">
             <div className="rounded-lg border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-4">
               <div className="flex items-start gap-3">
                 <div className="flex-1">
                   <h3 className="font-semibold text-sm mb-1">Jailbreak Testing Workflow</h3>
                   <p className="text-xs text-muted-foreground">
-                    <strong>Step 1:</strong> Use these {jailbreakCount} jailbreak prompts to attempt to bypass model safety guardrails.
+                    <strong>Step 1:</strong> Use these jailbreak prompts to attempt to bypass model safety guardrails.
                     <br />
                     <strong>Step 2:</strong> If jailbreak is successful, then use forbidden questions to test what the model will do.
                     <br />
                     <span className="text-muted-foreground/80">
-                      Forbidden questions are hidden from this library - they're only available after a jailbreak is detected.
+                      Prompts are randomized and deduplicated for uniqueness. Forbidden questions are hidden from this library - they're only available after a jailbreak is detected.
                     </span>
                   </p>
                 </div>
@@ -306,14 +422,30 @@ export default function PromptsPage() {
             )}
           </div>
         )}
+        
+        {/* Info for benchmark prompts */}
+        {showBenchmarks && (categoryFilter === 'benchmark' || categoryFilter === '') && (
+          <div className="rounded-lg border bg-purple-50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-800 p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex-1">
+                <h3 className="font-semibold text-sm mb-1">Benchmark Prompts</h3>
+                <p className="text-xs text-muted-foreground">
+                  These are standardized benchmark test prompts from various LLM evaluation datasets.
+                  Prompts are randomized and deduplicated for uniqueness.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="text-sm text-muted-foreground">
           {isLoading ? (
             'Loading prompts...'
           ) : (
             <>
-              Showing {sortedPrompts.length} of {totalLoaded} loaded prompts
-              {categoryFilter === 'adversarial' && jailbreakCount > 0 && ` (${jailbreakCount} jailbreak prompts)`}
+              Showing {sortedPrompts.length} of {visibleCount} visible prompts
+              {showJailbreaks && jailbreakCount > 0 && ` (${jailbreakCount} jailbreak prompts shown)`}
+              {showBenchmarks && benchmarkCount > 0 && ` (${benchmarkCount} benchmark prompts shown)`}
               {categoryFilter === 'adversarial' && techniqueFilter && ` • Filtered by technique: ${techniqueFilter.replace(/_/g, ' ')}`}
               {totalLoaded === 0 && ' • Try changing the category filter or check if prompts are loaded'}
             </>

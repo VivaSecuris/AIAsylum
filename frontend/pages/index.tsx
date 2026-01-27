@@ -3,16 +3,120 @@ import { MetricCard } from '@/components/common/MetricCard'
 import { DataTable } from '@/components/common/DataTable'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
-import { useTestRuns, useMultipleAssessments } from '@/lib/hooks'
-import { TestRun, Assessment } from '@/lib/api'
+import { useTestRuns, useMultipleAssessments, useSuites, useUpdateTestRun, useUpdateSuite } from '@/lib/hooks'
+import { useQueryClient } from '@tanstack/react-query'
+import { TestRun, Assessment, Suite } from '@/lib/api'
 import { formatDate, formatDateTime } from '@/lib/utils'
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import Link from 'next/link'
-import { PlayCircle, TestTube, TrendingUp, Shield, AlertTriangle } from 'lucide-react'
+import { PlayCircle, TestTube, TrendingUp, Shield, AlertTriangle, Layers, BarChart3, Edit2, Check, X } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend } from 'recharts'
+import { toast } from '@/lib/toast'
+
+// Inline editing component for renaming
+function InlineEditableName({ 
+  value, 
+  onSave, 
+  displayValue,
+  className = ""
+}: { 
+  value: string
+  onSave: (newValue: string) => void
+  displayValue?: string
+  className?: string
+}) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [name, setName] = useState(value)
+  const [savedName, setSavedName] = useState<string | null>(null)
+
+  useEffect(() => {
+    // Only update from prop if we're not editing and haven't just saved
+    if (!isEditing) {
+      // If we just saved a name, use that until the prop updates
+      if (savedName !== null && value === '') {
+        // Keep the saved name if prop hasn't updated yet
+        return
+      }
+      // Update from prop value
+      setName(value || '')
+      // Clear saved name once prop has updated
+      if (savedName !== null && value === savedName) {
+        setSavedName(null)
+      }
+    }
+  }, [value, isEditing, savedName])
+
+  const handleSave = () => {
+    const nameToSave = name.trim()
+    setSavedName(nameToSave) // Remember what we saved
+    onSave(nameToSave)
+    setIsEditing(false)
+  }
+
+  const handleCancel = () => {
+    setName(value || '')
+    setSavedName(null)
+    setIsEditing(false)
+  }
+
+  if (isEditing) {
+    return (
+      <div className={`flex items-center gap-2 ${className}`}>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="flex-1 rounded border px-2 py-1 text-sm"
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              handleSave()
+            } else if (e.key === 'Escape') {
+              handleCancel()
+            }
+          }}
+        />
+        <button
+          onClick={handleSave}
+          className="p-1 text-green-600 hover:text-green-800"
+          title="Save"
+        >
+          <Check className="h-4 w-4" />
+        </button>
+        <button
+          onClick={handleCancel}
+          className="p-1 text-red-600 hover:text-red-800"
+          title="Cancel"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    )
+  }
+
+  // Use saved name if available, otherwise use displayValue or value
+  const displayText = savedName !== null ? savedName : (displayValue || value || 'Unnamed')
+
+  return (
+    <div className={`flex items-center gap-2 ${className}`}>
+      <span className="flex-1">{displayText}</span>
+      <button
+        onClick={() => setIsEditing(true)}
+        className="p-1 text-muted-foreground hover:text-foreground"
+        title="Rename"
+      >
+        <Edit2 className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
 
 export default function Dashboard() {
   const { data: testRuns = [], isLoading, error } = useTestRuns({ limit: 100 })
+  const { data: suites = [], isLoading: loadingSuites } = useSuites({ limit: 20 })
+  const updateTestRun = useUpdateTestRun()
+  const updateSuite = useUpdateSuite()
+  const queryClient = useQueryClient()
 
   // Get completed test run IDs for fetching assessments
   const completedRunIds = useMemo(() => 
@@ -183,6 +287,33 @@ export default function Dashboard() {
       header: 'ID',
     },
     {
+      key: 'name',
+      header: 'Name',
+      render: (run: TestRun) => {
+        const displayName = run.suite_name || run.meta_data?.name || `Test Run #${run.id}`
+        return (
+          <InlineEditableName
+            value={run.meta_data?.name || ''}
+            displayValue={displayName}
+            onSave={(newName) => {
+              updateTestRun.mutate(
+                { id: run.id, data: { name: newName } },
+                {
+                  onSuccess: () => {
+                    toast.success('Test run renamed successfully')
+                  },
+                  onError: (error) => {
+                    console.error('Failed to rename test run:', error)
+                    toast.error('Failed to rename test run')
+                  },
+                }
+              )
+            }}
+          />
+        )
+      },
+    },
+    {
       key: 'test_type',
       header: 'Type',
       render: (run: TestRun) => (
@@ -266,7 +397,14 @@ export default function Dashboard() {
               Create Test
             </Link>
             <Link
-              href="/benchmarks"
+              href="/suite"
+              className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+            >
+              <Layers className="h-4 w-4" />
+              Create Suite
+            </Link>
+            <Link
+              href="/create-test?type=benchmark"
               className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
               <TestTube className="h-4 w-4" />
@@ -275,11 +413,17 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
           <MetricCard title="Total Tests" value={metrics.total} />
           <MetricCard title="Running" value={metrics.running} />
           <MetricCard title="Completed" value={metrics.completed} />
           <MetricCard title="Failed" value={metrics.failed} />
+          <MetricCard 
+            title="Test Suites" 
+            value={suites.length} 
+            subtitle={suites.filter(s => s.status === 'running').length > 0 ? `${suites.filter(s => s.status === 'running').length} running` : undefined}
+            icon={<Layers className="h-5 w-5" />}
+          />
         </div>
 
         {/* Analysis Metrics */}
@@ -313,6 +457,229 @@ export default function Dashboard() {
             />
           </div>
         )}
+
+        {/* First-Level Runnable Objects: Suites, Benchmarks, Analysis */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          {/* Suites Section */}
+          <div className="rounded-lg border bg-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Layers className="h-5 w-5" />
+                Test Suites
+              </h2>
+              <Link
+                href="/suite"
+                className="text-sm text-primary hover:underline"
+              >
+                View All
+              </Link>
+            </div>
+            {loadingSuites ? (
+              <LoadingSpinner size="sm" />
+            ) : suites.length > 0 ? (
+              <div className="space-y-3">
+                {suites.slice(0, 5).map((suite) => (
+                  <div
+                    key={suite.id}
+                    className="block rounded-lg border p-3 hover:bg-muted transition-colors"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex-1">
+                        <InlineEditableName
+                          value={suite.name || ''}
+                          displayValue={suite.name || `Unnamed Suite`}
+                          onSave={(newName) => {
+                            updateSuite.mutate(
+                              { id: suite.id, data: { name: newName } },
+                              {
+                                onSuccess: () => {
+                                  toast.success('Suite renamed successfully')
+                                },
+                                onError: () => {
+                                  toast.error('Failed to rename suite')
+                                },
+                              }
+                            )
+                          }}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {suite.total_runs} test runs • {formatDate(suite.created_at)}
+                        </p>
+                      </div>
+                      <StatusBadge status={suite.status} />
+                    </div>
+                    <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+                      <span>✓ {suite.completed_runs}</span>
+                      {suite.running_runs > 0 && <span>⟳ {suite.running_runs}</span>}
+                      {suite.failed_runs > 0 && <span className="text-red-600">✗ {suite.failed_runs}</span>}
+                    </div>
+                    <Link
+                      href={`/suite/${suite.id}`}
+                      className="mt-2 block text-xs text-primary hover:underline"
+                    >
+                      View Suite →
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <p className="text-sm mb-3">No suites yet</p>
+                <Link
+                  href="/suite"
+                  className="text-sm text-primary hover:underline"
+                >
+                  Create your first suite →
+                </Link>
+              </div>
+            )}
+          </div>
+
+          {/* Benchmarks Section */}
+          <div className="rounded-lg border bg-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <TestTube className="h-5 w-5" />
+                Benchmarks
+              </h2>
+              <Link
+                href="/create-test?type=benchmark"
+                className="text-sm text-primary hover:underline"
+              >
+                Run New
+              </Link>
+            </div>
+            <div className="space-y-3">
+              {testRuns
+                .filter(run => run.test_type === 'benchmark')
+                .slice(0, 5)
+                .map((run) => (
+                  <div
+                    key={run.id}
+                    className="block rounded-lg border p-3 hover:bg-muted transition-colors"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex-1">
+                        <InlineEditableName
+                          value={run.meta_data?.name || ''}
+                          displayValue={run.meta_data?.name || run.meta_data?.benchmark || 'Benchmark'}
+                          onSave={(newName) => {
+                            updateTestRun.mutate(
+                              { id: run.id, data: { name: newName } },
+                              {
+                                onSuccess: () => {
+                                  toast.success('Benchmark renamed successfully')
+                                },
+                                onError: () => {
+                                  toast.error('Failed to rename benchmark')
+                                },
+                              }
+                            )
+                          }}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {run.patient_provider}/{run.patient_model} • {formatDate(run.created_at)}
+                        </p>
+                      </div>
+                      <StatusBadge status={run.status} />
+                    </div>
+                    <Link
+                      href={`/test-runs/${run.id}`}
+                      className="block text-xs text-primary hover:underline"
+                    >
+                      View Benchmark →
+                    </Link>
+                  </div>
+                ))}
+              {testRuns.filter(run => run.test_type === 'benchmark').length === 0 && (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="text-sm mb-3">No benchmarks yet</p>
+                  <Link
+                    href="/create-test?type=benchmark"
+                    className="text-sm text-primary hover:underline"
+                  >
+                    Run your first benchmark →
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Analysis Section */}
+          <div className="rounded-lg border bg-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <BarChart3 className="h-5 w-5" />
+                Analysis
+              </h2>
+              <Link
+                href="/test-runs"
+                className="text-sm text-primary hover:underline"
+              >
+                View All
+              </Link>
+            </div>
+            {recentAssessments.length > 0 ? (
+              <div className="space-y-3">
+                {recentAssessments.slice(0, 5).map(({ assessment, testRun }) => {
+                  const displayName = testRun?.suite_name || testRun?.meta_data?.name || 
+                    (testRun 
+                      ? `${testRun.patient_provider}/${testRun.patient_model}`
+                      : `Test Run #${assessment.test_run_id}`)
+                  return (
+                    <div
+                      key={assessment.id}
+                      className="block rounded-lg border p-3 hover:bg-muted transition-colors"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex-1">
+                          {testRun ? (
+                            <InlineEditableName
+                              value={testRun.meta_data?.name || ''}
+                              displayValue={displayName}
+                              onSave={(newName) => {
+                                updateTestRun.mutate(
+                                  { id: testRun.id, data: { name: newName } },
+                                  {
+                                    onSuccess: () => {
+                                      toast.success('Analysis renamed successfully')
+                                    },
+                                    onError: () => {
+                                      toast.error('Failed to rename analysis')
+                                    },
+                                  }
+                                )
+                              }}
+                            />
+                          ) : (
+                            <p className="text-sm font-medium">{displayName}</p>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {formatDate(testRun?.created_at || '')}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-lg font-bold">{(assessment.overall_score * 100).toFixed(1)}%</p>
+                        </div>
+                      </div>
+                      <Link
+                        href={`/analysis/${assessment.test_run_id}`}
+                        className="block text-xs text-primary hover:underline"
+                      >
+                        View Analysis →
+                      </Link>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                <p className="text-sm mb-3">No analyses yet</p>
+                <p className="text-xs">Run tests and analysis will appear here</p>
+              </div>
+            )}
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <div className="rounded-lg border bg-card p-6">

@@ -13,7 +13,9 @@ class ModelProviderError(AIAsylumError):
 
 class TestExecutionError(AIAsylumError):
     """Error during test execution."""
-    pass
+    def __init__(self, message: str, pause: bool = False):
+        super().__init__(message)
+        self.pause = pause
 
 
 class ConfigurationError(AIAsylumError):

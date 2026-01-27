@@ -29,6 +29,11 @@ class SuiteRequest(BaseModel):
     num_samples: Optional[int] = None
 
 
+class SuiteUpdate(BaseModel):
+    """Test suite update request."""
+    name: Optional[str] = None  # Custom name for the suite
+
+
 class SuiteResponse(BaseModel):
     """Test suite response."""
     id: int
@@ -253,6 +258,29 @@ async def get_suite_progress(suite_id: int):
     
     progress = ProgressTracker.get_progress_breakdown(suite_id)
     return SuiteProgressResponse(**progress)
+
+
+@router.put("/{suite_id}", response_model=SuiteResponse)
+async def update_suite(suite_id: int, update: SuiteUpdate):
+    """Update a test suite (e.g., rename it)."""
+    session = get_session()
+    try:
+        suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
+        if not suite:
+            raise HTTPException(status_code=404, detail="Test suite not found")
+        
+        # Update name
+        if update.name is not None:
+            if update.name.strip():
+                suite.name = update.name.strip()
+            else:
+                suite.name = None  # Remove name if empty string
+        
+        session.commit()
+        session.refresh(suite)
+        return suite
+    finally:
+        session.close()
 
 
 @router.delete("/{suite_id}")

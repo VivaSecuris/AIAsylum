@@ -11,9 +11,10 @@ from pydantic import BaseModel
 
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn
-from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATUS_FAILED, STATUS_COMPLETED, TEST_TYPE_GROUP_THERAPY
+from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATUS_PAUSED, STATUS_FAILED, STATUS_COMPLETED, TEST_TYPE_GROUP_THERAPY
 from vivasecuris.aiasylum.api.progress_events import progress_event_manager
 from vivasecuris.aiasylum.api.cancellation import cancellation_manager
+from vivasecuris.aiasylum.exceptions import TestExecutionError
 
 router = APIRouter()
 
@@ -45,6 +46,8 @@ class TestRunResponse(BaseModel):
     patient_model: str
     test_type: str
     status: str
+    suite_id: Optional[int] = None
+    suite_name: Optional[str] = None
     meta_data: Optional[dict] = None
     
     class Config:
@@ -124,14 +127,44 @@ async def _run_test_background(test_run_id: int):
         finally:
             session.close()
         raise
+    except TestExecutionError as e:
+        # Check if this is a pause (not a cancellation)
+        if hasattr(e, 'pause') and e.pause:
+            logger = logging.getLogger(__name__)
+            logger.info(f"⏸️ Test run {test_run_id} was paused")
+            print(f"[BACKGROUND] Test run {test_run_id} was paused")
+            # Status should already be set to paused by the pause endpoint
+            # Just make sure it's set correctly
+            session = get_session()
+            try:
+                test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+                if test_run and test_run.status != STATUS_PAUSED:
+                    test_run.status = STATUS_PAUSED
+                    if not test_run.meta_data:
+                        test_run.meta_data = {}
+                    test_run.meta_data["paused"] = True
+                    session.commit()
+            finally:
+                session.close()
+        else:
+            # Error is already handled in execute_test_run (sets status to failed)
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error running test {test_run_id}: {e}")
+            print(f"Error running test {test_run_id}: {e}")
     except Exception as e:
         # Error is already handled in execute_test_run (sets status to failed)
         logger = logging.getLogger(__name__)
         logger.error(f"Error running test {test_run_id}: {e}")
         print(f"Error running test {test_run_id}: {e}")
     finally:
-        # Unregister task when done
-        cancellation_manager.unregister_task(test_run_id)
+        # Unregister task when done (unless paused)
+        session = get_session()
+        try:
+            test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+            if test_run and test_run.status != STATUS_PAUSED:
+                cancellation_manager.unregister_task(test_run_id)
+        finally:
+            session.close()
 
 
 @router.post("/", response_model=TestRunResponse)
@@ -201,19 +234,74 @@ async def list_test_runs(
     test_type: Optional[str] = None,
 ):
     """List test runs."""
+    from vivasecuris.aiasylum.database import TestSuite
     runner = TestRunner()
     test_runs = runner.list_test_runs(limit=limit, offset=offset, test_type=test_type)
-    return test_runs
+    
+    # Get suite information for test runs that belong to suites
+    session = get_session()
+    try:
+        suite_ids = {tr.suite_id for tr in test_runs if tr.suite_id}
+        suites = {}
+        if suite_ids:
+            suite_list = session.query(TestSuite).filter(TestSuite.id.in_(suite_ids)).all()
+            suites = {s.id: s for s in suite_list}
+        
+        # Build response with suite information
+        result = []
+        for tr in test_runs:
+            suite_name = None
+            if tr.suite_id and tr.suite_id in suites:
+                suite_name = suites[tr.suite_id].name or "Unnamed Suite"
+            result.append(TestRunResponse(
+                id=tr.id,
+                doctor_provider=tr.doctor_provider,
+                doctor_model=tr.doctor_model,
+                patient_provider=tr.patient_provider,
+                patient_model=tr.patient_model,
+                test_type=tr.test_type,
+                status=tr.status,
+                suite_id=tr.suite_id,
+                suite_name=suite_name,
+                meta_data=tr.meta_data or {},
+            ))
+        return result
+    finally:
+        session.close()
 
 
 @router.get("/{test_run_id}", response_model=TestRunResponse)
 async def get_test_run(test_run_id: int):
     """Get a test run by ID."""
+    from vivasecuris.aiasylum.database import TestSuite
     runner = TestRunner()
     test_run = runner.get_test_run(test_run_id)
     if not test_run:
         raise HTTPException(status_code=404, detail="Test run not found")
-    return test_run
+    
+    # Get suite information if test run belongs to a suite
+    suite_name = None
+    if test_run.suite_id:
+        session = get_session()
+        try:
+            suite = session.query(TestSuite).filter(TestSuite.id == test_run.suite_id).first()
+            if suite:
+                suite_name = suite.name or "Unnamed Suite"
+        finally:
+            session.close()
+    
+    return TestRunResponse(
+        id=test_run.id,
+        doctor_provider=test_run.doctor_provider,
+        doctor_model=test_run.doctor_model,
+        patient_provider=test_run.patient_provider,
+        patient_model=test_run.patient_model,
+        test_type=test_run.test_type,
+        status=test_run.status,
+        suite_id=test_run.suite_id,
+        suite_name=suite_name,
+        meta_data=test_run.meta_data or {},
+    )
 
 
 @router.put("/{test_run_id}", response_model=TestRunResponse)
@@ -345,10 +433,10 @@ async def start_test_run(test_run_id: int, background_tasks: BackgroundTasks):
     if not test_run:
         raise HTTPException(status_code=404, detail="Test run not found")
     
-    if test_run.status not in (STATUS_PENDING, STATUS_FAILED):
+    if test_run.status not in (STATUS_PENDING, STATUS_FAILED, STATUS_PAUSED):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot start test run in status: {test_run.status}. Only pending or failed test runs can be started."
+            detail=f"Cannot start test run in status: {test_run.status}. Only pending, failed, or paused test runs can be started."
         )
     
     # Clear any previous cancellation flag
@@ -363,9 +451,9 @@ async def start_test_run(test_run_id: int, background_tasks: BackgroundTasks):
     return test_run
 
 
-@router.post("/{test_run_id}/stop")
-async def stop_test_run(test_run_id: int):
-    """Stop/cancel a running test run."""
+@router.post("/{test_run_id}/pause")
+async def pause_test_run(test_run_id: int):
+    """Pause a running test run."""
     import logging
     logger = logging.getLogger(__name__)
     
@@ -378,7 +466,107 @@ async def stop_test_run(test_run_id: int):
         if test_run.status != STATUS_RUNNING:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot stop test run in status: {test_run.status}. Only running test runs can be stopped."
+                detail=f"Cannot pause test run in status: {test_run.status}. Only running test runs can be paused."
+            )
+        
+        # Mark for cancellation to stop execution at next checkpoint
+        cancellation_manager.cancel(test_run_id)
+        logger.info(f"⏸️ Pause request for test run {test_run_id}")
+        
+        # Update status to paused
+        test_run.status = STATUS_PAUSED
+        if not test_run.meta_data:
+            test_run.meta_data = {}
+        test_run.meta_data["paused_at"] = datetime.utcnow().isoformat()
+        test_run.meta_data["paused"] = True
+        session.commit()
+        logger.info(f"✅ Test run {test_run_id} paused")
+        
+        # Emit pause event
+        await progress_event_manager.emit_event(
+            test_run_id,
+            "test_paused",
+            {
+                "status": "paused",
+                "paused_at": test_run.meta_data["paused_at"],
+            },
+            "Test run paused. You can resume it later."
+        )
+        
+        return {
+            "message": "Test run paused. Execution will stop at next checkpoint.",
+            "id": test_run_id,
+            "status": "paused"
+        }
+    finally:
+        session.close()
+
+
+@router.post("/{test_run_id}/resume")
+async def resume_test_run(test_run_id: int, background_tasks: BackgroundTasks):
+    """Resume a paused test run."""
+    import asyncio
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    session = get_session()
+    try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if not test_run:
+            raise HTTPException(status_code=404, detail="Test run not found")
+        
+        if test_run.status != STATUS_PAUSED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot resume test run in status: {test_run.status}. Only paused test runs can be resumed."
+            )
+        
+        # Clear cancellation flag and update status
+        cancellation_manager.clear(test_run_id)
+        test_run.status = STATUS_RUNNING
+        if not test_run.meta_data:
+            test_run.meta_data = {}
+        test_run.meta_data["resumed_at"] = datetime.utcnow().isoformat()
+        test_run.meta_data["paused"] = False
+        session.commit()
+        logger.info(f"▶️ Resume request for test run {test_run_id}")
+        
+        # Create and register the asyncio task to continue execution
+        task = asyncio.create_task(_run_test_background(test_run_id))
+        cancellation_manager.register_task(test_run_id, task)
+        
+        # Emit resume event
+        await progress_event_manager.emit_event(
+            test_run_id,
+            "test_resumed",
+            {
+                "status": "running",
+                "resumed_at": test_run.meta_data["resumed_at"],
+            },
+            "Test run resumed. Execution will continue from where it left off."
+        )
+        
+        return test_run
+    finally:
+        session.close()
+
+
+@router.post("/{test_run_id}/stop")
+async def stop_test_run(test_run_id: int):
+    """Stop/cancel a running test run."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    session = get_session()
+    try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if not test_run:
+            raise HTTPException(status_code=404, detail="Test run not found")
+        
+        if test_run.status not in (STATUS_RUNNING, STATUS_PAUSED):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot stop test run in status: {test_run.status}. Only running or paused test runs can be stopped."
             )
         
         # Mark for cancellation immediately and cancel the asyncio task

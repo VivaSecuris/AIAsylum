@@ -14,6 +14,7 @@ TEST_TYPE_ADVERSARIAL = "adversarial"
 # Test status values
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
+STATUS_PAUSED = "paused"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 

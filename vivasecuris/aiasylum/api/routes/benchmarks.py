@@ -87,6 +87,21 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
     # For now, benchmarks are implemented as test runs with benchmark-specific configuration
     # This allows us to reuse the existing test infrastructure
     
+    # For jailbreak benchmarks, verify prompts exist before creating test run
+    if request.benchmark.lower() == "jailbreak":
+        from vivasecuris.aiasylum.tests.jailbreak_loader import count_jailbreak_prompts
+        prompt_count = count_jailbreak_prompts()
+        if prompt_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No jailbreak prompts found in database. "
+                    "Please import jailbreak prompts first by running: "
+                    "python scripts/import_jailbreaks.py"
+                )
+            )
+        logger.info(f"✅ Verified {prompt_count} jailbreak prompts available for benchmark")
+    
     # Benchmarks use the benchmark test type
     from vivasecuris.aiasylum.constants import TEST_TYPE_BENCHMARK
     test_type = TEST_TYPE_BENCHMARK

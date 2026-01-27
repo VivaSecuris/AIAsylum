@@ -291,7 +291,7 @@ def import_jailbreak_prompts(
             'community_id': prompt_data['community_id'],
             'community_name': prompt_data['community_name'],
             'import_date': datetime.utcnow().isoformat(),
-            'jailbreak_technique': technique,
+            'jailbreak_technique': technique,  # Used by loader
             'technique_category': get_technique_category(technique),
             'prompt_hash': prompt_hash,
             'prompt_length': len(prompt_text),

@@ -105,14 +105,29 @@ class BenchmarkTest(TestCase):
         
         if not dataset:
             if self.benchmark_name.lower() == "jailbreak":
-                error_msg = (
-                    f"No jailbreak prompts loaded for benchmark. "
-                    "This usually means:\n"
-                    "1. No jailbreak prompts are in the database\n"
-                    "2. Prompts are not properly tagged (need 'jailbreak' tag and 'adversarial' category)\n"
-                    "3. Database connection issue\n\n"
-                    "To fix: Run 'python scripts/import_jailbreaks.py' to import prompts."
-                )
+                # Check if prompts exist in database
+                from vivasecuris.aiasylum.tests.jailbreak_loader import count_jailbreak_prompts
+                total_count = count_jailbreak_prompts()
+                
+                if total_count == 0:
+                    error_msg = (
+                        "❌ No jailbreak prompts found in database!\n\n"
+                        "To fix this:\n"
+                        "1. Make sure the jailbreak data files exist in docs/jailbreaks/jailbreak_llms/data/prompts/\n"
+                        "2. Run the import script: python scripts/import_jailbreaks.py\n"
+                        "3. Verify prompts were imported: Check the database for prompts with category='adversarial' and 'jailbreak' tag"
+                    )
+                else:
+                    error_msg = (
+                        f"⚠️ Found {total_count} jailbreak prompts in database, but none were loaded.\n"
+                        "This usually means:\n"
+                        "1. Prompts are not properly tagged (need 'jailbreak' tag and 'adversarial' category)\n"
+                        "2. Filtering issue in the loader\n"
+                        "3. Database query issue\n\n"
+                        "Check the logs for more details."
+                    )
+                print(f"[BenchmarkTest] {error_msg}")
+                logger.error(error_msg)
             else:
                 error_msg = f"No dataset loaded for benchmark {self.benchmark_name}"
             raise ValueError(error_msg)

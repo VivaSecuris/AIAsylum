@@ -8,10 +8,10 @@ import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { ConversationViewer } from '@/components/conversation/ConversationViewer'
 import { DataTable } from '@/components/common/DataTable'
 import { AnalysisConfigDialog, AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
-import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis, useStartTestRun, useStopTestRun, useDeleteTestRun, useTestRunProgress } from '@/lib/hooks'
+import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis, useStartTestRun, usePauseTestRun, useResumeTestRun, useStopTestRun, useDeleteTestRun, useTestRunProgress } from '@/lib/hooks'
 import { formatDate, formatDateTime } from '@/lib/utils'
 import { TestResult, Assessment } from '@/lib/api'
-import { Play, Download, GitCompare, Trash2, Square } from 'lucide-react'
+import { Play, Download, GitCompare, Trash2, Square, Pause, RotateCw } from 'lucide-react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { toast } from '@/lib/toast'
 
@@ -27,6 +27,8 @@ export default function TestRunDetailPage() {
   const { data: assessments = [], isLoading: loadingAssessments } = useAssessments(testRunId)
   const runAnalysis = useRunAnalysis()
   const startTestRun = useStartTestRun()
+  const pauseTestRun = usePauseTestRun()
+  const resumeTestRun = useResumeTestRun()
   const stopTestRun = useStopTestRun()
   const deleteTestRun = useDeleteTestRun()
   
@@ -63,6 +65,19 @@ export default function TestRunDetailPage() {
       setActiveTab('live')
     }
   }, [testRun?.status, activeTab])
+
+  // Auto-scroll to bottom when new messages arrive in Live tab
+  useEffect(() => {
+    if (activeTab === 'live' && conversation.length > 0) {
+      const container = document.getElementById('live-messages-container')
+      if (container) {
+        // Small delay to ensure DOM is updated
+        setTimeout(() => {
+          container.scrollTop = container.scrollHeight
+        }, 100)
+      }
+    }
+  }, [conversation, activeTab])
 
   // Aggressive polling for conversation and results when test is running (SSE handles status updates)
   useEffect(() => {
@@ -191,6 +206,34 @@ export default function TestRunDetailPage() {
     } catch (error) {
       console.error('Failed to start test run:', error)
       toast.error('Failed to start test run')
+    }
+  }
+
+  const handlePauseRun = async () => {
+    if (!testRunId) return
+    try {
+      await pauseTestRun.mutateAsync(testRunId)
+      toast.success('Test run paused. You can resume it later.')
+      await queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
+      await queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
+    } catch (error: any) {
+      console.error('Failed to pause test run:', error)
+      const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to pause test run'
+      toast.error(errorMessage)
+    }
+  }
+
+  const handleResumeRun = async () => {
+    if (!testRunId) return
+    try {
+      await resumeTestRun.mutateAsync(testRunId)
+      toast.success('Test run resumed!')
+      await queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
+      await queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
+    } catch (error: any) {
+      console.error('Failed to resume test run:', error)
+      const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to resume test run'
+      toast.error(errorMessage)
     }
   }
 
@@ -370,14 +413,44 @@ export default function TestRunDetailPage() {
               </button>
             )}
             {testRun.status === 'running' && (
-              <button
-                onClick={handleStopRun}
-                disabled={stopTestRun.isPending}
-                className="flex items-center gap-2 rounded-lg border border-orange-500 bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-900 disabled:opacity-50"
-              >
-                <Square className="h-4 w-4" />
-                {stopTestRun.isPending ? 'Stopping...' : 'Stop Run'}
-              </button>
+              <>
+                <button
+                  onClick={handlePauseRun}
+                  disabled={pauseTestRun.isPending}
+                  className="flex items-center gap-2 rounded-lg border border-blue-500 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900 disabled:opacity-50"
+                >
+                  <Pause className="h-4 w-4" />
+                  {pauseTestRun.isPending ? 'Pausing...' : 'Pause'}
+                </button>
+                <button
+                  onClick={handleStopRun}
+                  disabled={stopTestRun.isPending}
+                  className="flex items-center gap-2 rounded-lg border border-orange-500 bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-900 disabled:opacity-50"
+                >
+                  <Square className="h-4 w-4" />
+                  {stopTestRun.isPending ? 'Stopping...' : 'Stop Run'}
+                </button>
+              </>
+            )}
+            {testRun.status === 'paused' && (
+              <>
+                <button
+                  onClick={handleResumeRun}
+                  disabled={resumeTestRun.isPending}
+                  className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  <RotateCw className="h-4 w-4" />
+                  {resumeTestRun.isPending ? 'Resuming...' : 'Resume'}
+                </button>
+                <button
+                  onClick={handleStopRun}
+                  disabled={stopTestRun.isPending}
+                  className="flex items-center gap-2 rounded-lg border border-orange-500 bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-900 disabled:opacity-50"
+                >
+                  <Square className="h-4 w-4" />
+                  {stopTestRun.isPending ? 'Stopping...' : 'Stop Run'}
+                </button>
+              </>
             )}
             {testRun.status === 'failed' && testRun.meta_data?.cancelled && (
               <button
@@ -713,253 +786,162 @@ export default function TestRunDetailPage() {
           {/* Live Monitoring Tab */}
           {(testRun.status === 'running' || testRun.status === 'pending') && (
             <Tabs.Content value="live" className="space-y-4">
-              <div className="rounded-lg border bg-card p-4">
-                <h3 className="font-semibold mb-4 flex items-center gap-2">
-                  <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-                  Live Test Progress
-                </h3>
-                
-                {/* Connection Status */}
-                <div className="mb-4 space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Connection Status:</span>
-                    <span className={isConnected ? 'text-green-600 font-medium' : 'text-gray-500'}>
-                      {isConnected ? 'Connected' : progressError || 'Connecting...'}
+              {/* Status Bar */}
+              <div className="rounded-lg border bg-card p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+                    <span className="text-sm font-medium">
+                      {isConnected ? 'Live' : progressError || 'Connecting...'}
                     </span>
-                  </div>
-                  {progress && (
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">Last Update:</span>
-                      <span className="text-muted-foreground">
-                        {new Date(progress.timestamp).toLocaleTimeString()}
+                    {progress && typeof progress.data?.elapsed_seconds === 'number' && (
+                      <span className="text-xs text-muted-foreground">
+                        {Math.floor(progress.data.elapsed_seconds)}s elapsed
                       </span>
-                    </div>
+                    )}
+                  </div>
+                  {conversation.length > 0 && (
+                    <span className="text-xs text-muted-foreground">
+                      {conversation.length} {conversation.length === 1 ? 'message' : 'messages'}
+                    </span>
                   )}
                 </div>
-
-                {/* Progress Details */}
-                {progress && progress.data && (
-                  <div className="space-y-4">
-                    {progress.event_type === 'benchmark_progress' && (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium">Benchmark Progress</span>
-                          {typeof progress.data.progress === 'number' && (
-                            <span className="text-sm font-semibold">{progress.data.progress}%</span>
-                          )}
-                        </div>
-                        {typeof progress.data.progress === 'number' && (
-                          <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
-                            <div
-                              className="h-full bg-primary transition-all duration-500"
-                              style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
-                            />
-                          </div>
-                        )}
-                        {typeof progress.data.current === 'number' && typeof progress.data.total === 'number' && (
-                          <p className="text-sm text-muted-foreground">
-                            Processing question {progress.data.current} of {progress.data.total}
-                          </p>
-                        )}
-                        {progress.data.benchmark_name && (
-                          <p className="text-xs text-muted-foreground">
-                            Benchmark: {progress.data.benchmark_name}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    
-                    {progress.event_type === 'test_started' && (
-                      <div className="rounded bg-blue-50 dark:bg-blue-950 p-3">
-                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                          ✓ Test started
-                        </p>
-                        {progress.data.test_type && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Type: {progress.data.test_type}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {progress.event_type === 'test_progress' && (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium">Test Progress</span>
-                          {typeof progress.data.progress === 'number' && (
-                            <span className="text-sm font-semibold">{progress.data.progress}%</span>
-                          )}
-                        </div>
-                        {typeof progress.data.progress === 'number' && (
-                          <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
-                            <div
-                              className="h-full bg-primary transition-all duration-500"
-                              style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
-                            />
-                          </div>
-                        )}
-                        {typeof progress.data.attempt === 'number' && typeof progress.data.total_attempts === 'number' && (
-                          <p className="text-sm text-muted-foreground">
-                            Attempt {progress.data.attempt} of {progress.data.total_attempts}
-                            {progress.data.test_type && ` (${progress.data.test_type.replace('_', ' ')})`}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {progress.event_type === 'test_completed' && (
-                      <div className="rounded bg-green-50 dark:bg-green-950 p-3">
-                        <p className="text-sm font-medium text-green-900 dark:text-green-100">
-                          ✓ Test completed successfully
-                        </p>
-                        {typeof progress.data.score === 'number' && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            Score: {(progress.data.score * 100).toFixed(1)}%
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {progress.event_type === 'test_failed' && (
-                      <div className="rounded bg-red-50 dark:bg-red-950 p-3">
-                        <p className="text-sm font-medium text-red-900 dark:text-red-100">
-                          ✗ Test failed
-                        </p>
-                        {progress.data.error && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {progress.data.error}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {progress.event_type === 'test_cancelled' && (
-                      <div className="rounded bg-orange-50 dark:bg-orange-950 p-3">
-                        <p className="text-sm font-medium text-orange-900 dark:text-orange-100">
-                          ⏹ Test cancelled
-                        </p>
-                        {progress.data.error && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {progress.data.error}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {typeof progress.data.elapsed_seconds === 'number' && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">Elapsed time: </span>
-                        <span className="font-medium">{Math.floor(progress.data.elapsed_seconds)}s</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {progress && progress.message && (
-                  <div className="mt-4 rounded bg-muted/50 p-3">
-                    <p className="text-sm">{progress.message}</p>
-                  </div>
-                )}
-
-                {!progress && (
-                  <div className="text-center text-muted-foreground py-8">
-                    <p>Waiting for progress updates...</p>
-                    <p className="text-xs mt-2">
-                      {isConnected ? 'Connected and listening for events' : 'Connecting to live stream...'}
-                    </p>
-                  </div>
-                )}
               </div>
 
-              {/* Live Conversation Preview - Enhanced with verbose output */}
+              {/* Live Messages Display - Chat-like format */}
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-4 flex items-center gap-2">
-                  Live Conversation
-                  {conversation.length > 0 && (
-                    <span className="text-sm font-normal text-muted-foreground">
-                      ({conversation.length} {conversation.length === 1 ? 'turn' : 'turns'})
-                    </span>
-                  )}
+                  Live Messages
                   {testRun.status === 'running' && (
-                    <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse ml-auto" />
+                    <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
                   )}
                 </h3>
                 
-                {/* Show latest conversation turn from progress events if available */}
-                {progress && progress.event_type === 'conversation_turn' && progress.data && (
-                  <div className="mb-4 rounded-lg border-2 border-green-500 bg-green-50 dark:bg-green-950 p-3 animate-pulse">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-bold text-green-700 dark:text-green-300">
-                        NEW: Turn {progress.data.turn_number} - {progress.data.speaker}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {new Date(progress.timestamp).toLocaleTimeString()}
-                      </span>
-                    </div>
-                    {progress.data.prompt_preview && (
-                      <div className="mb-2">
-                        <p className="text-xs font-semibold text-muted-foreground mb-1">Prompt:</p>
-                        <p className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
-                          {progress.data.prompt_preview}
-                        </p>
-                      </div>
-                    )}
-                    {progress.data.response_preview && (
-                      <div>
-                        <p className="text-xs font-semibold text-muted-foreground mb-1">Response:</p>
-                        <p className="text-sm text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
-                          {progress.data.response_preview}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-                
                 {conversation.length > 0 ? (
-                  <>
-                    <div className="max-h-96 overflow-y-auto space-y-3">
-                      {conversation.slice(-5).map((turn) => (
-                        <div key={turn.id} className="rounded-lg border bg-muted/30 p-3">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-semibold capitalize text-sm">{turn.speaker}</span>
-                            <span className="text-xs text-muted-foreground">Turn {turn.turn_number}</span>
-                          </div>
+                  <div className="space-y-4 max-h-[600px] overflow-y-auto" id="live-messages-container">
+                    {conversation.map((turn) => {
+                      const isDoctor = turn.speaker === 'doctor'
+                      const patientName = turn.metadata?.patient_name
+                      const patientModel = turn.metadata?.patient_model
+                      const reasoning = turn.metadata?.reasoning
+                      
+                      return (
+                        <div key={turn.id} className="space-y-2">
+                          {/* Prompt Message */}
                           {turn.prompt && (
-                            <div className="mb-2">
-                              <p className="text-xs font-semibold text-muted-foreground mb-1">Prompt:</p>
-                              <p className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
-                                {turn.prompt}
-                              </p>
+                            <div className={`flex ${isDoctor ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
+                                isDoctor 
+                                  ? 'bg-blue-500 text-white' 
+                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                              }`}>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-xs font-semibold opacity-90">
+                                    {isDoctor ? '👨‍⚕️ Doctor' : patientName ? `🤖 ${patientName}` : '🤖 Patient'}
+                                  </span>
+                                  <span className="text-xs opacity-75">
+                                    Turn {turn.turn_number}
+                                  </span>
+                                </div>
+                                <p className="text-sm whitespace-pre-wrap">{turn.prompt}</p>
+                                {turn.created_at && (
+                                  <p className="text-xs opacity-75 mt-1">
+                                    {new Date(turn.created_at).toLocaleTimeString()}
+                                  </p>
+                                )}
+                              </div>
                             </div>
                           )}
+                          
+                          {/* Response Message */}
                           {turn.response && (
-                            <div>
-                              <p className="text-xs font-semibold text-muted-foreground mb-1">Response:</p>
-                              <p className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 p-2 rounded border">
-                                {turn.response}
-                              </p>
+                            <div className={`flex ${!isDoctor ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
+                                !isDoctor 
+                                  ? 'bg-green-500 text-white' 
+                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                              }`}>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-xs font-semibold opacity-90">
+                                    {!isDoctor ? (patientName ? `🤖 ${patientName}${patientModel ? ` (${patientModel})` : ''}` : '🤖 Patient') : '👨‍⚕️ Doctor'}
+                                  </span>
+                                  <span className="text-xs opacity-75">
+                                    Response
+                                  </span>
+                                </div>
+                                {reasoning && (
+                                  <div className="mb-2 p-2 rounded bg-black/10 dark:bg-white/10">
+                                    <p className="text-xs font-semibold mb-1 opacity-90">💭 Reasoning:</p>
+                                    <p className="text-xs whitespace-pre-wrap opacity-90">{reasoning}</p>
+                                  </div>
+                                )}
+                                <p className="text-sm whitespace-pre-wrap">{turn.response}</p>
+                                {turn.created_at && (
+                                  <p className="text-xs opacity-75 mt-1">
+                                    {new Date(turn.created_at).toLocaleTimeString()}
+                                  </p>
+                                )}
+                              </div>
                             </div>
                           )}
                         </div>
-                      ))}
-                    </div>
-                    {conversation.length > 5 && (
-                      <p className="text-xs text-muted-foreground mt-2 text-center">
-                        Showing last 5 turns. View all in Conversation tab.
-                      </p>
-                    )}
-                  </>
+                      )
+                    })}
+                  </div>
                 ) : (
-                  <div className="text-center text-muted-foreground py-8">
-                    <p className="text-sm">No conversation turns yet</p>
-                    {testRun.status === 'running' && (
-                      <p className="text-xs mt-2">
-                        Conversation turns will appear here as they're generated...
-                      </p>
-                    )}
+                  <div className="text-center text-muted-foreground py-12">
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="h-8 w-8 rounded-full border-2 border-muted-foreground/30 border-t-primary animate-spin" />
+                      <p className="text-sm font-medium">Waiting for messages...</p>
+                      {testRun.status === 'running' && (
+                        <p className="text-xs mt-1">
+                          Messages will appear here as they're sent
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
+
+              {/* Progress Summary (collapsed) */}
+              {progress && progress.data && (
+                <details className="rounded-lg border bg-card p-3">
+                  <summary className="text-sm font-medium cursor-pointer">Progress Details</summary>
+                  <div className="mt-3 space-y-2">
+                    {progress.event_type === 'benchmark_progress' && typeof progress.data.progress === 'number' && (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-xs">
+                          <span>Benchmark Progress</span>
+                          <span>{progress.data.progress}%</span>
+                        </div>
+                        <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                          <div
+                            className="h-full bg-primary transition-all duration-500"
+                            style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {progress.event_type === 'test_progress' && typeof progress.data.progress === 'number' && (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-xs">
+                          <span>Test Progress</span>
+                          <span>{progress.data.progress}%</span>
+                        </div>
+                        <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                          <div
+                            className="h-full bg-primary transition-all duration-500"
+                            style={{ width: `${Math.min(100, Math.max(0, progress.data.progress))}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {progress.message && (
+                      <p className="text-xs text-muted-foreground">{progress.message}</p>
+                    )}
+                  </div>
+                </details>
+              )}
 
             </Tabs.Content>
           )}
