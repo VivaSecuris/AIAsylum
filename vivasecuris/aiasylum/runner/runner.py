@@ -21,6 +21,7 @@ from vivasecuris.aiasylum.constants import (
     TEST_TYPE_GROUP_THERAPY,
     TEST_TYPE_SCENARIO,  # Legacy
     TEST_TYPE_ADVERSARIAL,  # Legacy
+    TEST_TYPE_ANALYSIS,
     STATUS_PENDING,
     STATUS_RUNNING,
     STATUS_PAUSED,
@@ -1063,25 +1064,64 @@ class TestRunner:
                 if auto_analysis_enabled:
                     try:
                         logger.info(f"Triggering auto-analysis for test run {test_run_id}")
-                        from vivasecuris.aiasylum.analysis import AnalysisService
+                        from vivasecuris.aiasylum.api.routes.analysis import _run_analysis_background
                         import asyncio
                         
-                        # Create analysis service and start analysis in background
-                        analysis_service = AnalysisService()
+                        # Create analysis test run entry (same as manual analysis endpoint)
+                        analysis_session = get_session()
+                        try:
+                            # Use evaluator model/provider if specified, otherwise use doctor model
+                            evaluator_provider = analysis_config.get("evaluator_provider")
+                            evaluator_model = analysis_config.get("evaluator_model")
+                            analysis_doctor_provider = evaluator_provider or test_run.doctor_provider
+                            analysis_doctor_model = evaluator_model or test_run.doctor_model
+                            
+                            analysis_test_run = TestRun(
+                                doctor_provider=analysis_doctor_provider,
+                                doctor_model=analysis_doctor_model,
+                                patient_provider=test_run.patient_provider,
+                                patient_model=test_run.patient_model,
+                                test_type=TEST_TYPE_ANALYSIS,
+                                status=STATUS_PENDING,
+                                meta_data={
+                                    "source_test_run_id": test_run_id,
+                                    "analysis_config": {
+                                        "enable_activation_patching": False,
+                                        "enable_cot_detection": analysis_config.get("enable_cot_detection", True),
+                                        "cot_analysis_mode": analysis_config.get("cot_analysis_mode", "full"),
+                                        "enable_factuality_check": analysis_config.get("enable_factuality_check", False),
+                                        "enable_manipulation_analysis": analysis_config.get("enable_manipulation_analysis", False),
+                                        "evaluator_provider": evaluator_provider,
+                                        "evaluator_model": evaluator_model,
+                                    },
+                                    "description": f"Auto-analysis of test run #{test_run_id}",
+                                },
+                            )
+                            analysis_session.add(analysis_test_run)
+                            analysis_session.commit()
+                            analysis_session.refresh(analysis_test_run)
+                            analysis_test_run_id = analysis_test_run.id
+                            logger.info(f"Created analysis test run {analysis_test_run_id} for auto-analysis of test run {test_run_id}")
+                        except Exception as e:
+                            analysis_session.rollback()
+                            logger.error(f"Failed to create analysis test run entry for test run {test_run_id}: {str(e)}", exc_info=True)
+                            raise
+                        finally:
+                            analysis_session.close()
                         
-                        # Start analysis as a background task
-                        asyncio.create_task(analysis_service.analyze_test_run(
+                        # Start analysis as a background task using the same function as manual analysis
+                        asyncio.create_task(_run_analysis_background(
                             test_run_id=test_run_id,
                             enable_activation_patching=False,
                             enable_cot_detection=analysis_config.get("enable_cot_detection", True),
                             cot_analysis_mode=analysis_config.get("cot_analysis_mode", "full"),
                             enable_factuality_check=analysis_config.get("enable_factuality_check", False),
                             enable_manipulation_analysis=analysis_config.get("enable_manipulation_analysis", False),
-                            evaluator_provider=analysis_config.get("evaluator_provider"),
-                            evaluator_model=analysis_config.get("evaluator_model"),
-                            analysis_test_run_id=None,
+                            evaluator_provider=evaluator_provider,
+                            evaluator_model=evaluator_model,
+                            analysis_test_run_id=analysis_test_run_id,
                         ))
-                        logger.info(f"Auto-analysis task created for test run {test_run_id}")
+                        logger.info(f"Auto-analysis task created for test run {test_run_id}, analysis test run {analysis_test_run_id}")
                     except Exception as e:
                         logger.error(f"Failed to trigger auto-analysis for test run {test_run_id}: {str(e)}", exc_info=True)
                         # Don't fail the test run if analysis fails

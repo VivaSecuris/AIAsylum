@@ -56,7 +56,7 @@ export default function CreatePromptPage() {
                 required
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 placeholder="Enter prompt name"
               />
             </div>
@@ -66,7 +66,7 @@ export default function CreatePromptPage() {
               <textarea
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 placeholder="Enter prompt description (optional)"
                 rows={3}
               />
@@ -78,7 +78,7 @@ export default function CreatePromptPage() {
                 required
                 value={formData.prompt_type}
                 onChange={(e) => setFormData({ ...formData, prompt_type: e.target.value, target: e.target.value === 'test_prompt' ? '' : formData.target })}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="test_prompt">Test Prompt</option>
                 <option value="system_prompt">System Prompt</option>
@@ -92,7 +92,7 @@ export default function CreatePromptPage() {
                   required
                   value={formData.target}
                   onChange={(e) => setFormData({ ...formData, target: e.target.value })}
-                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >
                   <option value="">Select target</option>
                   <option value="doctor">Doctor Model</option>
@@ -107,7 +107,7 @@ export default function CreatePromptPage() {
                 required
                 value={formData.prompt_text}
                 onChange={(e) => setFormData({ ...formData, prompt_text: e.target.value })}
-                className="w-full rounded-lg border px-3 py-2 text-sm font-mono"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 placeholder={formData.prompt_type === 'system_prompt' ? 'Enter the system prompt text' : 'Enter the prompt text'}
                 rows={10}
               />
@@ -118,7 +118,7 @@ export default function CreatePromptPage() {
               <select
                 value={formData.category}
                 onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">Select category (optional)</option>
                 <option value="adversarial">Jailbreak Prompts (Adversarial)</option>
@@ -135,7 +135,7 @@ export default function CreatePromptPage() {
                 type="text"
                 value={formData.tags}
                 onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 placeholder="Comma-separated tags (e.g., jailbreak, safety, test)"
               />
             </div>

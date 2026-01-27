@@ -126,7 +126,7 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
                     # Jailbreak benchmarks default to one_shot mode
                     # Individual prompts will be handled based on their is_multi_shot flag
                     # This allows single-shot and multi-shot prompts to be mixed properly
-                    "test_mode": request.test_mode or ("one_shot" if request.benchmark.lower() == "jailbreak" else "one_shot"),
+                    "test_mode": "one_shot",  # Default to one_shot for all benchmarks
                 }
             },
         )

@@ -374,6 +374,9 @@ async def delete_test_run(test_run_id: int):
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Deletion committed successfully")
         session.close()
         
+        # Clear cancellation flag and unregister task to prevent issues if ID is reused
+        cancellation_manager.clear(test_run_id)
+        
         return {"message": "Test run deleted successfully", "id": test_run_id}
     except HTTPException as e:
         print(f"DELETE /api/v1/test-runs/{test_run_id} - HTTPException: {e.status_code} - {e.detail}")

@@ -306,13 +306,13 @@ export default function PromptsPage() {
               placeholder="Search prompts..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full rounded-lg border pl-10 pr-4 py-2 text-sm"
+              className="w-full rounded-md border border-input bg-background pl-10 pr-4 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             />
           </div>
           <select
             value={promptTypeFilter}
             onChange={(e) => setPromptTypeFilter(e.target.value)}
-            className="rounded-lg border px-4 py-2 text-sm"
+            className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Types</option>
             <option value="test_prompt">Test Prompts</option>
@@ -322,7 +322,7 @@ export default function PromptsPage() {
             <select
               value={targetFilter}
               onChange={(e) => setTargetFilter(e.target.value)}
-              className="rounded-lg border px-4 py-2 text-sm"
+              className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               <option value="">All Targets</option>
               <option value="doctor">Doctor</option>
@@ -339,7 +339,7 @@ export default function PromptsPage() {
                   setTechniqueFilter('')
                 }
               }}
-              className="rounded-lg border px-4 py-2 text-sm"
+              className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               <option value="">All Categories ({totalLoaded} total)</option>
               {categories.map((cat) => {
@@ -359,7 +359,7 @@ export default function PromptsPage() {
             <select
               value={techniqueFilter}
               onChange={(e) => setTechniqueFilter(e.target.value)}
-              className="rounded-lg border px-4 py-2 text-sm"
+              className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               <option value="">All Techniques</option>
               {techniques.map((tech) => {

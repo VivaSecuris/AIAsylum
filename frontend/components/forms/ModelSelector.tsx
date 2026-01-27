@@ -45,7 +45,7 @@ export function ModelSelector({
           <select
             value={provider}
             onChange={(e) => onProviderChange(e.target.value)}
-            className="mt-1 w-full rounded border px-3 py-2 text-sm"
+            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">Select provider</option>
             {PROVIDERS.map((p) => (
@@ -61,7 +61,7 @@ export function ModelSelector({
             value={model}
             onChange={(e) => onModelChange(e.target.value)}
             disabled={!provider}
-            className="mt-1 w-full rounded border px-3 py-2 text-sm disabled:bg-muted"
+            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <option value="">Select model</option>
             {availableModels.map((m) => (

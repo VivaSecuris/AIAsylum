@@ -49,7 +49,7 @@ function TestRunRow({ run, onUpdate }: TestRunRowProps) {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="flex-1 rounded border px-2 py-1 text-sm"
+              className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {

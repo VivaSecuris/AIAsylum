@@ -371,7 +371,7 @@ export function CreateTestForm() {
               <select
                 value={selectedBenchmark}
                 onChange={(e) => setSelectedBenchmark(e.target.value)}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">Select benchmark</option>
                 {benchmarksData?.benchmarks?.map((benchmark: any) => (
@@ -395,7 +395,7 @@ export function CreateTestForm() {
                 max="10000"
                 value={numSamples}
                 onChange={(e) => setNumSamples(parseInt(e.target.value) || 100)}
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
               <p className="text-xs text-muted-foreground">
                 Number of test samples to run from the benchmark dataset
@@ -446,7 +446,7 @@ export function CreateTestForm() {
                 onChange={(e) =>
                   setSelectedDoctorSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
                 }
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">Default doctor system prompt</option>
                 {doctorSystemPrompts.map((prompt) => (
@@ -464,7 +464,7 @@ export function CreateTestForm() {
                 onChange={(e) =>
                   setSelectedPatientSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
                 }
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">No system prompt (default behavior)</option>
                 {patientSystemPrompts.map((prompt) => (
@@ -525,7 +525,7 @@ export function CreateTestForm() {
                         }, undefined, { shallow: true })
                       }
                     }}
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="">None (use custom prompt below)</option>
                     {prompts
@@ -564,7 +564,7 @@ export function CreateTestForm() {
                           setSelectedPromptId(undefined)
                         }
                       }}
-                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       rows={4}
                     />
                     <p className="text-xs text-muted-foreground">
@@ -594,7 +594,7 @@ export function CreateTestForm() {
                             })
                           }
                           placeholder={`Enter value for ${varName}`}
-                          className="w-full rounded border px-3 py-2 text-sm"
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         />
                       </div>
                     ))}
@@ -624,7 +624,7 @@ export function CreateTestForm() {
                         })
                       }
                     }}
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     {prompts
                       .filter((p) => p.prompt_type === 'test_prompt')
@@ -677,7 +677,7 @@ export function CreateTestForm() {
                         setSelectedPromptIds([])
                       }
                     }}
-                    className="w-full rounded-lg border px-3 py-2 text-sm font-mono"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     rows={6}
                   />
                   <p className="text-xs text-muted-foreground">
@@ -769,7 +769,7 @@ export function CreateTestForm() {
                               cot_analysis_mode: e.target.value as 'full' | 'partial' | 'none',
                             })
                           }
-                          className="w-full rounded border px-3 py-2 text-sm"
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         >
                           <option value="full">Full Analysis</option>
                           <option value="partial">Partial Analysis</option>
@@ -837,7 +837,7 @@ export function CreateTestForm() {
                       },
                     })
                   }
-                  className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   disabled={Array.isArray(formData.test_config?.prompts) && formData.test_config.prompts.length > 0}
                 />
                 <p className="text-xs text-muted-foreground mt-1">
@@ -862,7 +862,7 @@ export function CreateTestForm() {
                       },
                     })
                   }
-                  className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
                 <p className="text-xs text-muted-foreground mt-1">
                   Number of conversation turns {formData.test_type === 'group_therapy' ? 'in the group therapy session' : 'between doctor and patient'}
@@ -931,7 +931,7 @@ export function CreateTestForm() {
                       },
                     })
                   }
-                  className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >
                   <option value="dan">DAN (Do Anything Now)</option>
                   <option value="jailbreak">Jailbreak Prompts</option>

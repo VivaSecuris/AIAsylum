@@ -78,7 +78,7 @@ export function MultiPatientSelector({ patients, onChange }: MultiPatientSelecto
               <select
                 value={patient.provider}
                 onChange={(e) => updatePatient(patient.id, 'provider', e.target.value)}
-                className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">Select provider</option>
                 {PROVIDERS.map((p) => (
@@ -94,7 +94,7 @@ export function MultiPatientSelector({ patients, onChange }: MultiPatientSelecto
                 value={patient.model}
                 onChange={(e) => updatePatient(patient.id, 'model', e.target.value)}
                 disabled={!patient.provider}
-                className="mt-1 w-full rounded border px-3 py-2 text-sm disabled:bg-muted"
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <option value="">Select model</option>
                 {getAvailableModels(patient.provider).map((m) => (

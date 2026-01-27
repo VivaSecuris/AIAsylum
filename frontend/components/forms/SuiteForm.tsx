@@ -241,7 +241,7 @@ export function SuiteForm() {
             value={suiteName}
             onChange={(e) => setSuiteName(e.target.value)}
             placeholder="My Test Suite"
-            className="w-full rounded-lg border px-3 py-2 text-sm"
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
         </div>
 
@@ -336,7 +336,7 @@ export function SuiteForm() {
                   <select
                     value={model.provider}
                     onChange={(e) => updateModel(model.id, 'provider', e.target.value)}
-                    className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                    className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="">Select provider</option>
                     {PROVIDERS.map((p) => (
@@ -352,7 +352,7 @@ export function SuiteForm() {
                     value={model.model}
                     onChange={(e) => updateModel(model.id, 'model', e.target.value)}
                     disabled={!model.provider}
-                    className="mt-1 w-full rounded border px-3 py-2 text-sm disabled:bg-muted"
+                    className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <option value="">Select model</option>
                     {getAvailableModels(model.provider).map((m) => (
@@ -385,7 +385,7 @@ export function SuiteForm() {
               max="10000"
               value={numSamples}
               onChange={(e) => setNumSamples(parseInt(e.target.value) || 100)}
-              className="w-full rounded-lg border px-3 py-2 text-sm"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             />
             <p className="text-xs text-muted-foreground">
               Number of test samples to run from each benchmark dataset
@@ -443,7 +443,7 @@ export function SuiteForm() {
                         setCustomPrompt('')
                       }
                     }}
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="">None (use custom prompt below)</option>
                     {prompts
@@ -468,7 +468,7 @@ export function SuiteForm() {
                           setSelectedPromptId(undefined)
                         }
                       }}
-                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       rows={4}
                     />
                   </div>
@@ -491,7 +491,7 @@ export function SuiteForm() {
                               [varName]: e.target.value,
                             })
                           }
-                          className="w-full rounded border px-2 py-1 text-sm"
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                           placeholder={`Enter value for ${varName}`}
                         />
                       </div>
@@ -515,7 +515,7 @@ export function SuiteForm() {
                         setSelectedPromptIds([])
                       }
                     }}
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="">None (use custom prompts below)</option>
                     {prompts
@@ -541,7 +541,7 @@ export function SuiteForm() {
                           setSelectedPromptIds([])
                         }
                       }}
-                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       rows={6}
                     />
                     <p className="text-xs text-muted-foreground">
@@ -574,7 +574,7 @@ export function SuiteForm() {
                 onChange={(e) =>
                   setSelectedDoctorSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
                 }
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">Default doctor system prompt</option>
                 {doctorSystemPrompts.map((prompt) => (
@@ -592,7 +592,7 @@ export function SuiteForm() {
                 onChange={(e) =>
                   setSelectedPatientSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
                 }
-                className="w-full rounded-lg border px-3 py-2 text-sm"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="">No system prompt (default behavior)</option>
                 {patientSystemPrompts.map((prompt) => (

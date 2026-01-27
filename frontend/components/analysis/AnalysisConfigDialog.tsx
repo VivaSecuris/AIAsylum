@@ -65,17 +65,20 @@ export function AnalysisConfigDialog({
       }}
     >
       <div 
-        className="w-full max-w-2xl rounded-lg border bg-card p-6 shadow-lg"
+        className="w-full max-w-2xl max-h-[90vh] rounded-lg border bg-card shadow-lg flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-6">
+        {/* Header - Fixed */}
+        <div className="px-6 pt-6 pb-4 border-b flex-shrink-0">
           <h2 className="text-2xl font-semibold">Configure Analysis</h2>
           <p className="mt-2 text-sm text-muted-foreground">
             Choose which AI model will analyze the conversation and chain of thought reasoning.
           </p>
         </div>
 
-        <div className="space-y-6">
+        {/* Scrollable Content */}
+        <div className="px-6 py-6 overflow-y-auto flex-1">
+          <div className="space-y-6">
           {/* Evaluator Model Selection */}
           <div className="rounded-lg border bg-muted/30 p-4">
             <h3 className="mb-4 font-medium">Evaluator AI Model</h3>
@@ -124,7 +127,7 @@ export function AnalysisConfigDialog({
                   <select
                     value={cotAnalysisMode}
                     onChange={(e) => setCotAnalysisMode(e.target.value as 'full' | 'partial' | 'none')}
-                    className="w-full rounded border px-3 py-2 text-sm"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
                     <option value="full">Full Analysis - Complete chain of thought detection</option>
                     <option value="partial">Partial Analysis - Basic pattern detection</option>
@@ -179,9 +182,11 @@ export function AnalysisConfigDialog({
               </div>
             </label>
           </div>
+          </div>
         </div>
 
-        <div className="mt-6 flex justify-end gap-3">
+        {/* Footer - Fixed */}
+        <div className="px-6 py-4 border-t flex justify-end gap-3 flex-shrink-0">
           <button
             onClick={onClose}
             className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
