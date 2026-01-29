@@ -50,6 +50,14 @@ Pull additional models:
 ollama pull <model-name>
 ```
 
+## Why responses differ from the Ollama app
+
+Outputs from AI Asylum can differ from chatting in the Ollama app for two reasons:
+
+1. **Different input** – We send system prompts and conversation context (e.g. doctor/patient instructions, turn history). The model sees more than the single message you type in the app, so its reply can change.
+
+2. **Randomness** – We use `temperature=0.7` by default, so the model samples different replies each time. For more reproducible runs, use lower temperature or a fixed `seed` in your test config.
+
 ## Troubleshooting
 
 - Ensure Ollama is running: `ollama serve`

@@ -81,47 +81,48 @@ class OllamaModel(BaseModel):
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs
     ) -> ModelResponse:
-        """Generate a response from the Ollama model."""
+        """Generate a response from the Ollama model.
+
+        Responses can differ from the Ollama app because: (1) we add system prompts
+        and conversation context (doctor/patient instructions, history); (2) temperature
+        (default 0.7) adds randomness—use temperature=0 or pass seed= for reproducibility.
+        """
         try:
             client = await self._get_client()
         except Exception as e:
             raise RuntimeError(f"Failed to connect to Ollama at {self.base_url}: {str(e)}")
         
-        # Use chat API if messages are provided (better for conversation)
+        # Use chat API if messages are provided (same format as Ollama app / chat UI)
         if messages:
-            # Prepare messages for chat API
+            # Preserve message order: system, user, assistant as sent (Ollama expects this array)
             chat_messages = []
             for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                # Convert role names to Ollama format
-                if role == "assistant":
-                    chat_messages.append({"role": "assistant", "content": content})
-                elif role == "user":
-                    chat_messages.append({"role": "user", "content": content})
-                elif role == "system":
-                    # System messages go in a separate field
-                    if not any("system" in str(m) for m in chat_messages):
-                        chat_messages.insert(0, {"role": "system", "content": content})
+                role = (msg.get("role") or "user").strip().lower()
+                content = msg.get("content", "") or ""
+                if role not in ("system", "user", "assistant"):
+                    role = "user"
+                chat_messages.append({"role": role, "content": content})
             
-            # Prepare chat request
+            # Options: match Ollama app behavior when possible. temperature=0 gives reproducible outputs.
+            options = {
+                "temperature": kwargs.get("temperature", self.temperature),
+                "num_predict": kwargs.get("max_tokens", self.max_tokens),
+            }
+            if "seed" in kwargs:
+                options["seed"] = kwargs["seed"]
+            if "top_p" in kwargs:
+                options["top_p"] = kwargs["top_p"]
+            if "top_k" in kwargs:
+                options["top_k"] = kwargs["top_k"]
+            if "repeat_penalty" in kwargs:
+                options["repeat_penalty"] = kwargs["repeat_penalty"]
+            
             request_data = {
                 "model": self.model_name,
                 "messages": chat_messages,
                 "stream": False,
-                "options": {
-                    "temperature": kwargs.get("temperature", self.temperature),
-                    "num_predict": kwargs.get("max_tokens", self.max_tokens),
-                },
+                "options": options,
             }
-            
-            # Add any additional options
-            if "top_p" in kwargs:
-                request_data["options"]["top_p"] = kwargs["top_p"]
-            if "top_k" in kwargs:
-                request_data["options"]["top_k"] = kwargs["top_k"]
-            if "repeat_penalty" in kwargs:
-                request_data["options"]["repeat_penalty"] = kwargs["repeat_penalty"]
             
             try:
                 response = await client.post("/api/chat", json=request_data, timeout=300.0)
@@ -163,24 +164,25 @@ class OllamaModel(BaseModel):
             if system_prompt:
                 full_prompt = f"{system_prompt}\n\n{prompt}"
         
-        # Prepare generate request
+        # Prepare generate request (same options as chat for consistency)
+        options = {
+            "temperature": kwargs.get("temperature", self.temperature),
+            "num_predict": kwargs.get("max_tokens", self.max_tokens),
+        }
+        if "seed" in kwargs:
+            options["seed"] = kwargs["seed"]
+        if "top_p" in kwargs:
+            options["top_p"] = kwargs["top_p"]
+        if "top_k" in kwargs:
+            options["top_k"] = kwargs["top_k"]
+        if "repeat_penalty" in kwargs:
+            options["repeat_penalty"] = kwargs["repeat_penalty"]
         request_data = {
             "model": self.model_name,
             "prompt": full_prompt,
             "stream": False,
-            "options": {
-                "temperature": kwargs.get("temperature", self.temperature),
-                "num_predict": kwargs.get("max_tokens", self.max_tokens),
-            },
+            "options": options,
         }
-        
-        # Add any additional options
-        if "top_p" in kwargs:
-            request_data["options"]["top_p"] = kwargs["top_p"]
-        if "top_k" in kwargs:
-            request_data["options"]["top_k"] = kwargs["top_k"]
-        if "repeat_penalty" in kwargs:
-            request_data["options"]["repeat_penalty"] = kwargs["repeat_penalty"]
         
         try:
             response = await client.post("/api/generate", json=request_data, timeout=300.0)
@@ -328,15 +330,13 @@ class OllamaProvider:
         )
     
     async def list_available_models(self) -> List[str]:
-        """List all available Ollama models."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.base_url}/api/tags")
-                response.raise_for_status()
-                models = response.json().get("models", [])
-                return [model.get("name", "") for model in models if model.get("name")]
-        except Exception:
-            return []
+        """List all available Ollama models. Raises on connection error."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{self.base_url.rstrip('/')}/api/tags")
+            response.raise_for_status()
+            data = response.json()
+            models = data.get("models", []) if isinstance(data, dict) else []
+            return [m.get("name", "") for m in models if isinstance(m, dict) and m.get("name")]
     
     async def pull_model(self, model_name: str) -> Dict[str, Any]:
         """Pull a model from Ollama."""

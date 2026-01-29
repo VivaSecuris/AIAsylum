@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Plus, X } from 'lucide-react'
+import { apiClient } from '@/lib/api'
 
 interface PatientModel {
   id: string
@@ -18,10 +19,25 @@ const MODELS_BY_PROVIDER: Record<string, string[]> = {
   openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo', 'gpt-3.5-turbo-16k'],
   anthropic: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-2', 'claude-instant'],
   google: ['gemini-pro', 'gemini-pro-vision', 'palm-2'],
-  ollama: ['llama2', 'llama3', 'llama3.2', 'mistral', 'mixtral', 'codellama'],
+  ollama: [], // Fetched from API (installed models only)
 }
 
 export function MultiPatientSelector({ patients, onChange }: MultiPatientSelectorProps) {
+  const [ollamaModels, setOllamaModels] = useState<string[]>([])
+  const [ollamaLoading, setOllamaLoading] = useState(false)
+  const hasOllama = patients.some((p) => p.provider === 'ollama')
+
+  useEffect(() => {
+    if (!hasOllama) return
+    let cancelled = false
+    setOllamaLoading(true)
+    apiClient.listOllamaModels()
+      .then((list) => { if (!cancelled) setOllamaModels(Array.isArray(list) ? list : []) })
+      .catch(() => { if (!cancelled) setOllamaModels([]) })
+      .finally(() => { if (!cancelled) setOllamaLoading(false) })
+    return () => { cancelled = true }
+  }, [hasOllama])
+
   const addPatient = () => {
     const newPatient: PatientModel = {
       id: `patient_${Date.now()}`,
@@ -40,9 +56,9 @@ export function MultiPatientSelector({ patients, onChange }: MultiPatientSelecto
       patients.map((p) => {
         if (p.id === id) {
           const updated = { ...p, [field]: value }
-          // Reset model if provider changes and model is not available for new provider
-          if (field === 'provider' && p.model && !MODELS_BY_PROVIDER[value]?.includes(p.model)) {
-            updated.model = ''
+          if (field === 'provider' && p.model) {
+            const list = value === 'ollama' ? ollamaModels : (MODELS_BY_PROVIDER[value] || [])
+            if (!list.includes(p.model)) updated.model = ''
           }
           return updated
         }
@@ -52,7 +68,7 @@ export function MultiPatientSelector({ patients, onChange }: MultiPatientSelecto
   }
 
   const getAvailableModels = (provider: string): string[] => {
-    return MODELS_BY_PROVIDER[provider] || []
+    return provider === 'ollama' ? ollamaModels : (MODELS_BY_PROVIDER[provider] || [])
   }
 
   return (
@@ -93,10 +109,10 @@ export function MultiPatientSelector({ patients, onChange }: MultiPatientSelecto
               <select
                 value={patient.model}
                 onChange={(e) => updatePatient(patient.id, 'model', e.target.value)}
-                disabled={!patient.provider}
+                disabled={!patient.provider || (patient.provider === 'ollama' && ollamaLoading)}
                 className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <option value="">Select model</option>
+                <option value="">{patient.provider === 'ollama' && ollamaLoading ? 'Loading…' : 'Select model'}</option>
                 {getAvailableModels(patient.provider).map((m) => (
                   <option key={m} value={m}>
                     {m}

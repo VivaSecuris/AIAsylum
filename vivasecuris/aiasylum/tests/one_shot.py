@@ -87,7 +87,7 @@ class OneShotTest(TestCase):
         analysis = None
         if doctor and conversation_history:
             conversation_summary = self._summarize_responses(conversation_history)
-            assessment = await doctor.generate_assessment(conversation_summary)
+            assessment = await doctor.generate_assessment(conversation_summary, context=context)
             analysis = assessment.content
         
         # Combine results

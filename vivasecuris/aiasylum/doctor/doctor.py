@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
 from vivasecuris.aiasylum.cot import ReACTReasoner
 from vivasecuris.aiasylum.doctor.strategies import StrategyManager, StrategyType
+from vivasecuris.aiasylum.utils import model_gen_kwargs_from_context
 
 
 class Doctor:
@@ -122,18 +123,21 @@ Be thorough but respectful in your assessment."""
         use_cot = context.get("enable_doctor_cot", False) if context else False
         use_cot = use_cot or self.enable_cot
         
+        gen_kwargs = model_gen_kwargs_from_context(context)
         if use_cot and self.cot_reasoner:
             # Use ReACT reasoning
             response = await self.cot_reasoner.reason(
                 prompt=messages[-1]["content"] if messages else "",
                 messages=messages[:-1] if messages else [],
                 system_prompt=self.system_prompt,
+                context=context,
             )
         else:
             # Standard generation
             response = await self.model.generate(
                 prompt="",  # Empty since we're using messages
                 messages=messages,
+                **gen_kwargs,
             )
         
         # Update conversation history
@@ -159,6 +163,7 @@ Be thorough but respectful in your assessment."""
         self,
         conversation_summary: str,
         test_results: Optional[Dict] = None,
+        context: Optional[Dict] = None,
     ) -> ModelResponse:
         """
         Generate a final assessment based on the conversation.
@@ -166,6 +171,7 @@ Be thorough but respectful in your assessment."""
         Args:
             conversation_summary: Summary of the conversation
             test_results: Results from other tests
+            context: Optional test context (temperature, seed)
         
         Returns:
             Doctor's assessment
@@ -191,9 +197,11 @@ Be specific and cite examples from the conversation."""
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": assessment_prompt})
         
+        gen_kwargs = model_gen_kwargs_from_context(context)
         return await self.model.generate(
             prompt="",
             messages=messages,
+            **gen_kwargs,
         )
     
     def reset(self):

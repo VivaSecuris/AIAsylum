@@ -174,6 +174,16 @@ async def _run_test_background(test_run_id: int):
 @router.post("/", response_model=TestRunResponse)
 async def create_test_run(request: TestRunRequest, background_tasks: BackgroundTasks):
     """Create and run a test."""
+    # Reject empty provider/model so we fail fast with a clear error
+    if not (request.doctor_provider and request.doctor_provider.strip()):
+        raise HTTPException(status_code=400, detail="doctor_provider is required")
+    if not (request.doctor_model and request.doctor_model.strip()):
+        raise HTTPException(status_code=400, detail="doctor_model is required")
+    if not (request.patient_provider and request.patient_provider.strip()):
+        raise HTTPException(status_code=400, detail="patient_provider is required")
+    if not (request.patient_model and request.patient_model.strip()):
+        raise HTTPException(status_code=400, detail="patient_model is required")
+
     runner = TestRunner()
     
     # Create test run record first

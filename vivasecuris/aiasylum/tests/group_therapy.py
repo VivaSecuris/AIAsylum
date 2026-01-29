@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from vivasecuris.aiasylum.doctor import Doctor
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.conversation import _extract_doctor_question
 
 
 class GroupTherapyTest(TestCase):
@@ -95,11 +96,12 @@ class GroupTherapyTest(TestCase):
         if doctor:
             # Doctor starts the conversation with a question to all patients
             doctor_response = await doctor.conduct_interview("", turn_number=0, context=context)
+            doctor_question = _extract_doctor_question(doctor_response.content)
             reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
             turn_data = {
                 "speaker": "doctor",
                 "prompt": "",
-                "response": doctor_response.content,
+                "response": doctor_question,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
             }
@@ -109,11 +111,10 @@ class GroupTherapyTest(TestCase):
             if save_turn_callback:
                 await save_turn_callback(turn_data)
             
-            # All patients respond to the doctor's question
-            # Each patient sees the doctor's question and all previous responses
+            # All patients respond to the doctor's question (use extracted question only)
             for i, patient in enumerate(patients):
                 # Build shared context: doctor's question + all previous patient responses
-                shared_context = f"Doctor: {doctor_response.content}\n\n"
+                shared_context = f"Doctor: {doctor_question}\n\n"
                 
                 # Add all previous patient responses to shared context
                 for prev_turn in conversation_history:
@@ -132,7 +133,7 @@ class GroupTherapyTest(TestCase):
                     "patient_name": patient_name,
                     "patient_provider": patient_info[i]["provider"],
                     "patient_model": patient_info[i]["model"],
-                    "prompt": doctor_response.content,
+                    "prompt": doctor_question,
                     "response": patient_response.content,
                     "reasoning": reasoning,
                     "turn_number": len(conversation_history),
@@ -181,6 +182,7 @@ class GroupTherapyTest(TestCase):
                 turn_number=turn,
                 context=context,
             )
+            doctor_question = _extract_doctor_question(doctor_response.content)
             
             # Check for cancellation after doctor response
             if check_cancellation:
@@ -190,7 +192,7 @@ class GroupTherapyTest(TestCase):
             turn_data = {
                 "speaker": "doctor",
                 "prompt": patient_responses_summary,
-                "response": doctor_response.content,
+                "response": doctor_question,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
             }
@@ -200,15 +202,14 @@ class GroupTherapyTest(TestCase):
             if save_turn_callback:
                 await save_turn_callback(turn_data)
             
-            # All patients respond to the doctor's new question
-            # Each patient sees the doctor's question and all previous responses
+            # All patients respond to the doctor's new question (use extracted question only)
             for i, patient in enumerate(patients):
                 # Check for cancellation
                 if check_cancellation:
                     check_cancellation()
                 
                 # Build shared context: doctor's question + all previous patient responses
-                shared_context = f"Doctor: {doctor_response.content}\n\n"
+                shared_context = f"Doctor: {doctor_question}\n\n"
                 
                 # Add all previous patient responses to shared context
                 for prev_turn in conversation_history:
@@ -227,7 +228,7 @@ class GroupTherapyTest(TestCase):
                     "patient_name": patient_name,
                     "patient_provider": patient_info[i]["provider"],
                     "patient_model": patient_info[i]["model"],
-                    "prompt": doctor_response.content,
+                    "prompt": doctor_question,
                     "response": patient_response.content,
                     "reasoning": reasoning,
                     "turn_number": len(conversation_history),
@@ -249,7 +250,7 @@ class GroupTherapyTest(TestCase):
         analysis = None
         if doctor:
             conversation_summary = self._summarize_conversation(conversation_history)
-            assessment = await doctor.generate_assessment(conversation_summary)
+            assessment = await doctor.generate_assessment(conversation_summary, context=context)
             analysis = assessment.content
         
         return TestResult(

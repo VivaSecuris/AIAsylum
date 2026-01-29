@@ -233,11 +233,27 @@ export function CreateTestForm() {
       if (selectedPatientSystemPromptId) {
         testConfig.patient_system_prompt_id = selectedPatientSystemPromptId
       }
+
+      // Ensure provider and model are set (backend will reject empty)
+      const needDoctor = isConversationTest || isGroupTherapyTest
+      if (
+        !formData.patient_provider?.trim() ||
+        !formData.patient_model?.trim() ||
+        (needDoctor && (!formData.doctor_provider?.trim() || !formData.doctor_model?.trim()))
+      ) {
+        toast.error('Please select both provider and model for the test.')
+        return
+      }
       
+      // Always include temperature and seed so the backend applies them to the model
+      const temperature = formData.test_config?.temperature ?? 0.7
+      const seed = formData.test_config?.seed
       const submitData = {
         ...formData,
         test_config: {
           ...testConfig,
+          temperature: typeof temperature === 'number' ? temperature : parseFloat(String(temperature)) || 0.7,
+          ...(seed !== undefined && seed !== null && seed !== '' ? { seed: typeof seed === 'number' ? seed : parseInt(String(seed), 10) } : {}),
           // Store auto-analysis config if enabled
           ...(enableAutoAnalysis ? {
             auto_analysis: true,
@@ -826,6 +842,52 @@ export function CreateTestForm() {
 
         {showAdvanced && (
           <div className="space-y-4 rounded border bg-muted/50 p-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium">Temperature</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={formData.test_config?.temperature ?? 0.7}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? undefined : parseFloat(e.target.value)
+                    setFormData({
+                      ...formData,
+                      test_config: {
+                        ...formData.test_config,
+                        temperature: v,
+                      },
+                    })
+                  }}
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">0 = deterministic, higher = more random (default 0.7)</p>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Seed (optional)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="Leave empty for random"
+                  value={formData.test_config?.seed ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? undefined : parseInt(e.target.value, 10)
+                    setFormData({
+                      ...formData,
+                      test_config: {
+                        ...formData.test_config,
+                        seed: v,
+                      },
+                    })
+                  }}
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">Fixed seed for reproducible runs (Ollama)</p>
+              </div>
+            </div>
             {formData.test_type === 'multi_shot' && (
               <div>
                 <label className="text-sm font-medium">Number of Messages (if not using custom prompts)</label>

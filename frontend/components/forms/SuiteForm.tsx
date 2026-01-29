@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import { useCreateSuite, useBenchmarks, usePrompts, usePromptVariables } from '@/lib/hooks'
 import { toast } from '@/lib/toast'
+import { apiClient } from '@/lib/api'
 import { Plus, X, AlertTriangle } from 'lucide-react'
 import Link from 'next/link'
 
@@ -11,7 +12,7 @@ const MODELS_BY_PROVIDER: Record<string, string[]> = {
   openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo', 'gpt-3.5-turbo-16k'],
   anthropic: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-2', 'claude-instant'],
   google: ['gemini-pro', 'gemini-pro-vision', 'palm-2'],
-  ollama: ['llama2', 'llama3', 'llama3.2', 'mistral', 'mixtral', 'codellama'],
+  ollama: [], // Fetched from API (installed models only)
 }
 
 const TEST_TYPES = [
@@ -43,6 +44,8 @@ export function SuiteForm() {
     { id: 'model_1', provider: '', model: '' }
   ])
   const [numSamples, setNumSamples] = useState<number>(100)
+  const [suiteTemperature, setSuiteTemperature] = useState<number | ''>(0.7)
+  const [suiteSeed, setSuiteSeed] = useState<number | ''>('')
   
   // Prompt selections
   const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(undefined)
@@ -52,6 +55,8 @@ export function SuiteForm() {
   const [customPrompt, setCustomPrompt] = useState<string>('')
   const [customPrompts, setCustomPrompts] = useState<string[]>([''])
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
+  const [ollamaModels, setOllamaModels] = useState<string[]>([])
+  const [ollamaLoading, setOllamaLoading] = useState(false)
   
   // Get variables from selected prompt
   const { data: promptVariablesData } = usePromptVariables(selectedPromptId)
@@ -87,6 +92,19 @@ export function SuiteForm() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPromptId, promptVariablesData])
+
+  // Fetch Ollama models when any row uses ollama
+  const hasOllama = models.some((m) => m.provider === 'ollama')
+  useEffect(() => {
+    if (!hasOllama) return
+    let cancelled = false
+    setOllamaLoading(true)
+    apiClient.listOllamaModels()
+      .then((list) => { if (!cancelled) setOllamaModels(Array.isArray(list) ? list : []) })
+      .catch(() => { if (!cancelled) setOllamaModels([]) })
+      .finally(() => { if (!cancelled) setOllamaLoading(false) })
+    return () => { cancelled = true }
+  }, [hasOllama])
   
   // Check which test types need prompts
   const needsTestPrompts = selectedTestType === 'one_shot' || selectedTestType === 'multi_shot'
@@ -121,8 +139,9 @@ export function SuiteForm() {
       models.map((m) => {
         if (m.id === id) {
           const updated = { ...m, [field]: value }
-          if (field === 'provider' && m.model && !MODELS_BY_PROVIDER[value]?.includes(m.model)) {
-            updated.model = ''
+          if (field === 'provider' && m.model) {
+            const list = value === 'ollama' ? ollamaModels : (MODELS_BY_PROVIDER[value] || [])
+            if (!list.includes(m.model)) updated.model = ''
           }
           return updated
         }
@@ -141,7 +160,7 @@ export function SuiteForm() {
   }
 
   const getAvailableModels = (provider: string): string[] => {
-    return MODELS_BY_PROVIDER[provider] || []
+    return provider === 'ollama' ? ollamaModels : (MODELS_BY_PROVIDER[provider] || [])
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -205,6 +224,15 @@ export function SuiteForm() {
       // Add variables if any are set
       if (Object.keys(variableValues).length > 0 && Object.values(variableValues).some(v => v.trim())) {
         testConfig.variables = variableValues
+      }
+
+      // Model options: temperature and seed (for reproducible runs)
+      if (suiteTemperature !== '' && suiteTemperature !== undefined) {
+        testConfig.temperature = typeof suiteTemperature === 'number' ? suiteTemperature : parseFloat(String(suiteTemperature))
+      }
+      if (suiteSeed !== '' && suiteSeed !== undefined) {
+        const s = typeof suiteSeed === 'number' ? suiteSeed : parseInt(String(suiteSeed), 10)
+        if (!Number.isNaN(s)) testConfig.seed = s
       }
 
       // For benchmark test type, we need to pass benchmarks
@@ -351,10 +379,10 @@ export function SuiteForm() {
                   <select
                     value={model.model}
                     onChange={(e) => updateModel(model.id, 'model', e.target.value)}
-                    disabled={!model.provider}
+                    disabled={!model.provider || (model.provider === 'ollama' && ollamaLoading)}
                     className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <option value="">Select model</option>
+                    <option value="">{model.provider === 'ollama' && ollamaLoading ? 'Loading…' : 'Select model'}</option>
                     {getAvailableModels(model.provider).map((m) => (
                       <option key={m} value={m}>
                         {m}
@@ -392,6 +420,36 @@ export function SuiteForm() {
             </p>
           </div>
         )}
+
+        {/* Temperature and Seed (model options for all suite runs) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Temperature</label>
+            <input
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+              value={suiteTemperature}
+              onChange={(e) => setSuiteTemperature(e.target.value === '' ? '' : parseFloat(e.target.value))}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+            <p className="text-xs text-muted-foreground">0 = deterministic, higher = more random (default 0.7)</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Seed (optional)</label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              placeholder="Leave empty for random"
+              value={suiteSeed}
+              onChange={(e) => setSuiteSeed(e.target.value === '' ? '' : parseInt(e.target.value, 10) || '')}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+            <p className="text-xs text-muted-foreground">Fixed seed for reproducible runs</p>
+          </div>
+        </div>
 
         {/* Group Therapy Patients (if group therapy is selected) */}
         {isGroupTherapyTest && (

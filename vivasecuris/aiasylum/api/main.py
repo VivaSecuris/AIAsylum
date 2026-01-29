@@ -12,7 +12,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from config import settings
-from vivasecuris.aiasylum.api.routes import test_runs, analysis, benchmarks, auth, prompts, suites
+from vivasecuris.aiasylum.api.routes import test_runs, analysis, benchmarks, auth, prompts, suites, models as models_router
 
 app = FastAPI(
     title="AI Asylum API",
@@ -36,6 +36,7 @@ app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["analysis"]
 app.include_router(benchmarks.router, prefix="/api/v1/benchmarks", tags=["benchmarks"])
 app.include_router(prompts.router, prefix="/api/v1/prompts", tags=["prompts"])
 app.include_router(suites.router, prefix="/api/v1/suites", tags=["suites"])
+app.include_router(models_router.router, prefix="/api/v1/models", tags=["models"])
 
 
 @app.get("/")

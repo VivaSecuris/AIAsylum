@@ -128,6 +128,17 @@ class TestRunner:
                 doctor_model_instance = doctor_provider_instance.create_model(doctor_model)
                 patient_model_instance = patient_provider_instance.create_model(patient_model)
                 
+                # Ensure Ollama models are available (auto-pull if missing)
+                from vivasecuris.aiasylum.models.ollama import OllamaModel
+                if doctor_provider == "ollama" and isinstance(doctor_model_instance, OllamaModel):
+                    if not await doctor_model_instance.check_available():
+                        logger.info(f"Ollama model {doctor_model} not found, pulling...")
+                        await doctor_model_instance.pull_model()
+                if patient_provider == "ollama" and isinstance(patient_model_instance, OllamaModel):
+                    if not await patient_model_instance.check_available():
+                        logger.info(f"Ollama model {patient_model} not found, pulling...")
+                        await patient_model_instance.pull_model()
+                
                 # Load system prompts for doctor and patient
                 doctor_system_prompt = None
                 patient_system_prompt = None
@@ -472,6 +483,17 @@ class TestRunner:
                 
                 doctor_model_instance = doctor_provider_instance.create_model(test_run.doctor_model)
                 patient_model_instance = patient_provider_instance.create_model(test_run.patient_model)
+                
+                # Ensure Ollama models are available (auto-pull if missing)
+                from vivasecuris.aiasylum.models.ollama import OllamaModel
+                if test_run.doctor_provider == "ollama" and isinstance(doctor_model_instance, OllamaModel):
+                    if not await doctor_model_instance.check_available():
+                        logger.info(f"Ollama model {test_run.doctor_model} not found, pulling...")
+                        await doctor_model_instance.pull_model()
+                if test_run.patient_provider == "ollama" and isinstance(patient_model_instance, OllamaModel):
+                    if not await patient_model_instance.check_available():
+                        logger.info(f"Ollama model {test_run.patient_model} not found, pulling...")
+                        await patient_model_instance.pull_model()
                 
                 # Get test config from metadata if available
                 test_config = test_run.meta_data.get("test_config") if test_run.meta_data else {}

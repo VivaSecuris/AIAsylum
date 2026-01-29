@@ -40,6 +40,7 @@ class ReACTReasoner:
         prompt: str,
         messages: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
+        context: Optional[Dict] = None,
     ) -> ModelResponse:
         """
         Generate a response using ReACT reasoning loop.
@@ -48,10 +49,13 @@ class ReACTReasoner:
             prompt: The input prompt/question
             messages: Conversation history
             system_prompt: System prompt for the model
+            context: Optional test context (temperature, seed)
             
         Returns:
             ModelResponse with the final answer and reasoning
         """
+        from vivasecuris.aiasylum.utils import model_gen_kwargs_from_context
+        gen_kwargs = model_gen_kwargs_from_context(context)
         # Build the reasoning prompt
         reasoning_prompt = self._build_reasoning_prompt(prompt)
         
@@ -72,6 +76,7 @@ class ReACTReasoner:
         response = await self.model.generate(
             prompt="",
             messages=reasoning_messages,
+            **gen_kwargs,
         )
         
         # Extract final answer and reasoning

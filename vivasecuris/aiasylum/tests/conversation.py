@@ -1,10 +1,29 @@
 """Conversation test implementation."""
 
+import re
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.doctor import Doctor
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+
+
+def _extract_doctor_question(raw: str) -> str:
+    """Extract the actual question from doctor output (strip meta prefixes)."""
+    if not raw or not raw.strip():
+        return raw or ""
+    text = raw.strip()
+    # Strip common prefixes the doctor may echo from the system prompt
+    for prefix in (
+        r"Next question to ask the patient\s*:\s*",
+        r"Next question to ask the patient\s*\(you may rephrase\)\s*:\s*",
+        r"Question\s*:\s*",
+    ):
+        m = re.search(prefix, text, re.IGNORECASE)
+        if m:
+            text = text[m.end() :].strip()
+            break
+    return text or raw.strip()
 
 
 class ConversationTest(TestCase):
@@ -65,12 +84,14 @@ class ConversationTest(TestCase):
             if check_cancellation:
                 check_cancellation()
             
+            # Extract actual question (strip "Next question to ask the patient:" etc.)
+            doctor_question = _extract_doctor_question(doctor_response.content)
             # Extract reasoning from metadata if available
             reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
             turn_data = {
                 "speaker": "doctor",
                 "prompt": "",
-                "response": doctor_response.content,
+                "response": doctor_question,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
             }
@@ -80,8 +101,8 @@ class ConversationTest(TestCase):
             if save_turn_callback:
                 await save_turn_callback(turn_data)
             
-            # Patient responds
-            patient_response = await patient.respond(doctor_response.content, context=context)
+            # Patient responds to the question only (not meta-instruction text)
+            patient_response = await patient.respond(doctor_question, context=context)
             
             # Check for cancellation after patient response
             if check_cancellation:
@@ -91,7 +112,7 @@ class ConversationTest(TestCase):
             reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
             turn_data = {
                 "speaker": "patient",
-                "prompt": doctor_response.content,
+                "prompt": doctor_question,
                 "response": patient_response.content,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
@@ -122,12 +143,14 @@ class ConversationTest(TestCase):
             if check_cancellation:
                 check_cancellation()
             
+            # Extract actual question (strip meta-instruction prefixes)
+            doctor_question = _extract_doctor_question(doctor_response.content)
             # Extract reasoning from metadata if available
             reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
             turn_data = {
                 "speaker": "doctor",
                 "prompt": patient_response.content,
-                "response": doctor_response.content,
+                "response": doctor_question,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
             }
@@ -137,8 +160,8 @@ class ConversationTest(TestCase):
             if save_turn_callback:
                 await save_turn_callback(turn_data)
             
-            # Patient responds
-            patient_response = await patient.respond(doctor_response.content, context=context)
+            # Patient responds to the question only (not meta-instruction text)
+            patient_response = await patient.respond(doctor_question, context=context)
             
             # Check for cancellation after patient response
             if check_cancellation:
@@ -147,7 +170,7 @@ class ConversationTest(TestCase):
             reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
             turn_data = {
                 "speaker": "patient",
-                "prompt": doctor_response.content,
+                "prompt": doctor_question,
                 "response": patient_response.content,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
@@ -162,7 +185,7 @@ class ConversationTest(TestCase):
         analysis = None
         if doctor:
             conversation_summary = self._summarize_conversation(conversation_history)
-            assessment = await doctor.generate_assessment(conversation_summary)
+            assessment = await doctor.generate_assessment(conversation_summary, context=context)
             analysis = assessment.content
         
         return TestResult(
