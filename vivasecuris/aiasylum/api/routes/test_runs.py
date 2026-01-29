@@ -74,6 +74,10 @@ class ConversationTurnResponse(BaseModel):
     @classmethod
     def from_orm(cls, obj):
         """Create response from SQLAlchemy model, handling metadata conflict."""
+        # Never expose internal chain-of-thought / reasoning by default.
+        # This must remain private internal dialog.
+        safe_metadata = dict(obj.meta_data or {})
+        safe_metadata.pop("reasoning", None)
         return cls(
             id=obj.id,
             test_run_id=obj.test_run_id,
@@ -82,7 +86,7 @@ class ConversationTurnResponse(BaseModel):
             prompt=obj.prompt,
             response=obj.response,
             created_at=obj.created_at,
-            metadata=obj.meta_data or {},
+            metadata=safe_metadata,
         )
 
 

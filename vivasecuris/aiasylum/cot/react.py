@@ -127,29 +127,69 @@ Begin your reasoning:"""
                 final_answer = reasoning
                 reasoning = ""
         else:
-            # If no final answer marker, check if there's reasoning structure
-            if self.thinking_prefix in response or self.action_prefix in response:
-                # Try to extract reasoning and find where it ends
-                # Look for patterns that might indicate the final answer
-                # For now, use everything before the last paragraph as reasoning
+            # If no final answer marker, check if there's reasoning structure.
+            # IMPORTANT: Never leak reasoning as "final_answer" when CoT is enabled.
+            if self.thinking_prefix in response or self.action_prefix in response or self.observation_prefix in response:
                 lines = response.split('\n')
-                reasoning_lines = []
-                final_answer_lines = []
+                reasoning_lines: List[str] = []
+                final_answer_lines: List[str] = []
                 found_final = False
-                
+
                 for line in lines:
                     if final_answer_marker.lower() in line.lower() or found_final:
                         found_final = True
                         if final_answer_marker.lower() not in line.lower():
                             final_answer_lines.append(line)
-                    elif not found_final:
+                    else:
                         reasoning_lines.append(line)
-                
+
                 reasoning = '\n'.join(reasoning_lines).strip()
-                final_answer = '\n'.join(final_answer_lines).strip() if final_answer_lines else response
+
+                # If we still couldn't find an explicit final answer section, fall back to:
+                # - final_answer: last non-empty paragraph
+                # - reasoning: everything else
+                if final_answer_lines:
+                    final_answer = '\n'.join(final_answer_lines).strip()
+                else:
+                    paragraphs = [p.strip() for p in response.split("\n\n") if p.strip()]
+                    if len(paragraphs) >= 2:
+                        final_answer = paragraphs[-1]
+                        reasoning = "\n\n".join(paragraphs[:-1]).strip()
+                    else:
+                        # Worst-case fallback: strip common prefixes and return the last non-empty line
+                        non_empty = [ln.strip() for ln in lines if ln.strip()]
+                        final_answer = non_empty[-1] if non_empty else ""
+                        reasoning = "\n".join(non_empty[:-1]).strip() if len(non_empty) > 1 else reasoning
             else:
                 # No structure found, use entire response as answer
                 reasoning = ""
                 final_answer = response
+
+        # Final safety: never return Thought/Action/Observation as the final answer.
+        # If the extracted final answer still contains reasoning prefixes, strip them.
+        def _strip_reasoning_prefix_lines(text: str) -> str:
+            if not text:
+                return text
+            bad_prefixes = (
+                self.thinking_prefix.lower(),
+                self.action_prefix.lower(),
+                self.observation_prefix.lower(),
+            )
+            kept: List[str] = []
+            for ln in text.splitlines():
+                s = ln.strip()
+                if not s:
+                    kept.append(ln)
+                    continue
+                if any(s.lower().startswith(p) for p in bad_prefixes):
+                    continue
+                kept.append(ln)
+            return "\n".join(kept).strip()
+
+        final_answer = _strip_reasoning_prefix_lines(final_answer)
+        # If we stripped everything (e.g. model only produced Observation), fall back to empty
+        # rather than leaking internal dialog.
+        if not final_answer:
+            final_answer = ""
         
         return final_answer, reasoning

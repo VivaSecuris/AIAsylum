@@ -112,13 +112,26 @@ export default function TestRunsPage() {
   }
 
   if (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const isNetworkError = errorMessage.includes('connect') || errorMessage.includes('Network Error')
+    
     return (
       <Layout>
-        <div className="rounded-lg border bg-card p-8 text-center">
+        <div className="rounded-lg border bg-card p-8 text-center max-w-md mx-auto">
           <h2 className="text-xl font-semibold mb-2">Error loading test runs</h2>
-          <p className="text-muted-foreground">
-            {error instanceof Error ? error.message : 'An unexpected error occurred'}
+          <p className="text-muted-foreground mb-4">
+            {errorMessage}
           </p>
+          {isNetworkError && (
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>Please check:</p>
+              <ul className="list-disc list-inside space-y-1 text-left">
+                <li>The backend API server is running</li>
+                <li>The API URL is correct (check browser console)</li>
+                <li>No firewall is blocking the connection</li>
+              </ul>
+            </div>
+          )}
         </div>
       </Layout>
     )

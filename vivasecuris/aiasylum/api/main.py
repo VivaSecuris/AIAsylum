@@ -1,7 +1,15 @@
 """FastAPI main application."""
 
+import sys
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Ensure project root is in Python path for config imports
+project_root = Path(__file__).parent.parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from config import settings
 from vivasecuris.aiasylum.api.routes import test_runs, analysis, benchmarks, auth, prompts, suites
@@ -38,6 +46,25 @@ async def root():
         "version": "0.1.0",
         "status": "running",
     }
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Startup event handler."""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting AI Asylum API...")
+    logger.info(f"Project root: {project_root}")
+    logger.info(f"Python path: {sys.path[:3]}")  # Show first 3 entries
+    logger.info(f"Config loaded: database_url={settings.database_url[:30]}...")  # Show first 30 chars
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Shutdown event handler."""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Shutting down AI Asylum API...")
 
 
 @app.get("/health")

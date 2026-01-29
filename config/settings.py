@@ -35,7 +35,11 @@ class Settings(BaseSettings):
     api_keys: str = ""  # Comma-separated
     
     # CORS
-    cors_origins: str = "http://localhost:3000,http://localhost:8000"
+    # Allow both localhost and 127.0.0.1 in dev (browsers treat them as different origins)
+    cors_origins: str = (
+        "http://localhost:3000,http://localhost:8000,"
+        "http://127.0.0.1:3000,http://127.0.0.1:8000"
+    )
     
     # Rate Limiting
     rate_limit_per_minute: int = 60

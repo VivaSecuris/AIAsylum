@@ -42,7 +42,6 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
   return (
     <div className="space-y-4">
       {turns.map((turn) => {
-        const reasoning = turn.metadata?.reasoning
         const patientName = turn.metadata?.patient_name
         const patientId = turn.metadata?.patient_id
         const patientModel = turn.metadata?.patient_model
@@ -94,16 +93,6 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
                     Turn {turn.turn_number} • {formatDate(turn.created_at)}
                   </span>
                 </div>
-                {reasoning && (
-                  <div className="mb-3 rounded border-l-4 border-amber-400 bg-amber-50/50 dark:bg-amber-950/50 p-3">
-                    <div className="mb-1 text-xs font-semibold text-amber-800 dark:text-amber-200">
-                      💭 Internal Reasoning (CoT/ReACT)
-                    </div>
-                    <pre className="text-xs text-amber-900 dark:text-amber-100 whitespace-pre-wrap font-mono">
-                      {reasoning}
-                    </pre>
-                  </div>
-                )}
                 <p className="text-sm whitespace-pre-wrap text-foreground">{turn.response}</p>
               </div>
             )}
