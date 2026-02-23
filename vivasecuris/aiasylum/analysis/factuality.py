@@ -506,13 +506,17 @@ Each claim underwent a complete ReACT cycle: Thought → Action → Observation 
         if json_match:
             try:
                 data = json.loads(json_match.group(0))
+                raw_conf = data.get("confidence", 0.5)
+                if raw_conf is None:
+                    raw_conf = 0.5
+                confidence = max(0.0, min(1.0, float(raw_conf)))
                 return {
                     "verified": data.get("verified"),
-                    "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+                    "confidence": confidence,
                     "reason": data.get("reason", ""),
                     "category": data.get("category", "UNKNOWN"),
                 }
-            except (json.JSONDecodeError, ValueError, KeyError):
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError):
                 pass
         
         # Fallback: parse from text

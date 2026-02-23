@@ -138,6 +138,7 @@ class BenchmarkTest(TestCase):
         
         # Get progress callback from context if available
         progress_callback = context.get("progress_callback") if context else None
+        save_turn_callback = context.get("save_conversation_turn_callback") if context else None
         total_items = len(dataset)
         
         # Get cancellation check callback if available
@@ -216,6 +217,16 @@ class BenchmarkTest(TestCase):
                     "correct": is_correct,
                     "reasoning": reasoning,
                 })
+                conversation_history.append({
+                    "speaker": "patient",
+                    "prompt_number": current_index,
+                    "prompt": formatted_question,
+                    "response": response,
+                    "reasoning": reasoning,
+                })
+                if save_turn_callback:
+                    turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
+                    await save_turn_callback(turn_data)
             
             # Process multi-shot groups (each group is a separate sequence)
             # Each multi-shot prompt is its own group, so we process them individually
@@ -290,6 +301,16 @@ class BenchmarkTest(TestCase):
                         "correct": is_correct,
                         "reasoning": reasoning,
                     })
+                    conversation_history.append({
+                        "speaker": "patient",
+                        "prompt_number": current_index,
+                        "prompt": formatted_question,
+                        "response": response,
+                        "reasoning": reasoning,
+                    })
+                    if save_turn_callback:
+                        turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
+                        await save_turn_callback(turn_data)
                     
                     # Emit progress update
                     if progress_callback and (current_index == 1 or current_index % 10 == 0 or current_index == total_items):
@@ -362,6 +383,9 @@ class BenchmarkTest(TestCase):
                     "response": response,
                     "reasoning": reasoning,
                 })
+                if save_turn_callback:
+                    turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
+                    await save_turn_callback(turn_data)
         
         else:  # multi_shot
             # Multi-shot: sequential questions in one conversation
@@ -452,6 +476,9 @@ class BenchmarkTest(TestCase):
                     "response": response,
                     "reasoning": reasoning,
                 })
+                if save_turn_callback:
+                    turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
+                    await save_turn_callback(turn_data)
                 
                 # Update conversation context for next turn
                 conversation_context.append({

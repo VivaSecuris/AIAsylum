@@ -13,6 +13,39 @@ import { PlayCircle, TestTube, TrendingUp, Shield, AlertTriangle, Layers, BarCha
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend } from 'recharts'
 import { toast } from '@/lib/toast'
 
+// Pie chart that scales with container (ResponsiveContainer injects width/height)
+function StatusPieChartInner({
+  data,
+  width = 300,
+  height = 300,
+}: {
+  data: Array<{ name: string; value: number; color: string }>
+  width?: number
+  height?: number
+}) {
+  const size = Math.min(width, height)
+  const outerRadius = Math.max(40, (size / 2) * 0.85)
+  return (
+    <PieChart width={width} height={height}>
+      <Pie
+        data={data}
+        cx="50%"
+        cy="50%"
+        labelLine={false}
+        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+        outerRadius={outerRadius}
+        fill="#8884d8"
+        dataKey="value"
+      >
+        {data.map((entry, index) => (
+          <Cell key={`cell-${index}`} fill={entry.color} />
+        ))}
+      </Pie>
+      <Tooltip />
+    </PieChart>
+  )
+}
+
 // Inline editing component for renaming
 function InlineEditableName({ 
   value, 
@@ -695,27 +728,13 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <div className="rounded-lg border bg-card p-6">
+          <div className="rounded-lg border bg-card p-6 min-h-[280px] flex flex-col">
             <h2 className="mb-4 text-lg font-semibold">Status Overview</h2>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={statusData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {statusData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+            <div className="flex-1 min-h-[220px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <StatusPieChartInner data={statusData} />
+              </ResponsiveContainer>
+            </div>
           </div>
 
           <div className="rounded-lg border bg-card p-6">

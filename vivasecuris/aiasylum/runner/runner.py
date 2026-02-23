@@ -800,6 +800,33 @@ class TestRunner:
                     # Add progress callback to test config
                     test_config["progress_callback"] = emit_progress
                     
+                    # Save each benchmark Q&A as a conversation turn so the conversation tab and analysis have data
+                    benchmark_saved_turn_numbers = set()
+                    async def save_benchmark_turn(turn: Dict):
+                        """Save a benchmark turn to DB immediately for viewing and analysis."""
+                        turn_number = turn.get("turn_number", turn.get("prompt_number", len(benchmark_saved_turn_numbers)))
+                        if turn_number in benchmark_saved_turn_numbers:
+                            return
+                        turn_session = get_session()
+                        try:
+                            turn_record = ConversationTurn(
+                                test_run_id=test_run.id,
+                                turn_number=turn_number,
+                                speaker=turn.get("speaker", "patient"),
+                                prompt=turn.get("prompt", ""),
+                                response=turn.get("response", ""),
+                                meta_data={"reasoning": turn.get("reasoning", "")} if turn.get("reasoning") else None,
+                            )
+                            turn_session.add(turn_record)
+                            turn_session.commit()
+                            benchmark_saved_turn_numbers.add(turn_number)
+                        except Exception as e:
+                            logger.error(f"Error saving benchmark conversation turn: {e}", exc_info=True)
+                            turn_session.rollback()
+                        finally:
+                            turn_session.close()
+                    test_config["save_conversation_turn_callback"] = save_benchmark_turn
+                    
                     test_result = await test.run(patient_model_instance, doctor_model_instance, context=test_config)
                     
                     elapsed = (datetime.utcnow() - start_time).total_seconds()

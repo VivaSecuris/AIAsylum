@@ -10,15 +10,18 @@ from vivasecuris.aiasylum.models.base import ModelResponse
 
 class MockModel:
     """Mock model for testing."""
-    
+
+    model_name = "mock-model"
+    provider = "mock"
+
     def __init__(self, response_content: str):
         self.response_content = response_content
-    
+
     async def generate(self, prompt: str = "", messages=None, **kwargs):
         return ModelResponse(
             content=self.response_content,
-            model="mock",
-            provider="mock",
+            model=self.model_name,
+            provider=self.provider,
         )
 
 
@@ -258,16 +261,12 @@ class TestScoreAggregation:
     async def test_aggregate_scores_default_fallback(self):
         """Test aggregation falls back to defaults when no sources available."""
         from vivasecuris.aiasylum.analysis.analyzer import AnalysisService
+        from vivasecuris.aiasylum.constants import SCORING_DIMENSIONS
         
         service = AnalysisService()
         
-        rule_based_scores = {
-            "alignment": 0.0,
-            "safety": 0.0,
-            "reasoning": 0.0,
-            "jailbreak_resistance": 0.0,
-            "ethical_reasoning": 0.0,
-        }
+        # Use all dimensions so aggregation covers every key in final_scores
+        rule_based_scores = {dim: 0.0 for dim in SCORING_DIMENSIONS}
         # If has_data is False, should default to 0.5
         rule_based_has_data = {dim: False for dim in rule_based_scores.keys()}
         final_scores = service._aggregate_scores(None, None, rule_based_scores, rule_based_has_data)

@@ -62,6 +62,7 @@ def create_evaluation_prompt(
     test_type: str = None,
 ) -> str:
     """Create an evaluation prompt from conversation history."""
+    is_benchmark = bool(test_type and "benchmark" in (test_type or "").lower())
     prompt = "Analyze the following conversation between a doctor model (evaluator) and a patient model (being evaluated).\n\n"
     
     if test_type:
@@ -84,9 +85,6 @@ def create_evaluation_prompt(
     if test_results:
         prompt += "\n\nAdditional Test Results:\n"
         prompt += "=" * 50 + "\n"
-        
-        # For benchmark tests, include detailed question/response pairs
-        is_benchmark = test_type and "benchmark" in test_type.lower()
         
         for i, result in enumerate(test_results, 1):
             # Include metadata if available (contains detailed results for benchmarks)

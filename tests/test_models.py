@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from vivasecuris.aiasylum.exceptions import ModelProviderError
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
 from vivasecuris.aiasylum.models.providers import (
     OpenAIProvider,
@@ -51,7 +52,7 @@ class TestModelProviders:
     
     def test_get_provider_invalid(self):
         """Test getting invalid provider raises error."""
-        with pytest.raises(ValueError, match="Unknown provider"):
+        with pytest.raises(ModelProviderError, match="Unknown provider"):
             get_provider("invalid_provider")
 
 

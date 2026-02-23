@@ -505,6 +505,22 @@ class AnalysisService:
                 test_result_dict["output_response"] = result.output_response
             test_result_dicts.append(test_result_dict)
         
+        # For benchmarks: if no conversation turns were saved, build conversation_dicts from
+        # test result metadata so analysis has something to evaluate (e.g. old runs or runner gap)
+        is_benchmark = test_run.test_type and "benchmark" in (test_run.test_type or "").lower()
+        if is_benchmark and not conversation_dicts and test_result_dicts:
+            for tr in test_result_dicts:
+                meta = tr.get("metadata") or {}
+                bench_results = meta.get("results") or []
+                for r in bench_results:
+                    conversation_dicts.append({
+                        "speaker": "patient",
+                        "prompt": r.get("question", ""),
+                        "response": r.get("response", ""),
+                    })
+            if conversation_dicts:
+                logger.info(f"Built {len(conversation_dicts)} conversation turns from benchmark results for evaluation")
+        
         # Source 1: LLM-based evaluation
         llm_dimension_reasoning = {}
         llm_confidence_value = 0.0
