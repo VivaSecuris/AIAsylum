@@ -205,9 +205,14 @@ export function CreateTestForm() {
           return
         }
         // Convert to format expected by backend
+        // NOTE: The backend expects per-patient `system_prompt_id` for group therapy.
+        // For now, we apply the single selected patient system prompt (if any) to all patients.
         testConfig.patients = validPatients.map((p) => ({
           provider: p.provider,
           model: p.model,
+          ...(selectedPatientSystemPromptId
+            ? { system_prompt_id: selectedPatientSystemPromptId }
+            : {}),
         }))
       }
       

@@ -254,3 +254,126 @@ class TestSuite(Base):
     
     def __str__(self) -> str:
         return f"TestSuite #{self.id}: {self.name or 'Unnamed'} ({self.status})"
+
+
+class User(Base):
+    """Represents an end user or installation using the system.
+
+    Note: current authentication is API-key based via settings.
+    This table is primarily for ownership, preferences, and future multi-tenant support.
+    """
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Optional association with an API key used for authentication
+    api_key = Column(String(128), unique=True, nullable=True, index=True)
+
+    # Optional display information
+    display_name = Column(String(100), nullable=True)
+
+    # Per-user preferences
+    ollama_base_url = Column(String(255), nullable=True)
+
+    # Privacy / sharing preferences
+    share_safety_aggregated = Column(Boolean, default=False, nullable=False)
+    share_conversations_anon = Column(Boolean, default=False, nullable=False)
+
+
+class Conversation(Base):
+    """Logical conversation between a user and one or more models."""
+
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Ownership
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    title = Column(String(255), nullable=True)
+
+    # Visibility controls: private, org, public_anon (for future org support)
+    visibility = Column(String(32), default="private", nullable=False)
+
+    # Free-form metadata about the conversation
+    meta_data = Column("metadata", JSON, default=dict)
+
+
+class Message(Base):
+    """Individual message within a conversation."""
+
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    # user / assistant / system / tool etc.
+    role = Column(String(32), nullable=False)
+    content = Column(Text, nullable=False)
+
+    # Model and run metadata when this message comes from a model
+    model_provider = Column(String(50), nullable=True)
+    model_name = Column(String(100), nullable=True)
+    usage = Column(JSON, nullable=True)
+
+    meta_data = Column("metadata", JSON, default=dict)
+
+
+class SafetyEvent(Base):
+    """Safety-related signal associated with a message or conversation."""
+
+    __tablename__ = "safety_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Scope
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    # What was evaluated
+    model_provider = Column(String(50), nullable=True)
+    model_name = Column(String(100), nullable=True)
+    check_type = Column(String(64), nullable=False)  # e.g. toxicity, jailbreak, pii
+
+    # Result
+    score = Column(Float, nullable=True)
+    label = Column(String(32), nullable=True)  # safe / unsafe / needs_review etc.
+    raw_model_output = Column(Text, nullable=True)
+
+    # Sharing scope for this event: private, aggregated_only, full_opt_in
+    share_scope = Column(String(32), default="aggregated_only", nullable=False, index=True)
+
+    meta_data = Column("metadata", JSON, default=dict)
+
+
+class AnalysisArtifact(Base):
+    """Arbitrary analysis artifact attached to a message or conversation."""
+
+    __tablename__ = "analysis_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Scope
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    # Artifact details
+    type = Column(String(64), nullable=False)  # e.g. chain_of_thought_summary, classifier_features
+    payload = Column(JSON, nullable=False)  # Arbitrary JSON content
+
+    # Sharing scope: private, aggregated_only, full_opt_in
+    share_scope = Column(String(32), default="aggregated_only", nullable=False, index=True)
+
+    meta_data = Column("metadata", JSON, default=dict)
