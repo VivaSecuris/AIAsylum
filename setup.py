@@ -6,7 +6,8 @@ setup(
     name="ai-asylum",
     version="0.1.0",
     description="LLM Psychoanalysis Framework",
-    author="VivaSecuris",
+    author="VivaSecuris Syndicate",
+    license="Proprietary",
     packages=find_packages(),
     install_requires=[
         "fastapi>=0.104.1",

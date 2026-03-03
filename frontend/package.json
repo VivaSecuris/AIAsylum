@@ -2,6 +2,8 @@
   "name": "ai-asylum-frontend",
   "version": "0.1.0",
   "private": true,
+  "author": "VivaSecuris Syndicate",
+  "license": "UNLICENSED",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

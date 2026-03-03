@@ -722,4 +722,4 @@ See [CHANGELOG.md](CHANGELOG.md) for a list of changes and version history.
 
 ## License
 
-MIT
+Proprietary. Copyright (c) 2025 VivaSecuris Syndicate. All Rights Reserved. See [LICENSE](LICENSE).
