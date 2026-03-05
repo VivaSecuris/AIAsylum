@@ -176,6 +176,95 @@ async def analyze_test_run(
     }
 
 
+@router.post("/analyze-unanalyzed")
+async def analyze_unanalyzed(
+    background_tasks: BackgroundTasks,
+    request: AnalysisRequest = AnalysisRequest(
+        enable_activation_patching=False,
+        enable_cot_detection=True,
+        cot_analysis_mode="full",
+        enable_factuality_check=False,
+        enable_manipulation_analysis=False,
+    ),
+):
+    """Start analysis for all completed test runs that have no assessments (runs in background).
+
+    Defaults match the suite auto-analysis config: COT detection on, factuality and
+    manipulation analysis off, no custom evaluator.
+    """
+
+    session = get_session()
+    try:
+        unanalyzed_runs = (
+            session.query(TestRun)
+            .filter(
+                TestRun.status == STATUS_COMPLETED,
+                TestRun.test_type != TEST_TYPE_ANALYSIS,
+                ~TestRun.id.in_(session.query(Assessment.test_run_id).distinct()),
+            )
+            .order_by(TestRun.id)
+            .all()
+        )
+
+        if not unanalyzed_runs:
+            return {"started": 0, "test_run_ids": []}
+
+        analysis_doctor_provider = request.evaluator_provider
+        analysis_doctor_model = request.evaluator_model
+
+        created = []
+        for run in unanalyzed_runs:
+            doc_provider = analysis_doctor_provider or run.doctor_provider
+            doc_model = analysis_doctor_model or run.doctor_model
+            analysis_run = TestRun(
+                doctor_provider=doc_provider,
+                doctor_model=doc_model,
+                patient_provider=run.patient_provider,
+                patient_model=run.patient_model,
+                test_type=TEST_TYPE_ANALYSIS,
+                status=STATUS_PENDING,
+                meta_data={
+                    "source_test_run_id": run.id,
+                    "analysis_config": {
+                        "enable_activation_patching": request.enable_activation_patching,
+                        "enable_cot_detection": request.enable_cot_detection,
+                        "cot_analysis_mode": request.cot_analysis_mode,
+                        "enable_factuality_check": request.enable_factuality_check,
+                        "enable_manipulation_analysis": request.enable_manipulation_analysis,
+                        "evaluator_provider": request.evaluator_provider,
+                        "evaluator_model": request.evaluator_model,
+                    },
+                    "description": f"Batch analysis of test run #{run.id}",
+                },
+            )
+            session.add(analysis_run)
+            session.flush()
+            created.append((run.id, analysis_run.id))
+
+        session.commit()
+        logger.info(f"Created {len(created)} analysis test runs for unanalyzed runs")
+    finally:
+        session.close()
+
+    for source_id, analysis_id in created:
+        background_tasks.add_task(
+            _run_analysis_background,
+            source_id,
+            request.enable_activation_patching,
+            request.enable_cot_detection,
+            request.cot_analysis_mode,
+            request.enable_factuality_check,
+            request.enable_manipulation_analysis,
+            request.evaluator_provider,
+            request.evaluator_model,
+            analysis_id,
+        )
+
+    started_ids = [source_id for source_id, _ in created]
+    logger.info(f"Queued background analysis for test run ids: {started_ids}")
+    return {"started": len(created), "test_run_ids": started_ids}
+
+
 @router.get("/test-run/{test_run_id}/assessments")
 async def get_assessments(test_run_id: int):
     """Get assessments for a test run."""

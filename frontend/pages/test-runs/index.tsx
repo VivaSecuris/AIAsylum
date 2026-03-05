@@ -4,10 +4,10 @@ import { Layout } from '@/components/layout/Layout'
 import { TestRunTable } from '@/components/test-runs/TestRunTable'
 import { TestRunFilters } from '@/components/test-runs/TestRunFilters'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { useTestRuns, useDeleteTestRun } from '@/lib/hooks'
+import { useTestRuns, useDeleteTestRun, useMultipleAssessments, useRunAnalysisUnanalyzed } from '@/lib/hooks'
 import { TestRun } from '@/lib/api'
 import Link from 'next/link'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2, TrendingUp } from 'lucide-react'
 import { toast } from '@/lib/toast'
 
 export default function TestRunsPage() {
@@ -19,6 +19,36 @@ export default function TestRunsPage() {
   const queryClient = useQueryClient()
   const { data: testRuns = [], isLoading, error } = useTestRuns({ limit: 1000 })
   const deleteTestRun = useDeleteTestRun()
+  const runAnalysisUnanalyzed = useRunAnalysisUnanalyzed()
+
+  const completedRunIds = useMemo(() =>
+    testRuns.filter(run => run.status === 'completed').map(run => run.id),
+    [testRuns]
+  )
+  const { data: assessmentsMap = new Map() } = useMultipleAssessments(completedRunIds)
+
+  const unanalyzedCount = useMemo(() =>
+    testRuns.filter(run =>
+      run.status === 'completed' &&
+      run.test_type !== 'analysis' &&
+      (assessmentsMap.get(run.id) || []).length === 0
+    ).length,
+    [testRuns, assessmentsMap]
+  )
+
+  const handleAnalyzeUnanalyzed = async () => {
+    try {
+      const result = await runAnalysisUnanalyzed.mutateAsync()
+      if (result.started === 0) {
+        toast.info('No unanalyzed test runs found')
+      } else {
+        toast.success(`Started analysis for ${result.started} test run${result.started !== 1 ? 's' : ''}`)
+      }
+    } catch (error: any) {
+      const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to start analysis'
+      toast.error(`Failed to analyze: ${errorMessage}`)
+    }
+  }
 
   const filteredRuns = useMemo(() => {
     let filtered = [...testRuns]
@@ -142,13 +172,25 @@ export default function TestRunsPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-bold">Test Runs</h1>
-          <Link
-            href="/create-test"
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" />
-            Create Test
-          </Link>
+          <div className="flex items-center gap-2">
+            {unanalyzedCount > 0 && (
+              <button
+                onClick={handleAnalyzeUnanalyzed}
+                disabled={runAnalysisUnanalyzed.isPending}
+                className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                <TrendingUp className="h-4 w-4" />
+                {runAnalysisUnanalyzed.isPending ? 'Starting...' : `Analyze Unanalyzed (${unanalyzedCount})`}
+              </button>
+            )}
+            <Link
+              href="/create-test"
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="h-4 w-4" />
+              Create Test
+            </Link>
+          </div>
         </div>
 
         <TestRunFilters onFilterChange={setFilters} />

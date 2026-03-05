@@ -21,6 +21,7 @@ const navigation = [
   { name: 'Suite', href: '/suite', icon: Layers },
   { name: 'Prompts', href: '/prompts', icon: FileText },
   { name: 'Models', href: '/compare', icon: GitCompare },
+  { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
 export function Sidebar() {

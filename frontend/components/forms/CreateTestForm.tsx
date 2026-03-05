@@ -7,6 +7,7 @@ import { useRouter } from 'next/router'
 import { toast } from '@/lib/toast'
 import Link from 'next/link'
 import { AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
+import { getSettings } from '@/lib/settings'
 
 export function CreateTestForm() {
   const router = useRouter()
@@ -23,11 +24,13 @@ export function CreateTestForm() {
     ? parseInt(Array.isArray(router.query.promptId) ? router.query.promptId[0] : router.query.promptId)
     : undefined
 
+  const savedSettings = getSettings()
+
   const [formData, setFormData] = useState<TestRunRequest>({
-    doctor_provider: '',
-    doctor_model: '',
-    patient_provider: '',
-    patient_model: '',
+    doctor_provider: savedSettings.defaultDoctorProvider,
+    doctor_model: savedSettings.defaultDoctorModel,
+    patient_provider: savedSettings.defaultPatientProvider,
+    patient_model: savedSettings.defaultPatientModel,
     test_type: initialTestType,
     test_config: {},
   })
@@ -60,10 +63,12 @@ export function CreateTestForm() {
   const [enableAutoAnalysis, setEnableAutoAnalysis] = useState(false)
   const [showAnalysisConfig, setShowAnalysisConfig] = useState(false)
   const [analysisConfig, setAnalysisConfig] = useState<AnalysisConfig>({
-    enable_cot_detection: true,
-    cot_analysis_mode: 'full',
-    enable_factuality_check: false,
-    enable_manipulation_analysis: false,
+    evaluator_provider: savedSettings.defaultEvaluatorProvider || undefined,
+    evaluator_model: savedSettings.defaultEvaluatorModel || undefined,
+    enable_cot_detection: savedSettings.defaultEnableCotDetection,
+    cot_analysis_mode: savedSettings.defaultCotAnalysisMode,
+    enable_factuality_check: savedSettings.defaultEnableFactualityCheck,
+    enable_manipulation_analysis: savedSettings.defaultEnableManipulationAnalysis,
   })
   
   // Get system prompts separately
@@ -195,11 +200,12 @@ export function CreateTestForm() {
       }
       
       // Handle group therapy: add patients array
+      // Compute validPatients here so it can be reused for validation and payload below.
+      const validPatients = isGroupTherapyTest
+        ? groupTherapyPatients.filter((p) => p.provider && p.model)
+        : []
+
       if (isGroupTherapyTest) {
-        // Validate at least one patient is selected
-        const validPatients = groupTherapyPatients.filter(
-          (p) => p.provider && p.model
-        )
         if (validPatients.length === 0) {
           toast.error('Please add at least one patient model for the group therapy session')
           return
@@ -239,11 +245,15 @@ export function CreateTestForm() {
         testConfig.patient_system_prompt_id = selectedPatientSystemPromptId
       }
 
-      // Ensure provider and model are set (backend will reject empty)
+      // Ensure provider and model are set (backend will reject empty).
+      // For group therapy the patient requirement is satisfied by validPatients; the top-level
+      // patient_provider/patient_model fields will be filled from the first patient below.
       const needDoctor = isConversationTest || isGroupTherapyTest
+      const patientMissing = isGroupTherapyTest
+        ? validPatients.length === 0
+        : !formData.patient_provider?.trim() || !formData.patient_model?.trim()
       if (
-        !formData.patient_provider?.trim() ||
-        !formData.patient_model?.trim() ||
+        patientMissing ||
         (needDoctor && (!formData.doctor_provider?.trim() || !formData.doctor_model?.trim()))
       ) {
         toast.error('Please select both provider and model for the test.')
@@ -255,6 +265,11 @@ export function CreateTestForm() {
       const seed = formData.test_config?.seed
       const submitData = {
         ...formData,
+        // For group therapy, derive the top-level patient fields from the first patient so the
+        // backend's required-field validation passes (the full list lives in test_config.patients).
+        ...(isGroupTherapyTest && validPatients.length > 0
+          ? { patient_provider: validPatients[0].provider, patient_model: validPatients[0].model }
+          : {}),
         test_config: {
           ...testConfig,
           temperature: typeof temperature === 'number' ? temperature : parseFloat(String(temperature)) || 0.7,

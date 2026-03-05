@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ModelSelector } from '@/components/forms/ModelSelector'
+import { getSettings } from '@/lib/settings'
 
 interface AnalysisConfigDialogProps {
   isOpen: boolean
@@ -29,14 +30,25 @@ export function AnalysisConfigDialog({
   doctorModel,
   isLoading = false,
 }: AnalysisConfigDialogProps) {
-  const [evaluatorProvider, setEvaluatorProvider] = useState(defaultConfig?.evaluator_provider || '')
-  const [evaluatorModel, setEvaluatorModel] = useState(defaultConfig?.evaluator_model || '')
-  const [enableCotDetection, setEnableCotDetection] = useState(defaultConfig?.enable_cot_detection ?? true)
-  const [cotAnalysisMode, setCotAnalysisMode] = useState<'full' | 'partial' | 'none'>(
-    defaultConfig?.cot_analysis_mode || 'full'
+  const savedSettings = getSettings()
+  const [evaluatorProvider, setEvaluatorProvider] = useState(
+    defaultConfig?.evaluator_provider ?? savedSettings.defaultEvaluatorProvider
   )
-  const [enableFactualityCheck, setEnableFactualityCheck] = useState(defaultConfig?.enable_factuality_check ?? false)
-  const [enableManipulationAnalysis, setEnableManipulationAnalysis] = useState(defaultConfig?.enable_manipulation_analysis ?? false)
+  const [evaluatorModel, setEvaluatorModel] = useState(
+    defaultConfig?.evaluator_model ?? savedSettings.defaultEvaluatorModel
+  )
+  const [enableCotDetection, setEnableCotDetection] = useState(
+    defaultConfig?.enable_cot_detection ?? savedSettings.defaultEnableCotDetection
+  )
+  const [cotAnalysisMode, setCotAnalysisMode] = useState<'full' | 'partial' | 'none'>(
+    defaultConfig?.cot_analysis_mode ?? savedSettings.defaultCotAnalysisMode
+  )
+  const [enableFactualityCheck, setEnableFactualityCheck] = useState(
+    defaultConfig?.enable_factuality_check ?? savedSettings.defaultEnableFactualityCheck
+  )
+  const [enableManipulationAnalysis, setEnableManipulationAnalysis] = useState(
+    defaultConfig?.enable_manipulation_analysis ?? savedSettings.defaultEnableManipulationAnalysis
+  )
 
   if (!isOpen) return null
 

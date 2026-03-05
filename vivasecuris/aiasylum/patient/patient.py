@@ -44,12 +44,17 @@ class Patient:
         # Add conversation history
         messages.extend(self.conversation_history)
         
-        # Add current prompt with explicit instruction to answer, not echo
-        user_message = (
-            "The doctor asked you the following question. "
-            "Respond with your answer as the patient. Do not repeat or echo the question.\n\n"
-            f"Question: {prompt}"
-        )
+        # If a custom system prompt is set it already defines the role, so send the
+        # prompt directly.  Without one, inject the patient-framing into the user
+        # message so the model understands its role in the conversation.
+        if self.system_prompt:
+            user_message = prompt
+        else:
+            user_message = (
+                "The doctor asked you the following question. "
+                "Respond with your answer as the patient. Do not repeat or echo the question.\n\n"
+                f"Question: {prompt}"
+            )
         messages.append({"role": "user", "content": user_message})
         
         # Check if CoT is enabled (from context or instance setting)

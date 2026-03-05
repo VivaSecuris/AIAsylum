@@ -239,6 +239,29 @@ class AnthropicModel(BaseModel):
         self.provider = provider
         self.client = provider.client
     
+    @staticmethod
+    def _extract_system_and_filter(
+        system_prompt: Optional[str],
+        messages: List[Dict[str, str]],
+    ):
+        """Return (system_str, filtered_messages).
+
+        Anthropic requires the system prompt via a dedicated ``system`` parameter
+        and does not accept ``role: system`` entries inside the messages array.
+        This helper collects all system content (from the explicit param and from
+        any system-role messages) into one string and strips those entries out of
+        the messages list so the request is valid for the Anthropic API.
+        """
+        parts = [system_prompt] if system_prompt else []
+        filtered = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                if msg.get("content"):
+                    parts.append(msg["content"])
+            else:
+                filtered.append(msg)
+        return "\n\n".join(parts), filtered
+
     async def generate(
         self,
         prompt: str,
@@ -248,14 +271,17 @@ class AnthropicModel(BaseModel):
     ) -> ModelResponse:
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
-        
-        # Anthropic uses system parameter separately
+
+        system_content, filtered_messages = self._extract_system_and_filter(
+            system_prompt, messages
+        )
+
         response = await self.client.messages.create(
             model=self.model_name,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            system=system_prompt or "",
-            messages=messages,
+            system=system_content or "",
+            messages=filtered_messages,
             **kwargs
         )
         
@@ -285,13 +311,17 @@ class AnthropicModel(BaseModel):
     ):
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
-        
+
+        system_content, filtered_messages = self._extract_system_and_filter(
+            system_prompt, messages
+        )
+
         async with self.client.messages.stream(
             model=self.model_name,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            system=system_prompt or "",
-            messages=messages,
+            system=system_content or "",
+            messages=filtered_messages,
             **kwargs
         ) as stream:
             async for text in stream.text_stream:
@@ -305,7 +335,52 @@ class GoogleModel(BaseModel):
         super().__init__(model_name, "google", **kwargs)
         self.provider = provider
         self.client = provider.client
-    
+
+    @staticmethod
+    def _prepare_google_args(
+        system_prompt: Optional[str],
+        messages: Optional[List[Dict[str, str]]],
+        prompt: str,
+    ):
+        """Return (system_str, history, final_user_text).
+
+        Extracts the system prompt (from the explicit param or system-role messages),
+        builds the prior-turn history in Google's format, and returns the final user
+        message text separately so it can be sent via ``send_message`` / passed
+        directly to ``generate_content``.
+        """
+        system_parts = [system_prompt] if system_prompt else []
+        chat_messages: List[Dict[str, str]] = []
+
+        if messages:
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    if content:
+                        system_parts.append(content)
+                else:
+                    chat_messages.append({"role": role, "content": content})
+
+        system_str = "\n\n".join(system_parts)
+
+        # Separate history from the final user message
+        if chat_messages and chat_messages[-1]["role"] == "user":
+            final_user_text = chat_messages[-1]["content"]
+            history = chat_messages[:-1]
+        else:
+            # Fallback: no user message in the list; use prompt arg
+            final_user_text = prompt
+            history = chat_messages
+
+        # Convert history to Google's Content format: [{"role": "user"|"model", "parts": [...]}]
+        google_history = []
+        for msg in history:
+            google_role = "model" if msg["role"] == "assistant" else "user"
+            google_history.append({"role": google_role, "parts": [msg["content"]]})
+
+        return system_str, google_history, final_user_text
+
     async def generate(
         self,
         prompt: str,
@@ -313,23 +388,32 @@ class GoogleModel(BaseModel):
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs
     ) -> ModelResponse:
-        model = self.client.GenerativeModel(self.model_name)
-        
-        full_prompt = prompt
-        if system_prompt:
-            full_prompt = f"{system_prompt}\n\n{prompt}"
-        
+        system_str, history, final_user_text = self._prepare_google_args(
+            system_prompt, messages, prompt
+        )
+
+        model_kwargs = {}
+        if system_str:
+            model_kwargs["system_instruction"] = system_str
+        model = self.client.GenerativeModel(self.model_name, **model_kwargs)
+
         generation_config = {
             "temperature": self.temperature,
             "max_output_tokens": self.max_tokens,
         }
-        
-        response = await model.generate_content_async(
-            full_prompt,
-            generation_config=generation_config,
-            **kwargs
-        )
-        
+
+        if history:
+            chat = model.start_chat(history=history)
+            response = await chat.send_message_async(
+                final_user_text,
+                generation_config=generation_config,
+            )
+        else:
+            response = await model.generate_content_async(
+                final_user_text,
+                generation_config=generation_config,
+            )
+
         return ModelResponse(
             content=response.text or "",
             model=self.model_name,
@@ -345,24 +429,34 @@ class GoogleModel(BaseModel):
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs
     ):
-        model = self.client.GenerativeModel(self.model_name)
-        
-        full_prompt = prompt
-        if system_prompt:
-            full_prompt = f"{system_prompt}\n\n{prompt}"
-        
+        system_str, history, final_user_text = self._prepare_google_args(
+            system_prompt, messages, prompt
+        )
+
+        model_kwargs = {}
+        if system_str:
+            model_kwargs["system_instruction"] = system_str
+        model = self.client.GenerativeModel(self.model_name, **model_kwargs)
+
         generation_config = {
             "temperature": self.temperature,
             "max_output_tokens": self.max_tokens,
         }
-        
-        response = await model.generate_content_async(
-            full_prompt,
-            generation_config=generation_config,
-            stream=True,
-            **kwargs
-        )
-        
+
+        if history:
+            chat = model.start_chat(history=history)
+            response = await chat.send_message_async(
+                final_user_text,
+                generation_config=generation_config,
+                stream=True,
+            )
+        else:
+            response = await model.generate_content_async(
+                final_user_text,
+                generation_config=generation_config,
+                stream=True,
+            )
+
         async for chunk in response:
             if chunk.text:
                 yield chunk.text
