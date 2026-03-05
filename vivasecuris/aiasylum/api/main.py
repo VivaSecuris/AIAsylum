@@ -21,6 +21,7 @@ from vivasecuris.aiasylum.api.routes import (
     suites,
     models as models_router,
     conversations as conversations_router,
+    config as config_router,
 )
 
 app = FastAPI(
@@ -47,6 +48,7 @@ app.include_router(prompts.router, prefix="/api/v1/prompts", tags=["prompts"])
 app.include_router(suites.router, prefix="/api/v1/suites", tags=["suites"])
 app.include_router(models_router.router, prefix="/api/v1/models", tags=["models"])
 app.include_router(conversations_router.router, prefix="/api/v1/conversations", tags=["conversations"])
+app.include_router(config_router.router, prefix="/api/v1/config", tags=["config"])
 
 
 @app.get("/")
