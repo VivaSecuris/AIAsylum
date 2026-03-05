@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ModelSelector } from '@/components/forms/ModelSelector'
 import { getSettings } from '@/lib/settings'
 
@@ -49,6 +49,20 @@ export function AnalysisConfigDialog({
   const [enableManipulationAnalysis, setEnableManipulationAnalysis] = useState(
     defaultConfig?.enable_manipulation_analysis ?? savedSettings.defaultEnableManipulationAnalysis
   )
+
+  // Reset state every time the dialog opens so it never carries over a previously
+  // selected evaluator model from an earlier session.
+  useEffect(() => {
+    if (!isOpen) return
+    const s = getSettings()
+    setEvaluatorProvider(defaultConfig?.evaluator_provider ?? s.defaultEvaluatorProvider)
+    setEvaluatorModel(defaultConfig?.evaluator_model ?? s.defaultEvaluatorModel)
+    setEnableCotDetection(defaultConfig?.enable_cot_detection ?? s.defaultEnableCotDetection)
+    setCotAnalysisMode(defaultConfig?.cot_analysis_mode ?? s.defaultCotAnalysisMode)
+    setEnableFactualityCheck(defaultConfig?.enable_factuality_check ?? s.defaultEnableFactualityCheck)
+    setEnableManipulationAnalysis(defaultConfig?.enable_manipulation_analysis ?? s.defaultEnableManipulationAnalysis)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen])
 
   if (!isOpen) return null
 
