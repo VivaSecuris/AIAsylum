@@ -116,6 +116,8 @@ class ConversationTest(TestCase):
                 "response": patient_response.content,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
+                "patient_model": getattr(patient_model, "model_name", getattr(patient_model, "name", "unknown")),
+                "patient_provider": getattr(patient_model, "provider", "unknown"),
             }
             conversation_history.append(turn_data)
             
@@ -174,6 +176,8 @@ class ConversationTest(TestCase):
                 "response": patient_response.content,
                 "reasoning": reasoning,
                 "turn_number": len(conversation_history),
+                "patient_model": getattr(patient_model, "model_name", getattr(patient_model, "name", "unknown")),
+                "patient_provider": getattr(patient_model, "provider", "unknown"),
             }
             conversation_history.append(turn_data)
             

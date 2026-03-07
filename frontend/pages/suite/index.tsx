@@ -1,17 +1,18 @@
 import { useState } from 'react'
-import { useRouter } from 'next/router'
 import { Layout } from '@/components/layout/Layout'
 import { SuiteForm } from '@/components/forms/SuiteForm'
-import { useSuites } from '@/lib/hooks'
+import { useSuites, useDeleteSuite } from '@/lib/hooks'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import Link from 'next/link'
 import { formatDate } from '@/lib/utils'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
+import { toast } from '@/lib/toast'
+import { Trash2 } from 'lucide-react'
 
 export default function SuiteIndexPage() {
-  const router = useRouter()
   const [showForm, setShowForm] = useState(false)
   const { data: suites, isLoading } = useSuites()
+  const deleteSuite = useDeleteSuite()
 
   if (isLoading) {
     return (
@@ -78,12 +79,30 @@ export default function SuiteIndexPage() {
                             {formatDate(suite.created_at)}
                           </td>
                           <td className="px-4 py-3">
-                            <Link
-                              href={`/suite/${suite.id}`}
-                              className="text-primary hover:underline text-sm"
-                            >
-                              View
-                            </Link>
+                            <div className="flex items-center gap-3">
+                              <Link
+                                href={`/suite/${suite.id}`}
+                                className="text-primary hover:underline text-sm"
+                              >
+                                View
+                              </Link>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!confirm('Delete this test suite? This will also delete all associated test runs.' + (suite.status === 'running' ? ' Any running tests will be stopped.' : ''))) return
+                                  deleteSuite.mutate(suite.id, {
+                                    onSuccess: () => toast.success('Suite deleted'),
+                                    onError: () => toast.error('Failed to delete suite'),
+                                  })
+                                }}
+                                disabled={deleteSuite.isPending}
+                                className="text-destructive hover:text-destructive/80 text-sm inline-flex items-center gap-1 disabled:opacity-50"
+                                title="Delete suite"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                Delete
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )

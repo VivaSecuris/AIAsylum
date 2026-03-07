@@ -226,10 +226,17 @@ async def delete_prompt(prompt_id: int):
         prompt = session.query(PromptLibrary).filter(PromptLibrary.id == prompt_id).first()
         if not prompt:
             raise HTTPException(status_code=404, detail="Prompt not found")
-        
         session.delete(prompt)
         session.commit()
         return {"message": "Prompt deleted successfully"}
+    except HTTPException:
+        if session:
+            session.rollback()
+        raise
+    except Exception as e:
+        if session:
+            session.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete prompt: {str(e)}")
     finally:
         session.close()
 

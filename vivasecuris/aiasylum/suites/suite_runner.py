@@ -140,21 +140,19 @@ class SuiteRunner:
             session.close()
 
     def delete_suite(self, suite_id: int) -> bool:
-        """Delete a test suite and all its test runs."""
+        """Delete a test suite and all its test runs (cascade deletes test runs and their results)."""
         session = get_session()
         try:
             suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
             if not suite:
                 return False
-
-            # Delete all test runs (cascade should handle this, but explicit is better)
-            test_runs = session.query(TestRun).filter(TestRun.suite_id == suite_id).all()
-            for tr in test_runs:
-                session.delete(tr)
-
+            # Cascade deletes test_runs and each run's results, conversation_turns, assessments
             session.delete(suite)
             session.commit()
             return True
+        except Exception:
+            session.rollback()
+            raise
         finally:
             session.close()
 

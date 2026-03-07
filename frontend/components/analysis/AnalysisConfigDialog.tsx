@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { ModelSelector } from '@/components/forms/ModelSelector'
 import { getSettings } from '@/lib/settings'
 
@@ -31,11 +31,13 @@ export function AnalysisConfigDialog({
   isLoading = false,
 }: AnalysisConfigDialogProps) {
   const savedSettings = getSettings()
+  // When doctorProvider/doctorModel are provided, default to empty so the backend uses the doctor model.
+  // Otherwise use saved settings (e.g. for batch analysis).
   const [evaluatorProvider, setEvaluatorProvider] = useState(
-    defaultConfig?.evaluator_provider ?? savedSettings.defaultEvaluatorProvider
+    defaultConfig?.evaluator_provider ?? (doctorProvider ? '' : savedSettings.defaultEvaluatorProvider)
   )
   const [evaluatorModel, setEvaluatorModel] = useState(
-    defaultConfig?.evaluator_model ?? savedSettings.defaultEvaluatorModel
+    defaultConfig?.evaluator_model ?? (doctorModel ? '' : savedSettings.defaultEvaluatorModel)
   )
   const [enableCotDetection, setEnableCotDetection] = useState(
     defaultConfig?.enable_cot_detection ?? savedSettings.defaultEnableCotDetection
@@ -49,20 +51,6 @@ export function AnalysisConfigDialog({
   const [enableManipulationAnalysis, setEnableManipulationAnalysis] = useState(
     defaultConfig?.enable_manipulation_analysis ?? savedSettings.defaultEnableManipulationAnalysis
   )
-
-  // Reset state every time the dialog opens so it never carries over a previously
-  // selected evaluator model from an earlier session.
-  useEffect(() => {
-    if (!isOpen) return
-    const s = getSettings()
-    setEvaluatorProvider(defaultConfig?.evaluator_provider ?? s.defaultEvaluatorProvider)
-    setEvaluatorModel(defaultConfig?.evaluator_model ?? s.defaultEvaluatorModel)
-    setEnableCotDetection(defaultConfig?.enable_cot_detection ?? s.defaultEnableCotDetection)
-    setCotAnalysisMode(defaultConfig?.cot_analysis_mode ?? s.defaultCotAnalysisMode)
-    setEnableFactualityCheck(defaultConfig?.enable_factuality_check ?? s.defaultEnableFactualityCheck)
-    setEnableManipulationAnalysis(defaultConfig?.enable_manipulation_analysis ?? s.defaultEnableManipulationAnalysis)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen])
 
   if (!isOpen) return null
 

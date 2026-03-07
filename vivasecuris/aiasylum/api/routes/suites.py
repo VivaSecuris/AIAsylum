@@ -362,8 +362,12 @@ async def update_suite(suite_id: int, update: SuiteUpdate):
 async def delete_suite(suite_id: int):
     """Delete a test suite and all its test runs."""
     runner = SuiteRunner()
-    success = runner.delete_suite(suite_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Test suite not found")
-    
-    return {"message": "Test suite deleted successfully", "id": suite_id}
+    try:
+        success = runner.delete_suite(suite_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Test suite not found")
+        return {"message": "Test suite deleted successfully", "id": suite_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete suite: {str(e)}")

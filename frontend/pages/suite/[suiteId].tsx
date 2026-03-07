@@ -143,7 +143,8 @@ export default function SuiteDetailPage() {
   }, [suite?.status, id, queryClient])
 
   const handleDelete = async () => {
-    if (!confirm('Are you sure you want to delete this suite? This will also delete all associated test runs.')) {
+    const runningNote = suite?.status === 'running' ? ' Any running tests will be stopped.' : ''
+    if (!confirm('Are you sure you want to delete this suite? This will also delete all associated test runs.' + runningNote)) {
       return
     }
 
@@ -229,16 +230,14 @@ export default function SuiteDetailPage() {
               <RefreshCw className="h-4 w-4" />
               Refresh
             </button>
-            {suite.status !== 'running' && (
-              <button
-                onClick={handleDelete}
-                disabled={deleteSuite.isPending}
-                className="flex items-center gap-2 rounded-lg border border-destructive px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-              >
-                <Trash2 className="h-4 w-4" />
-                {deleteSuite.isPending ? 'Deleting...' : 'Delete'}
-              </button>
-            )}
+            <button
+              onClick={handleDelete}
+              disabled={deleteSuite.isPending}
+              className="flex items-center gap-2 rounded-lg border border-destructive px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              {deleteSuite.isPending ? 'Deleting...' : 'Delete'}
+            </button>
           </div>
         </div>
 

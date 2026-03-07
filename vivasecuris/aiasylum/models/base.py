@@ -33,7 +33,12 @@ class BaseModel(ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.kwargs = kwargs
-    
+
+    @property
+    def name(self) -> str:
+        """Alias for model_name so code using getattr(model, 'name', ...) gets the actual model."""
+        return self.model_name
+
     @abstractmethod
     async def generate(
         self,

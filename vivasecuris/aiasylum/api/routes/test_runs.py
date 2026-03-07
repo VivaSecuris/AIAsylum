@@ -346,7 +346,7 @@ async def update_test_run(test_run_id: int, update: TestRunUpdate):
 
 @router.delete("/{test_run_id}")
 async def delete_test_run(test_run_id: int):
-    """Delete a test run and all its associated data."""
+    """Delete a test run and all its associated data (results, conversation turns, assessments)."""
     print(f"DELETE /api/v1/test-runs/{test_run_id} - Starting deletion")
     session = None
     try:
@@ -381,22 +381,20 @@ async def delete_test_run(test_run_id: int):
             )
             # Continue with deletion - don't return here
         
-        # Delete the test run (cascade will handle related records)
+        # Delete the test run (cascade will handle results, conversation_turns, assessments)
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Deleting test run from database")
         session.delete(test_run)
         session.commit()
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Deletion committed successfully")
-        session.close()
-        
+
         # Clear cancellation flag and unregister task to prevent issues if ID is reused
         cancellation_manager.clear(test_run_id)
-        
+
         return {"message": "Test run deleted successfully", "id": test_run_id}
     except HTTPException as e:
         print(f"DELETE /api/v1/test-runs/{test_run_id} - HTTPException: {e.status_code} - {e.detail}")
         if session:
             session.rollback()
-            session.close()
         raise
     except Exception as e:
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Exception: {str(e)}")
@@ -404,8 +402,10 @@ async def delete_test_run(test_run_id: int):
         traceback.print_exc()
         if session:
             session.rollback()
-            session.close()
         raise HTTPException(status_code=500, detail=f"Failed to delete test run: {str(e)}")
+    finally:
+        if session:
+            session.close()
 
 
 @router.get("/{test_run_id}/results")

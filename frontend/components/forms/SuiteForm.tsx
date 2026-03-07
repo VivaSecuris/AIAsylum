@@ -135,8 +135,8 @@ export function SuiteForm() {
   }
 
   const updateModel = (id: string, field: 'provider' | 'model', value: string) => {
-    setModels(
-      models.map((m) => {
+    setModels((prev) =>
+      prev.map((m) => {
         if (m.id === id) {
           const updated = { ...m, [field]: value }
           if (field === 'provider' && m.model) {

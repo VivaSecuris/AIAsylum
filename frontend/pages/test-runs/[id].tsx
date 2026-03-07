@@ -1211,17 +1211,16 @@ export default function TestRunDetailPage() {
         </Tabs.Root>
       </div>
 
-      <AnalysisConfigDialog
-        isOpen={showAnalysisDialog}
-        onClose={() => {
-          console.log('Dialog closed')
-          setShowAnalysisDialog(false)
-        }}
-        onConfirm={handleRunAnalysis}
-        doctorProvider={testRun?.doctor_provider}
-        doctorModel={testRun?.doctor_model}
-        isLoading={runAnalysis.isPending}
-      />
+      {showAnalysisDialog && (
+        <AnalysisConfigDialog
+          isOpen={true}
+          onClose={() => setShowAnalysisDialog(false)}
+          onConfirm={handleRunAnalysis}
+          doctorProvider={testRun?.doctor_provider}
+          doctorModel={testRun?.doctor_model}
+          isLoading={runAnalysis.isPending}
+        />
+      )}
     </Layout>
   )
 }

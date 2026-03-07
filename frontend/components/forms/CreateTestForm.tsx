@@ -81,8 +81,8 @@ export function CreateTestForm() {
   
   // Update test type if query param changes
   useEffect(() => {
-    if (router.query.type === 'benchmark' && formData.test_type !== 'benchmark') {
-      setFormData({ ...formData, test_type: 'benchmark' })
+    if (router.query.type === 'benchmark') {
+      setFormData((prev) => (prev.test_type === 'benchmark' ? prev : { ...prev, test_type: 'benchmark' }))
     }
   }, [router.query.type])
   
@@ -309,10 +309,10 @@ export function CreateTestForm() {
               provider={formData.doctor_provider}
               model={formData.doctor_model}
               onProviderChange={(provider) =>
-                setFormData({ ...formData, doctor_provider: provider })
+                setFormData((prev) => ({ ...prev, doctor_provider: provider }))
               }
               onModelChange={(model) =>
-                setFormData({ ...formData, doctor_model: model })
+                setFormData((prev) => ({ ...prev, doctor_model: model }))
               }
             />
 
@@ -327,10 +327,10 @@ export function CreateTestForm() {
                 provider={formData.patient_provider}
                 model={formData.patient_model}
                 onProviderChange={(provider) =>
-                  setFormData({ ...formData, patient_provider: provider })
+                  setFormData((prev) => ({ ...prev, patient_provider: provider }))
                 }
                 onModelChange={(model) =>
-                  setFormData({ ...formData, patient_model: model })
+                  setFormData((prev) => ({ ...prev, patient_model: model }))
                 }
               />
             )}
@@ -342,20 +342,18 @@ export function CreateTestForm() {
             provider={formData.patient_provider}
             model={formData.patient_model}
             onProviderChange={(provider) =>
-              setFormData({ 
-                ...formData, 
+              setFormData((prev) => ({ 
+                ...prev, 
                 patient_provider: provider,
-                // Also set doctor to same for consistency (though not used)
                 doctor_provider: provider,
-              })
+              }))
             }
             onModelChange={(model) =>
-              setFormData({ 
-                ...formData, 
+              setFormData((prev) => ({ 
+                ...prev, 
                 patient_model: model,
-                // Also set doctor to same for consistency (though not used)
                 doctor_model: model,
-              })
+              }))
             }
           />
         )}
@@ -377,7 +375,7 @@ export function CreateTestForm() {
                   value={type.value}
                   checked={formData.test_type === type.value}
                   onChange={(e) =>
-                    setFormData({ ...formData, test_type: e.target.value })
+                    setFormData((prev) => ({ ...prev, test_type: e.target.value }))
                   }
                   className="rounded"
                 />

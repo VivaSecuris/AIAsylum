@@ -50,10 +50,23 @@
 }
 
 @layer base {
+  /* Keep native form controls (e.g. select dropdowns) light and readable */
+  :root {
+    color-scheme: light;
+  }
   * {
     @apply border-border;
   }
   body {
     @apply bg-background text-foreground;
+  }
+  /* Consistent, readable select styling project-wide */
+  select {
+    @apply rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2;
+  }
+  select option {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
   }
 }

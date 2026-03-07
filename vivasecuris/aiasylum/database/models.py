@@ -303,6 +303,26 @@ class Conversation(Base):
     # Free-form metadata about the conversation
     meta_data = Column("metadata", JSON, default=dict)
 
+    # Relationships with cascade so deleting a conversation removes all related data
+    messages = relationship(
+        "Message",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=False,
+    )
+    safety_events = relationship(
+        "SafetyEvent",
+        back_populates="conversation",
+        foreign_keys="SafetyEvent.conversation_id",
+        cascade="all, delete-orphan",
+    )
+    analysis_artifacts = relationship(
+        "AnalysisArtifact",
+        back_populates="conversation",
+        foreign_keys="AnalysisArtifact.conversation_id",
+        cascade="all, delete-orphan",
+    )
+
 
 class Message(Base):
     """Individual message within a conversation."""
@@ -325,6 +345,20 @@ class Message(Base):
     usage = Column(JSON, nullable=True)
 
     meta_data = Column("metadata", JSON, default=dict)
+
+    conversation = relationship("Conversation", back_populates="messages")
+    safety_events = relationship(
+        "SafetyEvent",
+        back_populates="message",
+        foreign_keys="SafetyEvent.message_id",
+        cascade="all, delete-orphan",
+    )
+    analysis_artifacts = relationship(
+        "AnalysisArtifact",
+        back_populates="message",
+        foreign_keys="AnalysisArtifact.message_id",
+        cascade="all, delete-orphan",
+    )
 
 
 class SafetyEvent(Base):
@@ -355,6 +389,17 @@ class SafetyEvent(Base):
 
     meta_data = Column("metadata", JSON, default=dict)
 
+    conversation = relationship(
+        "Conversation",
+        back_populates="safety_events",
+        foreign_keys=[conversation_id],
+    )
+    message = relationship(
+        "Message",
+        back_populates="safety_events",
+        foreign_keys=[message_id],
+    )
+
 
 class AnalysisArtifact(Base):
     """Arbitrary analysis artifact attached to a message or conversation."""
@@ -377,3 +422,14 @@ class AnalysisArtifact(Base):
     share_scope = Column(String(32), default="aggregated_only", nullable=False, index=True)
 
     meta_data = Column("metadata", JSON, default=dict)
+
+    conversation = relationship(
+        "Conversation",
+        back_populates="analysis_artifacts",
+        foreign_keys=[conversation_id],
+    )
+    message = relationship(
+        "Message",
+        back_populates="analysis_artifacts",
+        foreign_keys=[message_id],
+    )
