@@ -37,23 +37,100 @@ class BenchmarkResponse(BaseModel):
     test_run_id: Optional[int] = None
 
 
+_BENCHMARK_CATEGORIES = [
+    {
+        "id": "knowledge_reasoning",
+        "title": "Knowledge & Reasoning",
+        "description": "Tests broad factual knowledge and multi-step reasoning across academic subjects and math.",
+    },
+    {
+        "id": "commonsense",
+        "title": "Commonsense Reasoning",
+        "description": "Evaluates everyday commonsense understanding, physical intuition, and language inference.",
+    },
+    {
+        "id": "safety_alignment",
+        "title": "Safety & Alignment",
+        "description": "Measures truthfulness, bias, toxicity, and resistance to adversarial jailbreak attempts.",
+    },
+]
+
+_BENCHMARKS = [
+    {
+        "name": "mmlu",
+        "title": "MMLU",
+        "description": "57-subject multiple-choice exam spanning STEM, humanities, law, and medicine — a broad measure of general world knowledge.",
+        "category": "knowledge_reasoning",
+    },
+    {
+        "name": "arc",
+        "title": "ARC",
+        "description": "AI2 Reasoning Challenge: grade-school science questions requiring genuine reasoning rather than simple retrieval.",
+        "category": "knowledge_reasoning",
+    },
+    {
+        "name": "math",
+        "title": "MATH",
+        "description": "Competition-level mathematics problems across algebra, geometry, number theory, and calculus.",
+        "category": "knowledge_reasoning",
+    },
+    {
+        "name": "gsm8k",
+        "title": "GSM8K",
+        "description": "8,500 grade-school math word problems that require multi-step arithmetic reasoning to solve.",
+        "category": "knowledge_reasoning",
+    },
+    {
+        "name": "hellaswag",
+        "title": "HellaSwag",
+        "description": "Sentence-completion benchmark for commonsense natural language inference — picking the most plausible continuation.",
+        "category": "commonsense",
+    },
+    {
+        "name": "winogrande",
+        "title": "WinoGrande",
+        "description": "Winograd-schema pronoun-resolution problems that test fine-grained commonsense and contextual reasoning.",
+        "category": "commonsense",
+    },
+    {
+        "name": "piqa",
+        "title": "PIQA",
+        "description": "Physical Intuition QA: two-choice questions about everyday physical interactions and how the world works.",
+        "category": "commonsense",
+    },
+    {
+        "name": "truthfulqa",
+        "title": "TruthfulQA",
+        "description": "817 questions designed to elicit common misconceptions — measures whether a model produces truthful answers instead of plausible-sounding falsehoods.",
+        "category": "safety_alignment",
+    },
+    {
+        "name": "bbq",
+        "title": "BBQ",
+        "description": "Bias Benchmark for QA: ambiguous and unambiguous contexts that reveal social biases across nine protected categories.",
+        "category": "safety_alignment",
+    },
+    {
+        "name": "realtoxicityprompts",
+        "title": "RealToxicityPrompts",
+        "description": "50,000 naturally occurring web sentences used to measure how often a model generates toxic continuations.",
+        "category": "safety_alignment",
+    },
+    {
+        "name": "jailbreak",
+        "title": "Jailbreak Resistance",
+        "description": "Adversarial benchmark using real-world jailbreak prompts (single-shot and multi-turn) to test whether the model resists prompt-injection attacks.",
+        "category": "safety_alignment",
+    },
+]
+
+
 @router.get("/list")
 async def list_benchmarks():
-    """List available benchmarks."""
+    """List available benchmarks grouped by category."""
     return {
-        "benchmarks": [
-            {"name": "mmlu", "description": "Massive Multitask Language Understanding"},
-            {"name": "truthfulqa", "description": "TruthfulQA benchmark"},
-            {"name": "hellaswag", "description": "HellaSwag commonsense reasoning"},
-            {"name": "arc", "description": "AI2 Reasoning Challenge"},
-            {"name": "math", "description": "MATH dataset"},
-            {"name": "gsm8k", "description": "Grade School Math 8K"},
-            {"name": "winogrande", "description": "Winogrande commonsense reasoning"},
-            {"name": "piqa", "description": "Physical Interaction QA"},
-            {"name": "bbq", "description": "Bias Benchmark for QA"},
-            {"name": "realtoxicityprompts", "description": "RealToxicityPrompts"},
-            {"name": "jailbreak", "description": "Jailbreak Resistance Benchmark - Tests model's ability to resist prompt injection attacks"},
-        ]
+        "categories": _BENCHMARK_CATEGORIES,
+        "benchmarks": _BENCHMARKS,
     }
 
 

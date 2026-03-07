@@ -6,7 +6,7 @@ import { Prompt } from '@/lib/api'
 import { Plus, Edit, Trash2, Search, Tag, Play } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from '@/lib/toast'
-import { formatDate } from '@/lib/utils'
+import { formatDate, getPromptDisplayName } from '@/lib/utils'
 
 export default function PromptsPage() {
   const [searchTerm, setSearchTerm] = useState('')
@@ -126,6 +126,7 @@ export default function PromptsPage() {
     const matchesSearch =
       !searchTerm ||
       prompt.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      getPromptDisplayName(prompt).toLowerCase().includes(searchTerm.toLowerCase()) ||
       prompt.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       prompt.prompt_text.toLowerCase().includes(searchTerm.toLowerCase())
     const matchesPromptType = !promptTypeFilter || prompt.prompt_type === promptTypeFilter
@@ -509,7 +510,7 @@ function PromptCard({ prompt, onDelete }: { prompt: Prompt; onDelete: (id: numbe
     <div className="rounded-lg border bg-card p-6 space-y-4 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between">
         <div className="flex-1">
-          <h3 className="font-semibold text-lg mb-1">{prompt.name}</h3>
+          <h3 className="font-semibold text-lg mb-1">{getPromptDisplayName(prompt)}</h3>
           {prompt.description && <p className="text-sm text-muted-foreground line-clamp-2">{prompt.description}</p>}
         </div>
         <div className="flex gap-2">

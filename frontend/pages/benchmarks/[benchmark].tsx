@@ -78,7 +78,7 @@ export default function BenchmarkDetailPage() {
               <ArrowLeft className="h-4 w-4" />
               Back to Benchmarks
             </Link>
-            <h1 className="text-3xl font-bold capitalize">{benchmarkInfo.name}</h1>
+            <h1 className="text-3xl font-bold">{(benchmarkInfo as any).title ?? benchmarkInfo.name}</h1>
             <p className="text-muted-foreground mt-1">{benchmarkInfo.description}</p>
           </div>
         </div>

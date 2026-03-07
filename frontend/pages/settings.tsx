@@ -165,7 +165,6 @@ export default function SettingsPage() {
                 onProviderChange={(v) => update('defaultDoctorProvider', v)}
                 onModelChange={(v) => update('defaultDoctorModel', v)}
               />
-
               <ModelSelector
                 label="Default Patient Model"
                 provider={settings.defaultPatientProvider}

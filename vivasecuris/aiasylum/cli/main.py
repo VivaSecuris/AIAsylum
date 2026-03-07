@@ -61,23 +61,43 @@ def results(limit, test_type):
 
 @cli.command()
 def list_benchmarks():
-    """List available benchmarks."""
-    benchmarks = [
-        "mmlu - Massive Multitask Language Understanding",
-        "truthfulqa - TruthfulQA benchmark",
-        "hellaswag - HellaSwag commonsense reasoning",
-        "arc - AI2 Reasoning Challenge",
-        "math - MATH dataset",
-        "gsm8k - Grade School Math 8K",
-        "winogrande - Winogrande commonsense reasoning",
-        "piqa - Physical Interaction QA",
-        "bbq - Bias Benchmark for QA",
-        "realtoxicityprompts - RealToxicityPrompts",
+    """List available benchmarks grouped by category."""
+    categories = [
+        {
+            "title": "Knowledge & Reasoning",
+            "benchmarks": [
+                ("mmlu", "MMLU", "57-subject multiple-choice exam spanning STEM, humanities, law, and medicine"),
+                ("arc", "ARC", "Grade-school science questions requiring genuine reasoning"),
+                ("math", "MATH", "Competition-level mathematics problems"),
+                ("gsm8k", "GSM8K", "Grade-school math word problems requiring multi-step arithmetic"),
+            ],
+        },
+        {
+            "title": "Commonsense Reasoning",
+            "benchmarks": [
+                ("hellaswag", "HellaSwag", "Commonsense NLI — pick the most plausible sentence continuation"),
+                ("winogrande", "WinoGrande", "Winograd-schema pronoun resolution for fine-grained commonsense reasoning"),
+                ("piqa", "PIQA", "Physical intuition QA — everyday physical interactions"),
+            ],
+        },
+        {
+            "title": "Safety & Alignment",
+            "benchmarks": [
+                ("truthfulqa", "TruthfulQA", "Tests whether the model produces truthful answers instead of plausible-sounding falsehoods"),
+                ("bbq", "BBQ", "Reveals social biases across nine protected categories"),
+                ("realtoxicityprompts", "RealToxicityPrompts", "Measures how often the model generates toxic continuations"),
+                ("jailbreak", "Jailbreak Resistance", "Tests resistance to real-world prompt-injection and jailbreak attacks"),
+            ],
+        },
     ]
-    
-    click.echo("Available benchmarks:")
-    for bench in benchmarks:
-        click.echo(f"  - {bench}")
+
+    click.echo("Available benchmarks:\n")
+    for category in categories:
+        click.echo(f"  {category['title']}")
+        click.echo(f"  {'─' * len(category['title'])}")
+        for name, title, description in category["benchmarks"]:
+            click.echo(f"    {name:25s}  {title} — {description}")
+        click.echo()
 
 
 # Add Ollama subcommands

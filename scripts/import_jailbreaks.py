@@ -109,16 +109,29 @@ def get_technique_category(technique: str) -> str:
         return "other"
 
 
-def generate_name(prompt: str, prefix: str, index: int, max_length: int = 100) -> str:
-    """Generate a unique name for a prompt."""
-    # Use first part of prompt, sanitized
-    sanitized = re.sub(r'[^\w\s-]', '', prompt[:max_length])
-    sanitized = re.sub(r'\s+', '_', sanitized.strip())
-    if len(sanitized) > 50:
-        sanitized = sanitized[:50]
-    
-    # Add hash suffix for uniqueness
+def format_technique_for_name(technique: str) -> str:
+    """Format technique as a readable label (e.g. hypothetical_roleplay -> Hypothetical Roleplay)."""
+    return technique.replace("_", " ").title()
+
+
+def generate_name(
+    prompt: str,
+    prefix: str,
+    index: int,
+    technique: Optional[str] = None,
+    max_length: int = 100,
+) -> str:
+    """Generate a human-readable, unique name for a prompt so users know what they selected."""
     prompt_hash = hashlib.md5(prompt.encode()).hexdigest()[:8]
+    # Build a short preview from the first part of the prompt
+    sanitized = re.sub(r'[^\w\s-]', '', prompt[:max_length])
+    sanitized = re.sub(r'\s+', ' ', sanitized.strip())
+    preview = (sanitized[:42] + "…") if len(sanitized) > 42 else sanitized
+    preview = preview.strip() or "prompt"
+
+    if technique and technique != "unknown":
+        label = format_technique_for_name(technique)
+        return f"{label} — {preview}_{prompt_hash}"
     return f"{prefix}_{index}_{prompt_hash}"
 
 
@@ -211,8 +224,10 @@ def import_jailbreak_prompts(
     for i, prompt_data in enumerate(prompts):
         prompt_text = prompt_data['prompt_text']
         
-        # Generate name
-        name = generate_name(prompt_text, "jailbreak", i)
+        # Generate name (human-readable so users know what they selected)
+        name = generate_name(
+            prompt_text, "jailbreak", i, technique=prompt_data["technique"]
+        )
         
         # Check if already exists (by prompt text hash)
         prompt_hash = hashlib.md5(prompt_text.encode()).hexdigest()

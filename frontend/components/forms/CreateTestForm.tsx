@@ -8,6 +8,7 @@ import { toast } from '@/lib/toast'
 import Link from 'next/link'
 import { AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
 import { getSettings } from '@/lib/settings'
+import { getPromptDisplayName } from '@/lib/utils'
 
 export function CreateTestForm() {
   const router = useRouter()
@@ -265,6 +266,10 @@ export function CreateTestForm() {
       const seed = formData.test_config?.seed
       const submitData = {
         ...formData,
+        // For one-shot/multi-shot only one model is used; send patient model for both so backend gets one model under test.
+        ...(isOneShotOrMultiShot
+          ? { doctor_provider: formData.patient_provider, doctor_model: formData.patient_model }
+          : {}),
         // For group therapy, derive the top-level patient fields from the first patient so the
         // backend's required-field validation passes (the full list lives in test_config.patients).
         ...(isGroupTherapyTest && validPatients.length > 0
@@ -342,24 +347,17 @@ export function CreateTestForm() {
             )}
           </>
         ) : (
-          // For one-shot and multi-shot, only need one model (used as patient)
+          // For one-shot and multi-shot, only one model is needed (the model under test). Only update patient
+          // so the default doctor from settings is preserved when switching to Conversation/Group therapy.
           <ModelSelector
             label="Model"
             provider={formData.patient_provider}
             model={formData.patient_model}
             onProviderChange={(provider) =>
-              setFormData((prev) => ({ 
-                ...prev, 
-                patient_provider: provider,
-                doctor_provider: provider,
-              }))
+              setFormData((prev) => ({ ...prev, patient_provider: provider }))
             }
             onModelChange={(model) =>
-              setFormData((prev) => ({ 
-                ...prev, 
-                patient_model: model,
-                doctor_model: model,
-              }))
+              setFormData((prev) => ({ ...prev, patient_model: model }))
             }
           />
         )}
@@ -416,21 +414,31 @@ export function CreateTestForm() {
                 <option value="" className="bg-background text-foreground">
                   Select benchmark
                 </option>
-                {benchmarksData?.benchmarks?.map((benchmark: any) => (
-                  <option
-                    key={benchmark.name}
-                    value={benchmark.name}
-                    className="bg-background text-foreground"
-                  >
-                    {benchmark.name} - {benchmark.description}
-                  </option>
-                ))}
+                {(benchmarksData?.categories?.length ? benchmarksData.categories : [{ id: '_all', title: 'Benchmarks' }]).map((category: any) => {
+                  const allBenchmarks = benchmarksData?.benchmarks ?? []
+                  const categoryBenchmarks = category.id === '_all' ? allBenchmarks : allBenchmarks.filter((b: any) => b.category === category.id)
+                  if (categoryBenchmarks.length === 0) return null
+                  return (
+                    <optgroup key={category.id} label={category.title}>
+                      {categoryBenchmarks.map((benchmark: any) => (
+                        <option
+                          key={benchmark.name}
+                          value={benchmark.name}
+                          className="bg-background text-foreground"
+                        >
+                          {benchmark.title ?? benchmark.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )
+                })}
               </select>
-              {selectedBenchmark && (
-                <p className="text-xs text-muted-foreground">
-                  {benchmarksData?.benchmarks?.find((b: any) => b.name === selectedBenchmark)?.description}
-                </p>
-              )}
+              {selectedBenchmark && (() => {
+                const info = benchmarksData?.benchmarks?.find((b: any) => b.name === selectedBenchmark)
+                return info ? (
+                  <p className="text-xs text-muted-foreground">{info.description}</p>
+                ) : null
+              })()}
             </div>
 
             <div className="space-y-2">
@@ -450,25 +458,42 @@ export function CreateTestForm() {
 
             {benchmarksData?.benchmarks && benchmarksData.benchmarks.length > 0 && (
               <div className="mt-4 rounded-lg border bg-muted/30 p-4">
-                <h3 className="text-sm font-semibold mb-2">Available Benchmarks</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {benchmarksData.benchmarks.map((benchmark: any) => (
-                    <div
-                      key={benchmark.name}
-                      className={`rounded border p-3 text-sm cursor-pointer transition-colors ${
-                        selectedBenchmark === benchmark.name
-                          ? 'bg-primary/10 border-primary'
-                          : 'bg-muted/30 hover:bg-muted/50'
-                      }`}
-                      onClick={() => setSelectedBenchmark(benchmark.name)}
-                    >
-                      <h4 className="font-medium capitalize">{benchmark.name}</h4>
-                      <p className="text-xs text-muted-foreground mt-1">{benchmark.description}</p>
-                    </div>
-                  ))}
+                <h3 className="text-sm font-semibold mb-3">Available Benchmarks</h3>
+                <div className="space-y-4">
+                  {(benchmarksData.categories?.length ? benchmarksData.categories : [{ id: '_all', title: 'Benchmarks' }]).map((category: any) => {
+                    const categoryBenchmarks = category.id === '_all'
+                      ? benchmarksData.benchmarks
+                      : benchmarksData.benchmarks.filter((b: any) => b.category === category.id)
+                    if (categoryBenchmarks.length === 0) return null
+                    return (
+                      <div key={category.id}>
+                        {category.id !== '_all' && (
+                          <div className="mb-2">
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{category.title}</h4>
+                          </div>
+                        )}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {categoryBenchmarks.map((benchmark: any) => (
+                            <div
+                              key={benchmark.name}
+                              className={`rounded border p-3 text-sm cursor-pointer transition-colors ${
+                                selectedBenchmark === benchmark.name
+                                  ? 'bg-primary/10 border-primary'
+                                  : 'bg-muted/30 hover:bg-muted/50'
+                              }`}
+                              onClick={() => setSelectedBenchmark(benchmark.name)}
+                            >
+                              <h4 className="font-medium">{benchmark.title ?? benchmark.name}</h4>
+                              <p className="text-xs text-muted-foreground mt-1">{benchmark.description}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Click on a benchmark above to select it, or choose from the dropdown above.
+                <p className="text-xs text-muted-foreground mt-3">
+                  Click a benchmark to select it, or choose from the dropdown above.
                 </p>
               </div>
             )}
@@ -497,7 +522,7 @@ export function CreateTestForm() {
                 <option value="">Default doctor system prompt</option>
                 {doctorSystemPrompts.map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
-                    {prompt.name}
+                    {getPromptDisplayName(prompt)}
                   </option>
                 ))}
               </select>
@@ -515,7 +540,7 @@ export function CreateTestForm() {
                 <option value="">No system prompt (default behavior)</option>
                 {patientSystemPrompts.map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
-                    {prompt.name}
+                    {getPromptDisplayName(prompt)}
                   </option>
                 ))}
               </select>
@@ -578,7 +603,7 @@ export function CreateTestForm() {
                       .filter((p) => p.prompt_type === 'test_prompt')
                       .map((prompt) => (
                         <option key={prompt.id} value={prompt.id}>
-                          {prompt.name} {prompt.category && `(${prompt.category})`}
+                          {getPromptDisplayName(prompt)} {prompt.category && `(${prompt.category})`}
                         </option>
                       ))}
                   </select>
@@ -676,7 +701,7 @@ export function CreateTestForm() {
                       .filter((p) => p.prompt_type === 'test_prompt')
                       .map((prompt) => (
                         <option key={prompt.id} value={prompt.id}>
-                          {prompt.name} {prompt.category && `(${prompt.category})`}
+                          {getPromptDisplayName(prompt)} {prompt.category && `(${prompt.category})`}
                         </option>
                       ))}
                   </select>
@@ -689,7 +714,7 @@ export function CreateTestForm() {
                       <ul className="list-disc list-inside mt-1">
                         {selectedPromptIds.map((id) => {
                           const prompt = prompts.find((p) => p.id === id)
-                          return <li key={id}>{prompt?.name || `ID: ${id}`}</li>
+                          return <li key={id}>{prompt ? getPromptDisplayName(prompt) : `ID: ${id}`}</li>
                         })}
                       </ul>
                       <p className="mt-2 text-muted-foreground">

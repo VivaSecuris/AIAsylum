@@ -42,65 +42,7 @@ export default function AnalysisPage() {
     }
   }, [runAnalysis.isPending, id, dataRunId, queryClient, assessments.length, testRun?.status])
 
-  if (!id || id === 0) {
-    return (
-      <Layout>
-        <div className="flex h-full items-center justify-center">
-          <div className="text-center">
-            <h2 className="text-xl font-semibold mb-2">Invalid Test Run ID</h2>
-            <p className="text-muted-foreground">Please select a test run to view analysis.</p>
-          </div>
-        </div>
-      </Layout>
-    )
-  }
-
-  if (loadingRun) {
-    return (
-      <Layout>
-        <div className="flex h-full items-center justify-center">
-          <LoadingSpinner size="lg" />
-        </div>
-      </Layout>
-    )
-  }
-
-  const handleRunAnalysis = async (config: AnalysisConfig) => {
-    if (!id) {
-      toast.error('Invalid test run ID')
-      return
-    }
-    try {
-      console.log('Starting analysis with config:', config)
-      const result = await runAnalysis.mutateAsync({
-        testRunId: id,
-        config: {
-          evaluator_provider: config.evaluator_provider,
-          evaluator_model: config.evaluator_model,
-          enable_cot_detection: config.enable_cot_detection,
-          cot_analysis_mode: config.cot_analysis_mode,
-          enable_factuality_check: config.enable_factuality_check,
-          enable_manipulation_analysis: config.enable_manipulation_analysis,
-        },
-      })
-      console.log('Analysis started, result:', result)
-      toast.success('Analysis started! Results will appear when complete.')
-      // Start polling for results
-      queryClient.invalidateQueries({ queryKey: ['assessments', id] })
-    } catch (error: any) {
-      console.error('Failed to run analysis:', error)
-      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run analysis'
-      toast.error(`Failed to run analysis: ${errorMessage}`)
-    }
-  }
-
-  // Chart data for score breakdown
-  const chartData = assessments[0]?.scores
-    ? Object.entries(assessments[0].scores).map(([key, value]) => ({
-        name: key.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase()),
-        value: value * 100,
-      }))
-    : []
+  // All useMemo hooks must be declared before any early returns (Rules of Hooks)
 
   // Score trends across multiple assessments
   const scoreTrendData = useMemo(() => {
@@ -205,6 +147,66 @@ export default function AnalysisPage() {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10)
   }, [assessments, testResults])
+
+  if (!id || id === 0) {
+    return (
+      <Layout>
+        <div className="flex h-full items-center justify-center">
+          <div className="text-center">
+            <h2 className="text-xl font-semibold mb-2">Invalid Test Run ID</h2>
+            <p className="text-muted-foreground">Please select a test run to view analysis.</p>
+          </div>
+        </div>
+      </Layout>
+    )
+  }
+
+  if (loadingRun) {
+    return (
+      <Layout>
+        <div className="flex h-full items-center justify-center">
+          <LoadingSpinner size="lg" />
+        </div>
+      </Layout>
+    )
+  }
+
+  const handleRunAnalysis = async (config: AnalysisConfig) => {
+    if (!id) {
+      toast.error('Invalid test run ID')
+      return
+    }
+    try {
+      console.log('Starting analysis with config:', config)
+      const result = await runAnalysis.mutateAsync({
+        testRunId: id,
+        config: {
+          evaluator_provider: config.evaluator_provider,
+          evaluator_model: config.evaluator_model,
+          enable_cot_detection: config.enable_cot_detection,
+          cot_analysis_mode: config.cot_analysis_mode,
+          enable_factuality_check: config.enable_factuality_check,
+          enable_manipulation_analysis: config.enable_manipulation_analysis,
+        },
+      })
+      console.log('Analysis started, result:', result)
+      toast.success('Analysis started! Results will appear when complete.')
+      // Start polling for results
+      queryClient.invalidateQueries({ queryKey: ['assessments', id] })
+    } catch (error: any) {
+      console.error('Failed to run analysis:', error)
+      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run analysis'
+      toast.error(`Failed to run analysis: ${errorMessage}`)
+    }
+  }
+
+  // Chart data for score breakdown
+  const chartData = assessments[0]?.scores
+    ? Object.entries(assessments[0].scores).map(([key, value]) => ({
+        name: key.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase()),
+        value: value * 100,
+      }))
+    : []
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
 

@@ -5,6 +5,7 @@ import { toast } from '@/lib/toast'
 import { apiClient } from '@/lib/api'
 import { Plus, X, AlertTriangle } from 'lucide-react'
 import Link from 'next/link'
+import { getPromptDisplayName } from '@/lib/utils'
 
 const PROVIDERS = ['openai', 'anthropic', 'google', 'ollama']
 
@@ -308,31 +309,51 @@ export function SuiteForm() {
 
         {/* Benchmarks Selection (only show if benchmark test type is selected) */}
         {isBenchmarkTest && (
-          <div className="space-y-2">
+          <div className="space-y-4">
             <label className="text-sm font-medium">Benchmarks</label>
             {benchmarksData?.benchmarks && benchmarksData.benchmarks.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {benchmarksData.benchmarks.map((benchmark: any) => (
-                  <label
-                    key={benchmark.name}
-                    className={`flex items-start gap-2 rounded-lg border p-3 cursor-pointer transition-colors ${
-                      selectedBenchmarks.includes(benchmark.name)
-                        ? 'bg-primary/10 border-primary'
-                        : 'bg-muted/30 hover:bg-muted/50'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedBenchmarks.includes(benchmark.name)}
-                      onChange={() => toggleBenchmark(benchmark.name)}
-                      className="mt-1 rounded"
-                    />
-                    <div>
-                      <div className="font-medium text-sm capitalize">{benchmark.name}</div>
-                      <div className="text-xs text-muted-foreground">{benchmark.description}</div>
+              <div className="space-y-5">
+                {(benchmarksData.categories?.length ? benchmarksData.categories : [{ id: '_all', title: 'Benchmarks' }]).map((category: any) => {
+                  const categoryBenchmarks = category.id === '_all'
+                    ? benchmarksData!.benchmarks
+                    : benchmarksData!.benchmarks.filter((b: any) => b.category === category.id)
+                  if (categoryBenchmarks.length === 0) return null
+                  return (
+                    <div key={category.id}>
+                      {category.id !== '_all' && (
+                        <div className="mb-2">
+                          <h4 className="text-sm font-semibold">{category.title}</h4>
+                          {category.description && (
+                            <p className="text-xs text-muted-foreground">{category.description}</p>
+                          )}
+                        </div>
+                      )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {categoryBenchmarks.map((benchmark: any) => (
+                          <label
+                            key={benchmark.name}
+                            className={`flex items-start gap-2 rounded-lg border p-3 cursor-pointer transition-colors ${
+                              selectedBenchmarks.includes(benchmark.name)
+                                ? 'bg-primary/10 border-primary'
+                                : 'bg-muted/30 hover:bg-muted/50'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedBenchmarks.includes(benchmark.name)}
+                              onChange={() => toggleBenchmark(benchmark.name)}
+                              className="mt-1 rounded"
+                            />
+                            <div>
+                              <div className="font-medium text-sm">{benchmark.title ?? benchmark.name}</div>
+                              <div className="text-xs text-muted-foreground">{benchmark.description}</div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
                     </div>
-                  </label>
-                ))}
+                  )
+                })}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">Loading benchmarks...</p>
@@ -508,7 +529,7 @@ export function SuiteForm() {
                       .filter((p) => p.prompt_type === 'test_prompt')
                       .map((prompt) => (
                         <option key={prompt.id} value={prompt.id}>
-                          {prompt.name} {prompt.category && `(${prompt.category})`}
+                          {getPromptDisplayName(prompt)} {prompt.category && `(${prompt.category})`}
                         </option>
                       ))}
                   </select>
@@ -580,7 +601,7 @@ export function SuiteForm() {
                       .filter((p) => p.prompt_type === 'test_prompt')
                       .map((prompt) => (
                         <option key={prompt.id} value={prompt.id}>
-                          {prompt.name} {prompt.category && `(${prompt.category})`}
+                          {getPromptDisplayName(prompt)} {prompt.category && `(${prompt.category})`}
                         </option>
                       ))}
                   </select>
@@ -637,7 +658,7 @@ export function SuiteForm() {
                 <option value="">Default doctor system prompt</option>
                 {doctorSystemPrompts.map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
-                    {prompt.name}
+                    {getPromptDisplayName(prompt)}
                   </option>
                 ))}
               </select>
@@ -655,7 +676,7 @@ export function SuiteForm() {
                 <option value="">No system prompt (default behavior)</option>
                 {patientSystemPrompts.map((prompt) => (
                   <option key={prompt.id} value={prompt.id}>
-                    {prompt.name}
+                    {getPromptDisplayName(prompt)}
                   </option>
                 ))}
               </select>
