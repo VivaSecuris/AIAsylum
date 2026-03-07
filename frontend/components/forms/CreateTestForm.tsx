@@ -282,6 +282,12 @@ export function CreateTestForm() {
         },
         variables: Object.keys(variableValues).length > 0 ? variableValues : undefined,
       }
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[CreateTestForm] Submitting with models:', {
+          doctor: `${submitData.doctor_provider}/${submitData.doctor_model}`,
+          patient: `${submitData.patient_provider}/${submitData.patient_model}`,
+        })
+      }
       const result = await createTestRun.mutateAsync(submitData)
       
       // If auto-analysis is enabled, inform the user
@@ -542,14 +548,14 @@ export function CreateTestForm() {
                       setSelectedPromptId(newPromptId)
                       // Clear custom prompt when selecting from library
                       if (newPromptId) {
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
                           test_config: {
-                            ...formData.test_config,
+                            ...prev.test_config,
                             prompt: undefined,
                             prompts: undefined,
                           },
-                        })
+                        }))
                         // Update URL to reflect selection (but don't push to avoid navigation)
                         router.replace({
                           pathname: router.pathname,
@@ -591,14 +597,14 @@ export function CreateTestForm() {
                       value={formData.test_config?.prompt || ''}
                       onChange={(e) => {
                         const value = e.target.value || undefined
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
                           test_config: {
-                            ...formData.test_config,
+                            ...prev.test_config,
                             prompt: value,
-                            prompts: undefined, // Clear prompts array for one-shot
+                            prompts: undefined,
                           },
-                        })
+                        }))
                         // Clear library selection when entering custom prompt
                         if (value) {
                           setSelectedPromptId(undefined)
@@ -655,13 +661,13 @@ export function CreateTestForm() {
                       setSelectedPromptIds(selectedIds)
                       // Clear custom prompts when selecting from library
                       if (selectedIds.length > 0) {
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
                           test_config: {
-                            ...formData.test_config,
+                            ...prev.test_config,
                             prompts: undefined,
                           },
-                        })
+                        }))
                       }
                     }}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -705,13 +711,13 @@ export function CreateTestForm() {
                       : ''}
                     onChange={(e) => {
                       const lines = e.target.value.split('\n').filter(l => l.trim())
-                      setFormData({
-                        ...formData,
+                      setFormData((prev) => ({
+                        ...prev,
                         test_config: {
-                          ...formData.test_config,
+                          ...prev.test_config,
                           prompts: lines.length > 0 ? lines : undefined,
                         },
-                      })
+                      }))
                       // Clear library selection when entering custom prompts
                       if (lines.length > 0) {
                         setSelectedPromptIds([])
@@ -871,13 +877,13 @@ export function CreateTestForm() {
                   value={formData.test_config?.temperature ?? 0.7}
                   onChange={(e) => {
                     const v = e.target.value === '' ? undefined : parseFloat(e.target.value)
-                    setFormData({
-                      ...formData,
+                    setFormData((prev) => ({
+                      ...prev,
                       test_config: {
-                        ...formData.test_config,
+                        ...prev.test_config,
                         temperature: v,
                       },
-                    })
+                    }))
                   }}
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
@@ -893,13 +899,13 @@ export function CreateTestForm() {
                   value={formData.test_config?.seed ?? ''}
                   onChange={(e) => {
                     const v = e.target.value === '' ? undefined : parseInt(e.target.value, 10)
-                    setFormData({
-                      ...formData,
+                    setFormData((prev) => ({
+                      ...prev,
                       test_config: {
-                        ...formData.test_config,
+                        ...prev.test_config,
                         seed: v,
                       },
-                    })
+                    }))
                   }}
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
@@ -915,13 +921,13 @@ export function CreateTestForm() {
                   max="100"
                   value={formData.test_config?.num_messages || 10}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
+                    setFormData((prev) => ({
+                      ...prev,
                       test_config: {
-                        ...formData.test_config,
+                        ...prev.test_config,
                         num_messages: parseInt(e.target.value),
                       },
-                    })
+                    }))
                   }
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   disabled={Array.isArray(formData.test_config?.prompts) && formData.test_config.prompts.length > 0}
@@ -940,13 +946,13 @@ export function CreateTestForm() {
                   max="50"
                   value={formData.test_config?.max_turns || 10}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
+                    setFormData((prev) => ({
+                      ...prev,
                       test_config: {
-                        ...formData.test_config,
+                        ...prev.test_config,
                         max_turns: parseInt(e.target.value),
                       },
-                    })
+                    }))
                   }
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
@@ -964,13 +970,13 @@ export function CreateTestForm() {
                       type="checkbox"
                       checked={formData.test_config?.enable_doctor_cot || false}
                       onChange={(e) =>
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
                           test_config: {
-                            ...formData.test_config,
+                            ...prev.test_config,
                             enable_doctor_cot: e.target.checked,
                           },
-                        })
+                        }))
                       }
                       className="rounded"
                     />
@@ -982,13 +988,13 @@ export function CreateTestForm() {
                     type="checkbox"
                     checked={formData.test_config?.enable_patient_cot || false}
                     onChange={(e) =>
-                      setFormData({
-                        ...formData,
+                      setFormData((prev) => ({
+                        ...prev,
                         test_config: {
-                          ...formData.test_config,
+                          ...prev.test_config,
                           enable_patient_cot: e.target.checked,
                         },
-                      })
+                      }))
                     }
                     className="rounded"
                   />
@@ -1006,16 +1012,16 @@ export function CreateTestForm() {
                   multiple
                   value={formData.test_config?.jailbreak_techniques || []}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
+                    setFormData((prev) => ({
+                      ...prev,
                       test_config: {
-                        ...formData.test_config,
+                        ...prev.test_config,
                         jailbreak_techniques: Array.from(
                           e.target.selectedOptions,
                           (option) => option.value
                         ),
                       },
-                    })
+                    }))
                   }
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >

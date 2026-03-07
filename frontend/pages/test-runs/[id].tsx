@@ -22,9 +22,13 @@ export default function TestRunDetailPage() {
 
   const queryClient = useQueryClient()
   const { data: testRun, isLoading: loadingRun, error: runError } = useTestRun(testRunId)
-  const { data: conversation = [], isLoading: loadingConv, error: convError } = useConversation(testRunId)
-  const { data: results = [], isLoading: loadingResults, error: resultsError } = useTestResults(testRunId)
-  const { data: assessments = [], isLoading: loadingAssessments } = useAssessments(testRunId)
+  // For analysis runs, conversation/results/assessments belong to the source run, not the analysis run itself
+  const dataRunId: number = (testRun?.test_type === 'analysis' && testRun?.meta_data?.source_test_run_id)
+    ? testRun.meta_data.source_test_run_id
+    : testRunId
+  const { data: conversation = [], isLoading: loadingConv, error: convError } = useConversation(dataRunId)
+  const { data: results = [], isLoading: loadingResults, error: resultsError } = useTestResults(dataRunId)
+  const { data: assessments = [], isLoading: loadingAssessments } = useAssessments(dataRunId)
   const runAnalysis = useRunAnalysis()
   const startTestRun = useStartTestRun()
   const pauseTestRun = usePauseTestRun()
@@ -66,6 +70,14 @@ export default function TestRunDetailPage() {
     }
   }, [testRun?.status, activeTab])
 
+  // When Analysis tab is hidden (test not completed and not an analysis run), switch to overview if we're on Analysis
+  const showAnalysisTab = testRun?.status === 'completed' || testRun?.test_type === 'analysis'
+  useEffect(() => {
+    if (!showAnalysisTab && activeTab === 'analysis') {
+      setActiveTab('overview')
+    }
+  }, [showAnalysisTab, activeTab])
+
   // Auto-scroll to bottom when new messages arrive in Live tab
   useEffect(() => {
     if (activeTab === 'live' && conversation.length > 0) {
@@ -84,12 +96,12 @@ export default function TestRunDetailPage() {
     if (testRun?.status === 'running') {
       // Poll more frequently for live updates - refetch immediately to get latest data
       const interval = setInterval(() => {
-        queryClient.refetchQueries({ queryKey: ['conversation', testRunId] })
-        queryClient.refetchQueries({ queryKey: ['test-results', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['conversation', dataRunId] })
+        queryClient.refetchQueries({ queryKey: ['test-results', dataRunId] })
       }, 1000) // Poll every 1 second for live updates
       return () => clearInterval(interval)
     }
-  }, [testRun?.status, testRunId, queryClient])
+  }, [testRun?.status, dataRunId, queryClient])
   
   // Also refresh when progress events indicate activity
   useEffect(() => {
@@ -100,7 +112,7 @@ export default function TestRunDetailPage() {
       if (progress.event_type === 'analysis_started') {
         console.log('[TestRunDetailPage] Analysis started event')
         setAnalysisProgress({ step: 'started', message: progress.message || 'Analysis started...' })
-        queryClient.refetchQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['assessments', dataRunId] })
         queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
       } else if (progress.event_type === 'analysis_progress') {
         const data = progress.data || {}
@@ -109,12 +121,12 @@ export default function TestRunDetailPage() {
           step: data.step || 'progress', 
           message: data.message || progress.message || 'Analysis in progress...' 
         })
-        queryClient.refetchQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['assessments', dataRunId] })
         queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
       } else if (progress.event_type === 'analysis_completed') {
         console.log('[TestRunDetailPage] Analysis completed event')
         setAnalysisProgress(null) // Clear progress when done
-        queryClient.refetchQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.refetchQueries({ queryKey: ['assessments', dataRunId] })
         queryClient.refetchQueries({ queryKey: ['test-run', testRunId] })
         toast.success(progress.message || 'Analysis completed!')
       }
@@ -124,14 +136,14 @@ export default function TestRunDetailPage() {
         // Refresh conversation and results when we get any progress update
         // Especially for conversation_turn events, refetch immediately
         if (progress.event_type === 'conversation_turn') {
-          queryClient.refetchQueries({ queryKey: ['conversation', testRunId] })
+          queryClient.refetchQueries({ queryKey: ['conversation', dataRunId] })
         } else {
-          queryClient.invalidateQueries({ queryKey: ['conversation', testRunId] })
+          queryClient.invalidateQueries({ queryKey: ['conversation', dataRunId] })
         }
-        queryClient.invalidateQueries({ queryKey: ['test-results', testRunId] })
+        queryClient.invalidateQueries({ queryKey: ['test-results', dataRunId] })
       }
     }
-  }, [progress, testRun?.status, testRunId, queryClient])
+  }, [progress, testRun?.status, testRunId, dataRunId, queryClient])
 
   // Poll for assessments when analysis might be running
   useEffect(() => {
@@ -139,14 +151,14 @@ export default function TestRunDetailPage() {
     if (runAnalysis.isPending || analysisProgress || (assessments.length === 0 && testRun?.status === 'completed')) {
       // Poll more aggressively when analysis is pending or in progress
       interval = setInterval(() => {
-        queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
+        queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
         queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
       }, 2000) // Check every 2 seconds
     }
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [runAnalysis.isPending, analysisProgress, testRunId, queryClient, assessments.length, testRun?.status])
+  }, [runAnalysis.isPending, analysisProgress, testRunId, dataRunId, queryClient, assessments.length, testRun?.status])
 
   const handleRunAnalysis = async (config: AnalysisConfig) => {
     if (!testRunId) {
@@ -188,7 +200,7 @@ export default function TestRunDetailPage() {
       }
       
       // Start polling for results
-      queryClient.invalidateQueries({ queryKey: ['assessments', testRunId] })
+      queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
     } catch (error: any) {
       console.error('Failed to run analysis:', error)
       const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Failed to run analysis'
@@ -385,13 +397,14 @@ export default function TestRunDetailPage() {
             </h1>
             {isAnalysisRun && sourceTestRunId && (
               <p className="text-sm text-muted-foreground mt-1">
-                Analyzing{' '}
+                Analysis of{' '}
                 <Link 
                   href={`/test-runs/${sourceTestRunId}`}
                   className="text-primary hover:underline"
                 >
                   test run #{sourceTestRunId}
                 </Link>
+                {' '}— conversation, results, and assessment below are from that run
               </p>
             )}
             <div className="mt-2 flex items-center gap-3">
@@ -529,17 +542,20 @@ export default function TestRunDetailPage() {
             >
               Results {testRun.status === 'running' && results.length > 0 && `(${results.length})`}
             </Tabs.Trigger>
-            <Tabs.Trigger
-              value="analysis"
-              className="px-4 py-2 text-sm font-medium data-[state=active]:border-b-2 data-[state=active]:border-primary"
-            >
-              Analysis
-            </Tabs.Trigger>
+            {/* Only show Analysis tab after test is completed (or when this run is the analysis run) */}
+            {showAnalysisTab && (
+              <Tabs.Trigger
+                value="analysis"
+                className="px-4 py-2 text-sm font-medium data-[state=active]:border-b-2 data-[state=active]:border-primary"
+              >
+                Analysis
+              </Tabs.Trigger>
+            )}
           </Tabs.List>
 
           <Tabs.Content value="overview" className="space-y-4">
-            {/* Analysis Progress Indicator - Show when analysis is running */}
-            {(analysisProgress || (isAnalysisRun && testRun.status === 'running')) && (
+            {/* Analysis Progress Indicator - Only when this run is the analysis run and it's running, or user just triggered analysis */}
+            {((isAnalysisRun && testRun.status === 'running') || (testRun.status === 'completed' && analysisProgress)) && (
               <div className="rounded-lg border bg-purple-50 dark:bg-purple-950 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -824,49 +840,33 @@ export default function TestRunDetailPage() {
                       const patientName = turn.metadata?.patient_name
                       const patientModel = turn.metadata?.patient_model
                       const reasoning = turn.metadata?.reasoning
-                      
+                      const hasPrompt = turn.prompt && turn.prompt.trim().length > 0
+                      // Context is what this speaker is replying to (the other party). Label the other speaker.
+                      const replyingToLabel = isDoctor ? '🤖 Patient' : '👨‍⚕️ Doctor'
+
                       return (
-                        <div key={turn.id} className="space-y-2">
-                          {/* Prompt Message */}
-                          {turn.prompt && (
-                            <div className={`flex ${isDoctor ? 'justify-end' : 'justify-start'}`}>
+                        <div key={turn.id} className="space-y-1">
+                          {/* Compact context: what this AI is responding to (no duplicate full message) */}
+                          {hasPrompt && (
+                            <div className="text-xs text-muted-foreground italic border-l-2 border-muted pl-2 ml-2">
+                              <span className="font-medium">Replying to {replyingToLabel}: </span>
+                              <span>{turn.prompt.length > 180 ? `${turn.prompt.substring(0, 180)}…` : turn.prompt}</span>
+                            </div>
+                          )}
+                          {/* Main message: one bubble per turn */}
+                          {turn.response && (
+                            <div className={`flex ${isDoctor ? 'justify-start' : 'justify-end'}`}>
                               <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
-                                isDoctor 
-                                  ? 'bg-blue-500 text-white' 
-                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                                isDoctor
+                                  ? 'bg-blue-500 text-white'
+                                  : 'bg-green-500 text-white'
                               }`}>
                                 <div className="flex items-center gap-2 mb-1">
                                   <span className="text-xs font-semibold opacity-90">
-                                    {isDoctor ? '👨‍⚕️ Doctor' : patientName ? `🤖 ${patientName}` : '🤖 Patient'}
+                                    {isDoctor ? '👨‍⚕️ Doctor' : (patientName ? `🤖 ${patientName}${patientModel ? ` (${patientModel})` : ''}` : '🤖 Patient')}
                                   </span>
                                   <span className="text-xs opacity-75">
                                     Turn {turn.turn_number}
-                                  </span>
-                                </div>
-                                <p className="text-sm whitespace-pre-wrap">{turn.prompt}</p>
-                                {turn.created_at && (
-                                  <p className="text-xs opacity-75 mt-1">
-                                    {new Date(turn.created_at).toLocaleTimeString()}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          
-                          {/* Response Message */}
-                          {turn.response && (
-                            <div className={`flex ${!isDoctor ? 'justify-end' : 'justify-start'}`}>
-                              <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
-                                !isDoctor 
-                                  ? 'bg-green-500 text-white' 
-                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
-                              }`}>
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="text-xs font-semibold opacity-90">
-                                    {!isDoctor ? (patientName ? `🤖 ${patientName}${patientModel ? ` (${patientModel})` : ''}` : '🤖 Patient') : '👨‍⚕️ Doctor'}
-                                  </span>
-                                  <span className="text-xs opacity-75">
-                                    Response
                                   </span>
                                 </div>
                                 {reasoning && (

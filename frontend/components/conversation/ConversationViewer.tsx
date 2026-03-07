@@ -7,19 +7,6 @@ interface ConversationViewerProps {
 }
 
 export function ConversationViewer({ turns }: ConversationViewerProps) {
-  // Debug logging
-  console.log('[ConversationViewer] Received turns:', turns?.length || 0, turns)
-  if (turns && turns.length > 0) {
-    console.log('[ConversationViewer] First turn sample:', {
-      id: turns[0].id,
-      speaker: turns[0].speaker,
-      hasPrompt: !!turns[0].prompt,
-      hasResponse: !!turns[0].response,
-      promptLength: turns[0].prompt?.length || 0,
-      responseLength: turns[0].response?.length || 0,
-    })
-  }
-  
   if (!turns || turns.length === 0) {
     return (
       <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
@@ -45,33 +32,29 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
         const patientName = turn.metadata?.patient_name
         const patientId = turn.metadata?.patient_id
         const patientModel = turn.metadata?.patient_model
-        console.log('[ConversationViewer] Turn:', turn.id, 'speaker:', turn.speaker, 'prompt:', turn.prompt?.substring(0, 50), 'response:', turn.response?.substring(0, 50))
-        
-        // Determine if this is a group therapy patient response
+
         const isGroupTherapyPatient = turn.speaker === 'patient' && patientName !== undefined
-        
-        // Get color for this patient (if group therapy)
         const patientColorIndex = patientId !== undefined ? (patientId % patientColors.length) : 0
         const patientColorClass = isGroupTherapyPatient ? patientColors[patientColorIndex] : 'bg-gray-50 border-gray-200 dark:bg-gray-900 dark:border-gray-700'
-        
+
         const isDoctor = turn.speaker === 'doctor'
         const hasPrompt = turn.prompt && turn.prompt.trim().length > 0
         const hasResponse = turn.response && turn.response.trim().length > 0
-        
-        // The main content is the speaker's response
-        // The prompt is what they're responding to (context)
-        
+
+        // Context = what this speaker is replying to (the other party's message). Label with the other speaker.
+        const replyingToLabel = isDoctor ? '🤖 Patient' : '👨‍⚕️ Doctor'
+
         return (
-          <div key={turn.id} className="space-y-2">
-            {/* Context/Prompt (what the speaker is responding to) - shown in smaller, muted style */}
+          <div key={turn.id} className="space-y-1">
+            {/* Compact context: what this AI is responding to (other speaker's message) */}
             {hasPrompt && (
               <div className="ml-4 text-xs text-muted-foreground italic border-l-2 border-muted pl-2">
-                <span className="font-medium">Context: </span>
-                <span>{turn.prompt.substring(0, 200)}{turn.prompt.length > 200 ? '...' : ''}</span>
+                <span className="font-medium">Replying to {replyingToLabel}: </span>
+                <span>{turn.prompt.length > 180 ? `${turn.prompt.substring(0, 180)}…` : turn.prompt}</span>
               </div>
             )}
-            
-            {/* Main Message - The speaker's response */}
+
+            {/* Main message: this speaker's response (one bubble per turn, no duplicate) */}
             {hasResponse && (
               <div
                 className={cn(
@@ -83,8 +66,8 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold capitalize">
-                    {isDoctor 
-                      ? '👨‍⚕️ Doctor' 
+                    {isDoctor
+                      ? '👨‍⚕️ Doctor'
                       : isGroupTherapyPatient
                         ? `🤖 ${patientName}${patientModel ? ` (${patientModel})` : ''}`
                         : '🤖 Patient'}
@@ -96,8 +79,7 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
                 <p className="text-sm whitespace-pre-wrap text-foreground">{turn.response}</p>
               </div>
             )}
-            
-            {/* Fallback if neither prompt nor response exists */}
+
             {!hasPrompt && !hasResponse && (
               <div className="rounded-lg border bg-card p-4 text-center text-muted-foreground">
                 Turn {turn.turn_number}: No content available

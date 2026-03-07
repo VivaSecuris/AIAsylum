@@ -18,8 +18,12 @@ export default function AnalysisPage() {
 
   const queryClient = useQueryClient()
   const { data: testRun, isLoading: loadingRun } = useTestRun(id)
-  const { data: assessments = [], isLoading } = useAssessments(id)
-  const { data: testResults = [] } = useTestResults(id)
+  // For analysis runs, assessments and results belong to the source run
+  const dataRunId: number = (testRun?.test_type === 'analysis' && testRun?.meta_data?.source_test_run_id)
+    ? testRun.meta_data.source_test_run_id
+    : id
+  const { data: assessments = [], isLoading } = useAssessments(dataRunId)
+  const { data: testResults = [] } = useTestResults(dataRunId)
   const runAnalysis = useRunAnalysis()
   const [showAnalysisDialog, setShowAnalysisDialog] = useState(false)
 
@@ -29,14 +33,14 @@ export default function AnalysisPage() {
     if (runAnalysis.isPending || (assessments.length === 0 && testRun?.status === 'completed')) {
       // Poll more aggressively when analysis is pending
       interval = setInterval(() => {
-        queryClient.invalidateQueries({ queryKey: ['assessments', id] })
+        queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
         queryClient.invalidateQueries({ queryKey: ['test-run', id] })
       }, 2000) // Check every 2 seconds
     }
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [runAnalysis.isPending, id, queryClient, assessments.length, testRun?.status])
+  }, [runAnalysis.isPending, id, dataRunId, queryClient, assessments.length, testRun?.status])
 
   if (!id || id === 0) {
     return (

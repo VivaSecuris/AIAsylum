@@ -43,9 +43,8 @@ export function ModelSelector({
           ? (raw as { models: string[] }).models
           : []
       setAvailableModels(list)
-      if (model && list.length > 0 && !list.includes(model)) {
-        onModelChange('')
-      }
+      // Do NOT clear selection when list loads/refreshes - that was wiping the user's
+      // model choice. Only clear when switching provider (handled in useEffect below).
     } catch (e: any) {
       setAvailableModels([])
       const detail = e?.response?.data?.detail
@@ -55,7 +54,7 @@ export function ModelSelector({
     } finally {
       setOllamaLoading(false)
     }
-  }, [model, onModelChange])
+  }, [])
 
   useEffect(() => {
     if (provider === 'ollama') {
@@ -67,7 +66,7 @@ export function ModelSelector({
       }
       setOllamaError(null)
     }
-  }, [provider, fetchOllamaModels, model, onModelChange])
+  }, [provider])
 
   return (
     <div className="space-y-2">
