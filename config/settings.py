@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
+    ollama_request_timeout: int = 1800  # Seconds (default 30 min); large models can be slow
     
     # Database
     database_url: str = "sqlite:///./data/aiasylum.db"

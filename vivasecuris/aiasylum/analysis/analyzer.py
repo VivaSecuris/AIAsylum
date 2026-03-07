@@ -949,8 +949,13 @@ Be specific and cite examples from the conversation."""
                 logger.info(f"AI-based COT analysis completed using {evaluator_model.model_name}")
                 
             except Exception as e:
-                logger.error(f"AI-based COT analysis failed: {str(e)}", exc_info=True)
-                ai_analysis = f"AI analysis failed: {str(e)}"
+                msg = str(e)
+                # Log without full traceback for known/expected failures (timeout, Ollama errors)
+                if "timed out" in msg or "Ollama" in msg or "RuntimeError" in type(e).__name__:
+                    logger.warning("AI-based COT analysis failed: %s", msg)
+                else:
+                    logger.error("AI-based COT analysis failed: %s", msg, exc_info=True)
+                ai_analysis = f"AI analysis failed: {msg}"
         
         return {
             "cot_detected": cot_detected_basic,

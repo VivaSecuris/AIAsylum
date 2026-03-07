@@ -23,13 +23,14 @@ class OllamaModel(BaseModel):
         super().__init__(model_name, "ollama", temperature=temperature, max_tokens=max_tokens, **kwargs)
         self.base_url = base_url or settings.ollama_base_url
         self._client = None
-    
+        self._timeout = float(getattr(settings, "ollama_request_timeout", 1800))
+
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create async HTTP client."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
-                timeout=httpx.Timeout(300.0, connect=10.0),
+                timeout=httpx.Timeout(self._timeout, connect=10.0),
             )
         return self._client
     
@@ -53,7 +54,7 @@ class OllamaModel(BaseModel):
     async def pull_model(self) -> Dict[str, Any]:
         """Pull the model from Ollama if not available."""
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/api/pull",
@@ -125,7 +126,7 @@ class OllamaModel(BaseModel):
             }
             
             try:
-                response = await client.post("/api/chat", json=request_data, timeout=300.0)
+                response = await client.post("/api/chat", json=request_data, timeout=self._timeout)
                 response.raise_for_status()
                 data = response.json()
                 
@@ -145,12 +146,14 @@ class OllamaModel(BaseModel):
                 )
             except httpx.ConnectError as e:
                 raise RuntimeError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running? Error: {str(e)}")
+            except httpx.ReadTimeout:
+                raise RuntimeError(f"Ollama request timed out ({int(self._timeout)}s). The model may be overloaded or the response took too long.")
             except httpx.HTTPStatusError as e:
                 error_detail = "Unknown error"
                 try:
                     error_data = e.response.json()
                     error_detail = error_data.get("error", str(e))
-                except:
+                except Exception:
                     error_detail = str(e)
                 raise RuntimeError(f"Ollama API error: {error_detail}")
             except Exception as e:
@@ -185,7 +188,7 @@ class OllamaModel(BaseModel):
         }
         
         try:
-            response = await client.post("/api/generate", json=request_data, timeout=300.0)
+            response = await client.post("/api/generate", json=request_data, timeout=self._timeout)
             response.raise_for_status()
             data = response.json()
             
@@ -206,12 +209,14 @@ class OllamaModel(BaseModel):
             )
         except httpx.ConnectError as e:
             raise RuntimeError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running? Error: {str(e)}")
+        except httpx.ReadTimeout:
+            raise RuntimeError(f"Ollama request timed out ({int(self._timeout)}s). The model may be overloaded or the response took too long.")
         except httpx.HTTPStatusError as e:
             error_detail = "Unknown error"
             try:
                 error_data = e.response.json()
                 error_detail = error_data.get("error", str(e))
-            except:
+            except Exception:
                 error_detail = str(e)
             raise RuntimeError(f"Ollama API error: {error_detail}")
     
@@ -340,8 +345,9 @@ class OllamaProvider:
     
     async def pull_model(self, model_name: str) -> Dict[str, Any]:
         """Pull a model from Ollama."""
+        timeout = float(getattr(settings, "ollama_request_timeout", 1800))
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}/api/pull",
