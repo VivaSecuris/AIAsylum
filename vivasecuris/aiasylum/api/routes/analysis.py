@@ -25,6 +25,7 @@ class AnalysisRequest(BaseModel):
     enable_manipulation_analysis: bool = False
     evaluator_provider: Optional[str] = None
     evaluator_model: Optional[str] = None
+    evaluator_system_prompt_id: Optional[int] = None
 
 
 async def _run_analysis_background(
@@ -37,6 +38,7 @@ async def _run_analysis_background(
     evaluator_provider: Optional[str],
     evaluator_model: Optional[str],
     analysis_test_run_id: Optional[int] = None,
+    evaluator_system_prompt_id: Optional[int] = None,
 ):
     """Run analysis in background task."""
     logger.info(f"Starting background analysis for test run {test_run_id}")
@@ -55,6 +57,7 @@ async def _run_analysis_background(
             evaluator_provider=evaluator_provider,
             evaluator_model=evaluator_model,
             analysis_test_run_id=analysis_test_run_id,
+            evaluator_system_prompt_id=evaluator_system_prompt_id,
         )
         logger.info(f"Analysis completed successfully for test run {test_run_id}, assessment ID: {assessment.id}")
     except Exception as e:
@@ -126,6 +129,7 @@ async def analyze_test_run(
                     "enable_manipulation_analysis": request.enable_manipulation_analysis,
                     "evaluator_provider": request.evaluator_provider,
                     "evaluator_model": request.evaluator_model,
+                    "evaluator_system_prompt_id": request.evaluator_system_prompt_id,
                 },
                 "description": f"Analysis of test run #{test_run_id}",
             },
@@ -151,6 +155,7 @@ async def analyze_test_run(
             request.evaluator_provider,
             request.evaluator_model,
             analysis_test_run.id,  # Pass the analysis test run ID
+            request.evaluator_system_prompt_id,
         )
         logger.info(f"Background task added for test run {test_run_id}, analysis test run {analysis_test_run.id}")
     except Exception as e:
@@ -258,6 +263,7 @@ async def analyze_unanalyzed(
             request.evaluator_provider,
             request.evaluator_model,
             analysis_id,
+            request.evaluator_system_prompt_id,
         )
 
     started_ids = [source_id for source_id, _ in created]

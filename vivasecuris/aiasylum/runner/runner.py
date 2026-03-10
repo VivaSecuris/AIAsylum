@@ -1140,6 +1140,7 @@ class TestRunner:
                                         "cot_analysis_mode": analysis_config.get("cot_analysis_mode", "full"),
                                         "enable_factuality_check": analysis_config.get("enable_factuality_check", False),
                                         "enable_manipulation_analysis": analysis_config.get("enable_manipulation_analysis", False),
+                                        "evaluator_system_prompt_id": analysis_config.get("evaluator_system_prompt_id"),
                                         "evaluator_provider": evaluator_provider,
                                         "evaluator_model": evaluator_model,
                                     },
@@ -1169,6 +1170,7 @@ class TestRunner:
                             evaluator_provider=evaluator_provider,
                             evaluator_model=evaluator_model,
                             analysis_test_run_id=analysis_test_run_id,
+                            evaluator_system_prompt_id=analysis_config.get("evaluator_system_prompt_id"),
                         ))
                         logger.info(f"Auto-analysis task created for test run {test_run_id}, analysis test run {analysis_test_run_id}")
                     except Exception as e:

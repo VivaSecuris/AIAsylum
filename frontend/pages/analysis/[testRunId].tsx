@@ -187,6 +187,7 @@ export default function AnalysisPage() {
           cot_analysis_mode: config.cot_analysis_mode,
           enable_factuality_check: config.enable_factuality_check,
           enable_manipulation_analysis: config.enable_manipulation_analysis,
+          evaluator_system_prompt_id: config.evaluator_system_prompt_id,
         },
       })
       console.log('Analysis started, result:', result)

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class LLMEvaluator:
     """Evaluates conversations using LLM to extract dimensional scores."""
     
-    def __init__(self, model: BaseModel):
+    def __init__(self, model: BaseModel, system_prompt: Optional[str] = None):
         """
         Initialize the evaluator.
         
@@ -27,7 +27,7 @@ class LLMEvaluator:
             model: The LLM model to use for evaluation
         """
         self.model = model
-        self.system_prompt = get_evaluation_system_prompt()
+        self.system_prompt = system_prompt or get_evaluation_system_prompt()
     
     async def evaluate_conversation(
         self,

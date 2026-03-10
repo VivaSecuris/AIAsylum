@@ -50,8 +50,12 @@ export function CreateTestForm() {
   const [selectedPromptIds, setSelectedPromptIds] = useState<number[]>(
     promptIdFromQuery ? [promptIdFromQuery] : []
   ) // For multi-shot: multiple prompts
-  const [selectedDoctorSystemPromptId, setSelectedDoctorSystemPromptId] = useState<number | undefined>(undefined)
-  const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(undefined)
+  const [selectedDoctorSystemPromptId, setSelectedDoctorSystemPromptId] = useState<number | undefined>(
+    savedSettings.defaultDoctorSystemPromptId ?? undefined
+  )
+  const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(
+    savedSettings.defaultPatientSystemPromptId ?? undefined
+  )
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
   const [selectedBenchmark, setSelectedBenchmark] = useState<string>('')
@@ -70,11 +74,13 @@ export function CreateTestForm() {
     cot_analysis_mode: savedSettings.defaultCotAnalysisMode,
     enable_factuality_check: savedSettings.defaultEnableFactualityCheck,
     enable_manipulation_analysis: savedSettings.defaultEnableManipulationAnalysis,
+    evaluator_system_prompt_id: savedSettings.defaultEvaluatorSystemPromptId ?? undefined,
   })
   
   // Get system prompts separately
   const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
   const { data: patientSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'patient' })
+  const { data: evaluatorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'evaluator' })
   
   // Get variables from selected prompt
   const { data: promptVariablesData } = usePromptVariables(selectedPromptId)
@@ -814,6 +820,30 @@ export function CreateTestForm() {
                         setAnalysisConfig({ ...analysisConfig, evaluator_model: model || undefined })
                       }
                     />
+                  </div>
+
+                  {/* Evaluator System Prompt */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Evaluator System Prompt (Optional)
+                    </label>
+                    <select
+                      value={analysisConfig.evaluator_system_prompt_id ?? ''}
+                      onChange={(e) =>
+                        setAnalysisConfig({
+                          ...analysisConfig,
+                          evaluator_system_prompt_id: e.target.value ? Number(e.target.value) : undefined,
+                        })
+                      }
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    >
+                      <option value="">Use standard evaluator instructions</option>
+                      {evaluatorSystemPrompts.map((prompt) => (
+                        <option key={prompt.id} value={prompt.id}>
+                          {getPromptDisplayName(prompt)}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   {/* Chain of Thought Detection */}

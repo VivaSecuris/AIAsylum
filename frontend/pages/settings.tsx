@@ -5,6 +5,8 @@ import { ModelSelector } from '@/components/forms/ModelSelector'
 import { getSettings, saveSettings, DEFAULT_SETTINGS, AppSettings } from '@/lib/settings'
 import { toast } from '@/lib/toast'
 import { apiClient } from '@/lib/api'
+import { usePrompts } from '@/lib/hooks'
+import { getPromptDisplayName } from '@/lib/utils'
 
 interface ApiKeyState {
   value: string
@@ -22,6 +24,10 @@ export default function SettingsPage() {
   const [openaiKey, setOpenaiKey] = useState<ApiKeyState>(EMPTY_KEY_STATE)
   const [anthropicKey, setAnthropicKey] = useState<ApiKeyState>(EMPTY_KEY_STATE)
   const [googleKey, setGoogleKey] = useState<ApiKeyState>(EMPTY_KEY_STATE)
+
+  const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' } as any)
+  const { data: patientSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'patient' } as any)
+  const { data: evaluatorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'evaluator' } as any)
 
   useEffect(() => {
     setSettings(getSettings())
@@ -154,24 +160,75 @@ export default function SettingsPage() {
           <section className="rounded-lg border bg-card p-6">
             <h2 className="mb-1 text-lg font-semibold">Default Models</h2>
             <p className="mb-6 text-sm text-muted-foreground">
-              Pre-fill the provider and model fields when creating new test runs.
+              Pre-fill the provider, model, and system prompt fields when creating new test runs.
             </p>
 
             <div className="space-y-6">
-              <ModelSelector
-                label="Default Doctor Model"
-                provider={settings.defaultDoctorProvider}
-                model={settings.defaultDoctorModel}
-                onProviderChange={(v) => update('defaultDoctorProvider', v)}
-                onModelChange={(v) => update('defaultDoctorModel', v)}
-              />
-              <ModelSelector
-                label="Default Patient Model"
-                provider={settings.defaultPatientProvider}
-                model={settings.defaultPatientModel}
-                onProviderChange={(v) => update('defaultPatientProvider', v)}
-                onModelChange={(v) => update('defaultPatientModel', v)}
-              />
+              {/* Doctor defaults */}
+              <div className="space-y-3">
+                <ModelSelector
+                  label="Default Doctor Model"
+                  provider={settings.defaultDoctorProvider}
+                  model={settings.defaultDoctorModel}
+                  onProviderChange={(v) => update('defaultDoctorProvider', v)}
+                  onModelChange={(v) => update('defaultDoctorModel', v)}
+                />
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Default Doctor System Prompt
+                  </label>
+                  <select
+                    value={settings.defaultDoctorSystemPromptId ?? ''}
+                    onChange={(e) =>
+                      update(
+                        'defaultDoctorSystemPromptId',
+                        e.target.value ? Number(e.target.value) : null
+                      )
+                    }
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="">Use built-in default</option>
+                    {doctorSystemPrompts.map((prompt) => (
+                      <option key={prompt.id} value={prompt.id}>
+                        {getPromptDisplayName(prompt)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Patient defaults */}
+              <div className="space-y-3">
+                <ModelSelector
+                  label="Default Patient Model"
+                  provider={settings.defaultPatientProvider}
+                  model={settings.defaultPatientModel}
+                  onProviderChange={(v) => update('defaultPatientProvider', v)}
+                  onModelChange={(v) => update('defaultPatientModel', v)}
+                />
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Default Patient System Prompt
+                  </label>
+                  <select
+                    value={settings.defaultPatientSystemPromptId ?? ''}
+                    onChange={(e) =>
+                      update(
+                        'defaultPatientSystemPromptId',
+                        e.target.value ? Number(e.target.value) : null
+                      )
+                    }
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="">No system prompt (default behavior)</option>
+                    {patientSystemPrompts.map((prompt) => (
+                      <option key={prompt.id} value={prompt.id}>
+                        {getPromptDisplayName(prompt)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -183,13 +240,37 @@ export default function SettingsPage() {
               as the evaluator.
             </p>
 
-            <ModelSelector
-              label="Evaluator Model"
-              provider={settings.defaultEvaluatorProvider}
-              model={settings.defaultEvaluatorModel}
-              onProviderChange={(v) => update('defaultEvaluatorProvider', v)}
-              onModelChange={(v) => update('defaultEvaluatorModel', v)}
-            />
+            <div className="space-y-3">
+              <ModelSelector
+                label="Evaluator Model"
+                provider={settings.defaultEvaluatorProvider}
+                model={settings.defaultEvaluatorModel}
+                onProviderChange={(v) => update('defaultEvaluatorProvider', v)}
+                onModelChange={(v) => update('defaultEvaluatorModel', v)}
+              />
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Default Evaluator System Prompt
+                </label>
+                <select
+                  value={settings.defaultEvaluatorSystemPromptId ?? ''}
+                  onChange={(e) =>
+                    update(
+                      'defaultEvaluatorSystemPromptId',
+                      e.target.value ? Number(e.target.value) : null
+                    )
+                  }
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="">Use standard evaluator instructions</option>
+                  {evaluatorSystemPrompts.map((prompt) => (
+                    <option key={prompt.id} value={prompt.id}>
+                      {getPromptDisplayName(prompt)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </section>
 
           {/* Default Analysis Options */}

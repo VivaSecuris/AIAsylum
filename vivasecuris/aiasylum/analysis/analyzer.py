@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, List, Optional
 
-from vivasecuris.aiasylum.database import get_session, TestRun, Assessment
+from vivasecuris.aiasylum.database import get_session, TestRun, Assessment, PromptLibrary
 from vivasecuris.aiasylum.models import get_provider
 from vivasecuris.aiasylum.analysis.evaluator import LLMEvaluator
 from vivasecuris.aiasylum.analysis.assessment_parser import AssessmentParser
@@ -40,6 +40,7 @@ class AnalysisService:
         evaluator_provider: Optional[str] = None,
         evaluator_model: Optional[str] = None,
         analysis_test_run_id: Optional[int] = None,
+        evaluator_system_prompt_id: Optional[int] = None,
     ) -> Assessment:
         """Analyze test run with progress events."""
         # Use analysis_test_run_id for progress events if provided, otherwise use source test_run_id
@@ -117,6 +118,7 @@ class AnalysisService:
                 evaluator_provider=evaluator_provider,
                 evaluator_model=evaluator_model,
                 progress_test_run_id=progress_test_run_id,
+                evaluator_system_prompt_id=evaluator_system_prompt_id,
             )
             
             logger.info(f"Analysis completed, creating assessment record")
@@ -197,6 +199,7 @@ class AnalysisService:
         evaluator_provider: Optional[str] = None,
         evaluator_model: Optional[str] = None,
         progress_test_run_id: Optional[int] = None,
+        evaluator_system_prompt_id: Optional[int] = None,
     ) -> Dict:
         """Perform the actual analysis."""
         logger.info(f"Starting _perform_analysis for test run {test_run.id}")
@@ -213,6 +216,29 @@ class AnalysisService:
             logger.error(f"Failed to get evaluator model: {str(e)}", exc_info=True)
             raise ValueError(f"Failed to create evaluator model: {str(e)}")
         
+        # Optional: load a custom evaluator system prompt from the prompt library
+        evaluator_system_prompt: Optional[str] = None
+        if evaluator_system_prompt_id:
+            session = get_session()
+            try:
+                prompt = (
+                    session.query(PromptLibrary)
+                    .filter(
+                        PromptLibrary.id == evaluator_system_prompt_id,
+                        PromptLibrary.prompt_type == "system_prompt",
+                        PromptLibrary.target == "evaluator",
+                    )
+                    .first()
+                )
+                if prompt:
+                    evaluator_system_prompt = prompt.prompt_text
+                    prompt.usage_count = (prompt.usage_count or 0) + 1
+                    session.commit()
+            except Exception as e:
+                logger.warning(f"Failed to load evaluator system prompt {evaluator_system_prompt_id}: {e}")
+            finally:
+                session.close()
+        
         # Emit progress: starting score calculation
         await progress_event_manager.emit_event(
             progress_test_run_id,
@@ -228,6 +254,7 @@ class AnalysisService:
             conversations,
             evaluator_model_instance,
             progress_test_run_id=progress_test_run_id,
+            evaluator_system_prompt=evaluator_system_prompt,
         )
         
         # Emit progress: scores calculated
@@ -469,6 +496,7 @@ class AnalysisService:
         conversations,
         evaluator_model,
         progress_test_run_id: Optional[int] = None,
+        evaluator_system_prompt: Optional[str] = None,
     ) -> Dict[str, float]:
         """Calculate scores by dimension using multiple sources."""
         # Initialize score sources
@@ -539,7 +567,7 @@ class AnalysisService:
                 logger.warning(f"No conversation or test result data available for evaluation, using defaults")
                 llm_scores = None
             else:
-                evaluator = LLMEvaluator(evaluator_model)
+                evaluator = LLMEvaluator(evaluator_model, system_prompt=evaluator_system_prompt)
                 llm_result = await evaluator.evaluate_conversation(
                     conversations=conversation_dicts,
                     test_results=test_result_dicts,

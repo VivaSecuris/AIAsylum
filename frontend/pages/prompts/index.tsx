@@ -328,6 +328,7 @@ export default function PromptsPage() {
               <option value="">All Targets</option>
               <option value="doctor">Doctor</option>
               <option value="patient">Patient</option>
+              <option value="evaluator">Evaluator</option>
             </select>
           )}
           {categories.length > 0 && (

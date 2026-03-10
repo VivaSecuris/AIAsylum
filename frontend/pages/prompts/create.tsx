@@ -25,6 +25,10 @@ export default function CreatePromptPage() {
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean)
+      const finalTags = [
+        ...tags,
+        ...(formData.prompt_type === 'system_prompt' && formData.target === 'evaluator' ? ['evaluator'] : []),
+      ]
       await createPrompt.mutateAsync({
         name: formData.name,
         description: formData.description || undefined,
@@ -32,7 +36,7 @@ export default function CreatePromptPage() {
         prompt_type: formData.prompt_type,
         target: formData.target || undefined,
         category: formData.category || undefined,
-        tags: tags.length > 0 ? tags : undefined,
+        tags: finalTags.length > 0 ? finalTags : undefined,
       })
       toast.success('Prompt created successfully')
       router.push('/prompts')
@@ -77,7 +81,13 @@ export default function CreatePromptPage() {
               <select
                 required
                 value={formData.prompt_type}
-                onChange={(e) => setFormData({ ...formData, prompt_type: e.target.value, target: e.target.value === 'test_prompt' ? '' : formData.target })}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    prompt_type: e.target.value,
+                    target: e.target.value === 'test_prompt' ? '' : formData.target,
+                  })
+                }
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <option value="test_prompt">Test Prompt</option>
@@ -97,6 +107,7 @@ export default function CreatePromptPage() {
                   <option value="">Select target</option>
                   <option value="doctor">Doctor Model</option>
                   <option value="patient">Patient Model</option>
+                  <option value="evaluator">Evaluator</option>
                 </select>
               </div>
             )}

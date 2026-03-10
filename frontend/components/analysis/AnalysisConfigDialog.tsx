@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { ModelSelector } from '@/components/forms/ModelSelector'
 import { getSettings } from '@/lib/settings'
+import { usePrompts } from '@/lib/hooks'
+import { getPromptDisplayName } from '@/lib/utils'
 
 interface AnalysisConfigDialogProps {
   isOpen: boolean
@@ -19,6 +21,7 @@ export interface AnalysisConfig {
   cot_analysis_mode: 'full' | 'partial' | 'none'
   enable_factuality_check: boolean
   enable_manipulation_analysis: boolean
+   evaluator_system_prompt_id?: number
 }
 
 export function AnalysisConfigDialog({
@@ -39,6 +42,9 @@ export function AnalysisConfigDialog({
   const [evaluatorModel, setEvaluatorModel] = useState(
     defaultConfig?.evaluator_model ?? (doctorModel ? '' : savedSettings.defaultEvaluatorModel)
   )
+  const [evaluatorSystemPromptId, setEvaluatorSystemPromptId] = useState<number | undefined>(
+    defaultConfig?.evaluator_system_prompt_id ?? savedSettings.defaultEvaluatorSystemPromptId ?? undefined
+  )
   const [enableCotDetection, setEnableCotDetection] = useState(
     defaultConfig?.enable_cot_detection ?? savedSettings.defaultEnableCotDetection
   )
@@ -52,6 +58,8 @@ export function AnalysisConfigDialog({
     defaultConfig?.enable_manipulation_analysis ?? savedSettings.defaultEnableManipulationAnalysis
   )
 
+  const { data: evaluatorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'evaluator' } as any)
+
   if (!isOpen) return null
 
   const handleConfirm = () => {
@@ -62,6 +70,7 @@ export function AnalysisConfigDialog({
       cot_analysis_mode: cotAnalysisMode,
       enable_factuality_check: enableFactualityCheck,
       enable_manipulation_analysis: enableManipulationAnalysis,
+      evaluator_system_prompt_id: evaluatorSystemPromptId,
     }
     console.log('AnalysisConfigDialog: Confirming with config:', config)
     onConfirm(config)
@@ -114,6 +123,24 @@ export function AnalysisConfigDialog({
             <p className="mt-2 text-xs text-muted-foreground">
               Leave empty to use the doctor model as the evaluator
             </p>
+
+            <div className="mt-4 space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">Evaluator System Prompt (Optional)</label>
+              <select
+                value={evaluatorSystemPromptId ?? ''}
+                onChange={(e) =>
+                  setEvaluatorSystemPromptId(e.target.value ? Number(e.target.value) : undefined)
+                }
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="">Use standard evaluator instructions</option>
+                {evaluatorSystemPrompts.map((prompt) => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {getPromptDisplayName(prompt)}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* Chain of Thought Detection */}
