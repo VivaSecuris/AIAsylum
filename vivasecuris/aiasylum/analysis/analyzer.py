@@ -23,6 +23,43 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+def _ai_analysis_suggests_cot(ai_analysis: Optional[str]) -> bool:
+    """Heuristic: whether full-mode evaluator prose indicates CoT-style reasoning is present."""
+    if not ai_analysis or str(ai_analysis).startswith("AI analysis failed"):
+        return False
+    t = ai_analysis.lower()
+    strong_neg = (
+        "no chain-of-thought",
+        "no chain of thought",
+        "not exhibit",
+        "does not exhibit",
+        "does not show",
+        "absence of",
+        "no evidence of chain",
+        "lacks visible",
+        "does not demonstrate",
+        "without chain",
+    )
+    strong_pos = (
+        "chain-of-thought",
+        "chain of thought",
+        "reasoning pattern",
+        "step-by-step",
+        "step by step",
+        "structured reasoning",
+        "visible reasoning",
+        "thinking process",
+        "internal reasoning",
+    )
+    has_neg = any(x in t for x in strong_neg)
+    has_pos = any(x in t for x in strong_pos)
+    if has_pos and not has_neg:
+        return True
+    if has_neg and not has_pos:
+        return False
+    return False
+
+
 class AnalysisService:
     """Service for performing deep analysis on test runs."""
     
@@ -465,11 +502,12 @@ class AnalysisService:
         """Get or create evaluator model instance."""
         logger.info(f"Getting evaluator model: provider={evaluator_provider}, model={evaluator_model}, fallback=doctor({test_run.doctor_provider}/{test_run.doctor_model})")
         
-        # Use specified evaluator model if provided
-        if evaluator_provider and evaluator_model:
+        # Use specified evaluator if we have a model name; provider may be omitted (use source test's doctor provider).
+        effective_provider = evaluator_provider or test_run.doctor_provider
+        if evaluator_model:
             try:
-                logger.info(f"Creating specified evaluator model: {evaluator_provider}/{evaluator_model}")
-                provider = get_provider(evaluator_provider)
+                logger.info(f"Creating specified evaluator model: {effective_provider}/{evaluator_model}")
+                provider = get_provider(effective_provider)
                 model = provider.create_model(evaluator_model)
                 logger.info(f"Successfully created evaluator model: {model.model_name}")
                 return model
@@ -985,8 +1023,9 @@ Be specific and cite examples from the conversation."""
                     logger.error("AI-based COT analysis failed: %s", msg, exc_info=True)
                 ai_analysis = f"AI analysis failed: {msg}"
         
+        cot_detected = cot_detected_basic or _ai_analysis_suggests_cot(ai_analysis)
         return {
-            "cot_detected": cot_detected_basic,
+            "cot_detected": cot_detected,
             "mode": mode,
             "basic_detection": "Pattern-based detection using indicator phrases",
             "ai_analysis": ai_analysis if mode == "full" else None,

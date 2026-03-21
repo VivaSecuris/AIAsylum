@@ -72,12 +72,13 @@ class ConversationTurnResponse(BaseModel):
         }
     
     @classmethod
-    def from_orm(cls, obj):
+    def from_orm(cls, obj, *, expose_reasoning: bool = False):
         """Create response from SQLAlchemy model, handling metadata conflict."""
-        # Never expose internal chain-of-thought / reasoning by default.
-        # This must remain private internal dialog.
+        # Reasoning is internal chain-of-thought. Only return it when the test
+        # was explicitly configured with CoT enabled (see get_conversation).
         safe_metadata = dict(obj.meta_data or {})
-        safe_metadata.pop("reasoning", None)
+        if not expose_reasoning:
+            safe_metadata.pop("reasoning", None)
         return cls(
             id=obj.id,
             test_run_id=obj.test_run_id,
@@ -424,6 +425,14 @@ async def get_conversation(test_run_id: int):
     """Get conversation turns for a test run."""
     session = get_session()
     try:
+        test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
+        if not test_run:
+            raise HTTPException(status_code=404, detail="Test run not found")
+        test_cfg = (test_run.meta_data or {}).get("test_config") or {}
+        expose_reasoning = bool(
+            test_cfg.get("enable_doctor_cot") or test_cfg.get("enable_patient_cot")
+        )
+
         turns = (
             session.query(ConversationTurn)
             .filter(ConversationTurn.test_run_id == test_run_id)
@@ -435,7 +444,10 @@ async def get_conversation(test_run_id: int):
         if turns:
             print(f"First turn: speaker={turns[0].speaker}, response_length={len(turns[0].response)}")
         # Convert to response models to handle metadata properly
-        return [ConversationTurnResponse.from_orm(turn) for turn in turns]
+        return [
+            ConversationTurnResponse.from_orm(turn, expose_reasoning=expose_reasoning)
+            for turn in turns
+        ]
     finally:
         session.close()
 

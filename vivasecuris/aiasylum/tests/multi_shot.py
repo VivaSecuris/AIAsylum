@@ -33,9 +33,18 @@ class MultiShotTest(TestCase):
         
         # Get CoT settings from context
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
-        
+        enable_doctor_cot = context.get("enable_doctor_cot", False) if context else False
+
         patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
-        doctor = Doctor(doctor_model, system_prompt=doctor_system_prompt) if doctor_model else None
+        doctor = (
+            Doctor(
+                doctor_model,
+                system_prompt=doctor_system_prompt,
+                enable_cot=enable_doctor_cot,
+            )
+            if doctor_model
+            else None
+        )
         
         conversation_history: List[Dict[str, str]] = []
         responses = []

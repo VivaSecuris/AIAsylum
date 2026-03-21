@@ -38,6 +38,7 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
         const patientColorClass = isGroupTherapyPatient ? patientColors[patientColorIndex] : 'bg-gray-50 border-gray-200 dark:bg-gray-900 dark:border-gray-700'
 
         const isDoctor = turn.speaker === 'doctor'
+        const reasoning = turn.metadata?.reasoning
         const hasPrompt = turn.prompt && turn.prompt.trim().length > 0
         const hasResponse = turn.response && turn.response.trim().length > 0
 
@@ -76,6 +77,12 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
                     Turn {turn.turn_number} • {formatDate(turn.created_at)}
                   </span>
                 </div>
+                {reasoning && (
+                  <div className="mb-3 rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 p-3">
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Chain-of-thought (internal)</p>
+                    <p className="text-xs whitespace-pre-wrap text-foreground/90">{reasoning}</p>
+                  </div>
+                )}
                 <p className="text-sm whitespace-pre-wrap text-foreground">{turn.response}</p>
               </div>
             )}

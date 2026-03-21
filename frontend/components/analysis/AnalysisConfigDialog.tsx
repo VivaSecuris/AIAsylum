@@ -34,13 +34,14 @@ export function AnalysisConfigDialog({
   isLoading = false,
 }: AnalysisConfigDialogProps) {
   const savedSettings = getSettings()
-  // When doctorProvider/doctorModel are provided, default to empty so the backend uses the doctor model.
-  // Otherwise use saved settings (e.g. for batch analysis).
+  // Prefer explicit defaultConfig, then global Settings defaults. Empty both fields means "use the
+  // test's doctor model" on the backend — we no longer clear evaluator when doctor is present, so
+  // Settings → default evaluator is honored when opening analysis from a test run page.
   const [evaluatorProvider, setEvaluatorProvider] = useState(
-    defaultConfig?.evaluator_provider ?? (doctorProvider ? '' : savedSettings.defaultEvaluatorProvider)
+    defaultConfig?.evaluator_provider ?? savedSettings.defaultEvaluatorProvider ?? ''
   )
   const [evaluatorModel, setEvaluatorModel] = useState(
-    defaultConfig?.evaluator_model ?? (doctorModel ? '' : savedSettings.defaultEvaluatorModel)
+    defaultConfig?.evaluator_model ?? savedSettings.defaultEvaluatorModel ?? ''
   )
   const [evaluatorSystemPromptId, setEvaluatorSystemPromptId] = useState<number | undefined>(
     defaultConfig?.evaluator_system_prompt_id ?? savedSettings.defaultEvaluatorSystemPromptId ?? undefined
