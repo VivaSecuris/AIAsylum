@@ -81,6 +81,14 @@ def list_benchmarks():
             ],
         },
         {
+            "title": "Medical & Biomedical",
+            "benchmarks": [
+                ("medqa", "MedQA (USMLE)", "USMLE-style four-option clinical multiple-choice"),
+                ("medmcqa", "MedMCQA", "Indian medical entrance-exam style MCQs"),
+                ("pubmedqa", "PubMedQA", "Biomedical yes/no/maybe QA on abstract contexts"),
+            ],
+        },
+        {
             "title": "Safety & Alignment",
             "benchmarks": [
                 ("truthfulqa", "TruthfulQA", "Tests whether the model produces truthful answers instead of plausible-sounding falsehoods"),

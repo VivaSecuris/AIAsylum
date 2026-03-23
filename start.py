@@ -115,6 +115,8 @@ def main():
         run_command([pip_cmd, "install", "--upgrade", "pip"])
         run_command([pip_cmd, "install", "-r", "requirements.txt"])
         installed_marker.touch()
+        print("📥 Warming Hugging Face benchmark dataset caches (one row each; first time may take several minutes)...")
+        run_command([pip_cmd, "-m", "vivasecuris.aiasylum.benchmarks.prefetch"], check=False)
     
     # Check for .env file
     env_file = SCRIPT_DIR / ".env"

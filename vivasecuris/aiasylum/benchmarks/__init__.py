@@ -2,7 +2,11 @@
 
 from vivasecuris.aiasylum.benchmarks.base import Benchmark, BenchmarkResult
 from vivasecuris.aiasylum.benchmarks.simple import SimpleBenchmark, create_simple_benchmark
-from vivasecuris.aiasylum.benchmarks.datasets import load_benchmark_dataset, BENCHMARK_DATASETS
+from vivasecuris.aiasylum.benchmarks.datasets import (
+    load_benchmark_dataset,
+    BENCHMARK_DATASETS,
+    standardize_benchmark_row,
+)
 
 __all__ = [
     "Benchmark",
@@ -11,4 +15,5 @@ __all__ = [
     "create_simple_benchmark",
     "load_benchmark_dataset",
     "BENCHMARK_DATASETS",
+    "standardize_benchmark_row",
 ]

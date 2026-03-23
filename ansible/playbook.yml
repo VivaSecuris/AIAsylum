@@ -91,6 +91,13 @@
       environment:
         DATABASE_URL: "{{ database_url }}"
 
+    - name: Warm Hugging Face benchmark dataset caches
+      command: "{{ app_dir }}/venv/bin/python -m vivasecuris.aiasylum.benchmarks.prefetch"
+      args:
+        chdir: "{{ app_dir }}/app"
+      become_user: "{{ app_user }}"
+      failed_when: false
+
     - name: Create systemd service file
       template:
         src: aiasylum.service.j2

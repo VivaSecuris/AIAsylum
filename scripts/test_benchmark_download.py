@@ -71,7 +71,7 @@ async def main():
         sys.exit(0 if success else 1)
     else:
         # Test a few key benchmarks
-        test_benchmarks = ["gsm8k", "mmlu", "arc", "hellaswag"]
+        test_benchmarks = ["gsm8k", "mmlu", "arc", "hellaswag", "medqa", "medmcqa", "pubmedqa"]
         results = {}
         
         for benchmark in test_benchmarks:

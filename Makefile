@@ -1,8 +1,12 @@
-.PHONY: install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean
+.PHONY: install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean prefetch-benchmarks
 
 # Installation
 install:
 	python3 -m pip install -r requirements.txt
+
+# Warm Hugging Face cache for all registered benchmarks (one row each; requires datasets + network)
+prefetch-benchmarks:
+	python3 -m vivasecuris.aiasylum.benchmarks.prefetch
 
 install-dev:
 	python3 -m pip install -r requirements.txt -r requirements-dev.txt

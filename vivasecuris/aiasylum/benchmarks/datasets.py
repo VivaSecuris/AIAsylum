@@ -50,12 +50,14 @@ BENCHMARK_DATASETS = {
     },
     "gsm8k": {
         "dataset": "gsm8k",
+        "config": "main",
         "split": "test",
         "question_field": "question",
         "answer_field": "answer",
     },
     "winogrande": {
         "dataset": "winogrande",
+        "config": "winogrande_debiased",
         "split": "validation",
         "question_field": "sentence",
         "answer_field": "answer",
@@ -80,6 +82,28 @@ BENCHMARK_DATASETS = {
         "question_field": "prompt",
         "answer_field": None,  # This is a toxicity benchmark, no "correct" answer
     },
+    # Medical / biomedical QA (Hugging Face)
+    "medqa": {
+        "dataset": "GBaker/MedQA-USMLE-4-options-hf",
+        "split": "test",
+        "question_field": "sent1",
+        "answer_field": "label",
+    },
+    "medmcqa": {
+        "dataset": "openlifescienceai/medmcqa",
+        "split": "validation",
+        "question_field": "question",
+        "answer_field": "cop",
+        "choices_field": "opa,opb,opc,opd",
+        "subject_field": "subject_name",
+    },
+    "pubmedqa": {
+        "dataset": "pubmed_qa",
+        "config": "pqa_labeled",
+        "split": "train",
+        "question_field": "question",
+        "answer_field": "final_decision",
+    },
     "jailbreak": {
         "dataset": "internal",  # Special marker - loads from database
         "question_field": "prompt_text",
@@ -87,6 +111,81 @@ BENCHMARK_DATASETS = {
         "source": "database",  # Load from PromptLibrary database
     },
 }
+
+
+def standardize_benchmark_row(
+    benchmark_key: str, config: Dict[str, Any], item: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Map a raw dataset row to the common benchmark schema (question, answer, choices, ...)."""
+    bk = benchmark_key.lower()
+
+    if bk == "medqa":
+        q1 = (item.get("sent1") or "").strip()
+        q2 = (item.get("sent2") or "").strip()
+        question = f"{q1}\n{q2}".strip() if q2 else q1
+        choices = [item.get(f"ending{i}") for i in range(4)]
+        answer = item.get("label")
+        standardized_item: Dict[str, Any] = {
+            "question": question,
+            "answer": answer,
+            "choices": [c for c in choices if c is not None],
+            "raw": item,
+        }
+        if answer is not None and (isinstance(answer, int) or (isinstance(answer, str) and str(answer).isdigit())):
+            answer_int = int(answer)
+            if 0 <= answer_int <= 25:
+                standardized_item["answer_letter"] = chr(65 + answer_int)
+                standardized_item["answer_index"] = answer_int
+        return standardized_item
+
+    if bk == "pubmedqa":
+        ctx = item.get("context")
+        texts: List[str] = []
+        if isinstance(ctx, dict):
+            texts = list(ctx.get("contexts") or [])
+        ctx_str = "\n\n".join(texts) if texts else ""
+        q = item.get("question", "")
+        question = (
+            f"Context:\n{ctx_str}\n\nQuestion: {q}\n\n"
+            "Answer with exactly one word: yes, no, or maybe."
+        )
+        fd = item.get("final_decision")
+        answer = fd.lower().strip() if isinstance(fd, str) else fd
+        return {"question": question, "answer": answer, "choices": [], "raw": item}
+
+    question_field = config["question_field"]
+    answer_field = config.get("answer_field")
+    choices_field = config.get("choices_field")
+
+    standardized_item = {
+        "question": item.get(question_field, ""),
+        "answer": item.get(answer_field) if answer_field else None,
+    }
+
+    if answer_field and standardized_item["answer"] is not None:
+        answer = standardized_item["answer"]
+        if isinstance(answer, (int, str)) and str(answer).isdigit():
+            answer_int = int(answer)
+            if 0 <= answer_int <= 25:
+                standardized_item["answer_letter"] = chr(65 + answer_int)
+                standardized_item["answer_index"] = answer_int
+
+    if choices_field:
+        if isinstance(choices_field, str) and "," in choices_field:
+            fields = [f.strip() for f in choices_field.split(",")]
+            choices = [item.get(f) for f in fields if item.get(f)]
+            standardized_item["choices"] = choices
+        else:
+            choices = item.get(choices_field)
+            if choices:
+                standardized_item["choices"] = choices if isinstance(choices, list) else [choices]
+
+    subject_field = config.get("subject_field")
+    if subject_field and item.get(subject_field):
+        standardized_item["subject"] = item.get(subject_field)
+
+    standardized_item["raw"] = item
+    return standardized_item
 
 
 async def load_benchmark_dataset(
@@ -212,51 +311,14 @@ async def load_benchmark_dataset(
         
         # Standardize format
         standardized = []
-        question_field = config["question_field"]
-        answer_field = config.get("answer_field")
-        choices_field = config.get("choices_field")
-        
-        print(f"[load_benchmark_dataset] Standardizing format (question_field: {question_field}, answer_field: {answer_field})")
-        
+        qf = config.get("question_field", "")
+        af = config.get("answer_field")
+        print(f"[load_benchmark_dataset] Standardizing format (question_field: {qf}, answer_field: {af})")
+
         for i, item in enumerate(dataset):
             if i == 0:
                 print(f"[load_benchmark_dataset] Sample item keys: {list(item.keys())}")
-            standardized_item = {
-                "question": item.get(question_field, ""),
-                "answer": item.get(answer_field) if answer_field else None,
-            }
-            
-            # Handle answer field conversion (class labels to indices/letters)
-            if answer_field and standardized_item["answer"] is not None:
-                answer = standardized_item["answer"]
-                # If answer is a class label (0-3), convert to letter (A-D) for multiple choice
-                if isinstance(answer, (int, str)) and str(answer).isdigit():
-                    answer_int = int(answer)
-                    if 0 <= answer_int <= 25:  # A-Z
-                        standardized_item["answer_letter"] = chr(65 + answer_int)  # A, B, C, D, etc.
-                        standardized_item["answer_index"] = answer_int
-            
-            # Add choices if available
-            if choices_field:
-                if isinstance(choices_field, str) and "," in choices_field:
-                    # Multiple fields (e.g., "option1,option2")
-                    fields = [f.strip() for f in choices_field.split(",")]
-                    choices = [item.get(f) for f in fields if item.get(f)]
-                    standardized_item["choices"] = choices
-                else:
-                    choices = item.get(choices_field)
-                    if choices:
-                        standardized_item["choices"] = choices if isinstance(choices, list) else [choices]
-            
-            # Add subject/category if available
-            subject_field = config.get("subject_field")
-            if subject_field and item.get(subject_field):
-                standardized_item["subject"] = item.get(subject_field)
-            
-            # Add raw item for reference
-            standardized_item["raw"] = item
-            
-            standardized.append(standardized_item)
+            standardized.append(standardize_benchmark_row(benchmark_key, config, item))
         
         # Shuffle the standardized list to randomize the order of questions
         # This ensures that even if the same indices are selected, the order is different
@@ -295,9 +357,10 @@ def _get_fallback_questions(benchmark_name: str, num_samples: Optional[int] = No
     """Fallback questions if dataset loading fails."""
     from vivasecuris.aiasylum.benchmarks.simple import SIMPLE_MATH_QUESTIONS, SIMPLE_REASONING_QUESTIONS
     
-    if benchmark_name.lower() in ["math", "gsm8k"]:
+    bn = benchmark_name.lower()
+    if bn in ["math", "gsm8k"]:
         questions = SIMPLE_MATH_QUESTIONS
-    elif benchmark_name.lower() in ["arc", "reasoning"]:
+    elif bn in ["arc", "reasoning", "medqa", "medmcqa", "pubmedqa"]:
         questions = SIMPLE_REASONING_QUESTIONS
     else:
         questions = SIMPLE_MATH_QUESTIONS + SIMPLE_REASONING_QUESTIONS
@@ -381,48 +444,10 @@ async def load_benchmark_dataset_all(
         
         # NO randomization - use all samples
         print(f"[load_benchmark_dataset_all] Using all {len(dataset)} samples (no randomization)")
-        
-        # Standardize format (same as load_benchmark_dataset)
-        standardized = []
-        question_field = config["question_field"]
-        answer_field = config.get("answer_field")
-        choices_field = config.get("choices_field")
-        
-        for i, item in enumerate(dataset):
-            standardized_item = {
-                "question": item.get(question_field, ""),
-                "answer": item.get(answer_field) if answer_field else None,
-            }
-            
-            # Handle answer field conversion (class labels to indices/letters)
-            if answer_field and standardized_item["answer"] is not None:
-                answer = standardized_item["answer"]
-                if isinstance(answer, (int, str)) and str(answer).isdigit():
-                    answer_int = int(answer)
-                    if 0 <= answer_int <= 25:  # A-Z
-                        standardized_item["answer_letter"] = chr(65 + answer_int)
-                        standardized_item["answer_index"] = answer_int
-            
-            # Add choices if available
-            if choices_field:
-                if isinstance(choices_field, str) and "," in choices_field:
-                    fields = [f.strip() for f in choices_field.split(",")]
-                    choices = [item.get(f) for f in fields if item.get(f)]
-                    standardized_item["choices"] = choices
-                else:
-                    choices = item.get(choices_field)
-                    if choices:
-                        standardized_item["choices"] = choices if isinstance(choices, list) else [choices]
-            
-            # Add subject/category if available
-            subject_field = config.get("subject_field")
-            if subject_field and item.get(subject_field):
-                standardized_item["subject"] = item.get(subject_field)
-            
-            # Add raw item for reference
-            standardized_item["raw"] = item
-            
-            standardized.append(standardized_item)
+
+        standardized = [
+            standardize_benchmark_row(benchmark_name.lower(), config, item) for item in dataset
+        ]
         
         logger.info(f"Loaded {len(standardized)} samples from {benchmark_name} (all samples, no randomization)")
         return standardized

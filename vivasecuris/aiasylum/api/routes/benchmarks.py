@@ -49,6 +49,11 @@ _BENCHMARK_CATEGORIES = [
         "description": "Evaluates everyday commonsense understanding, physical intuition, and language inference.",
     },
     {
+        "id": "medical_health",
+        "title": "Medical & Biomedical",
+        "description": "Clinical and biomedical QA — USMLE-style medicine, Indian medical entrance exams, and PubMed-style literature questions.",
+    },
+    {
         "id": "safety_alignment",
         "title": "Safety & Alignment",
         "description": "Measures truthfulness, bias, toxicity, and resistance to adversarial jailbreak attempts.",
@@ -97,6 +102,24 @@ _BENCHMARKS = [
         "title": "PIQA",
         "description": "Physical Intuition QA: two-choice questions about everyday physical interactions and how the world works.",
         "category": "commonsense",
+    },
+    {
+        "name": "medqa",
+        "title": "MedQA (USMLE)",
+        "description": "USMLE-style four-option clinical multiple-choice questions (English) — measures medical knowledge and case reasoning.",
+        "category": "medical_health",
+    },
+    {
+        "name": "medmcqa",
+        "title": "MedMCQA",
+        "description": "Indian medical entrance-exam style multiple-choice questions across physiology, anatomy, pharmacology, and related subjects.",
+        "category": "medical_health",
+    },
+    {
+        "name": "pubmedqa",
+        "title": "PubMedQA",
+        "description": "Biomedical research QA with yes / no / maybe answers grounded in PubMed abstract contexts (expert-labeled subset).",
+        "category": "medical_health",
     },
     {
         "name": "truthfulqa",

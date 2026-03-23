@@ -58,3 +58,6 @@ benchmarks:
     - piqa
     - bbq
     - realtoxicityprompts
+    - medqa
+    - medmcqa
+    - pubmedqa
