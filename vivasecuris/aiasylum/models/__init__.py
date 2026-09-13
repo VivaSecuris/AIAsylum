@@ -13,6 +13,12 @@ from vivasecuris.aiasylum.models.ollama import (
     OllamaModel,
     OllamaProvider as OllamaProviderBase,
 )
+from vivasecuris.aiasylum.models.vivaos import (
+    AgenticA2AModel,
+    AgenticA2AProvider,
+    ServusModel,
+    ServusProvider,
+)
 
 __all__ = [
     "BaseModel",
@@ -24,5 +30,9 @@ __all__ = [
     "OllamaProvider",
     "OllamaModel",
     "OllamaProviderBase",
+    "ServusModel",
+    "ServusProvider",
+    "AgenticA2AModel",
+    "AgenticA2AProvider",
     "get_provider",
 ]

@@ -467,11 +467,16 @@ class GoogleModel(BaseModel):
 
 def get_provider(provider_name: str) -> ModelProvider:
     """Get a model provider by name."""
+    from vivasecuris.aiasylum.models.vivaos import AgenticA2AProvider, ServusProvider
+
     providers = {
         "openai": OpenAIProvider,
         "anthropic": AnthropicProvider,
         "google": GoogleProvider,
         "ollama": OllamaProvider,
+        "servus": ServusProvider,
+        "agentic_a2a": AgenticA2AProvider,
+        "agentic": AgenticA2AProvider,
     }
     
     from vivasecuris.aiasylum.exceptions import ModelProviderError
