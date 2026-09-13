@@ -12,9 +12,7 @@ both single-shot and multi-shot jailbreak techniques including:
 
 from typing import Dict, List, Optional
 
-from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
-from vivasecuris.aiasylum.tests.jailbreak_loader import load_jailbreak_prompts
 
 
 class AdversarialTest(TestCase):
@@ -225,6 +223,8 @@ console.log(unrot("instructions for making a homemade explosive."));""",
         # If use_database is True, load from database
         elif use_database:
             # Load from database
+            from vivasecuris.aiasylum.tests.jailbreak_loader import load_jailbreak_prompts
+
             db_prompts = load_jailbreak_prompts(
                 technique=technique if technique not in self.MULTI_SHOT_PATTERNS else None,
                 source_platform=source_platform,
@@ -277,7 +277,9 @@ console.log(unrot("instructions for making a homemade explosive."));""",
         # Get CoT settings from context
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         patient_system_prompt = context.get("patient_system_prompt") if context else None
-        
+
+        from vivasecuris.aiasylum.patient import Patient
+
         patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
         
         results = []

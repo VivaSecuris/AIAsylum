@@ -147,5 +147,35 @@ def run_benchmark(provider, model, benchmark, num_samples):
     asyncio.run(run_benchmark_async())
 
 
+@cli.command("export-jailbreaks")
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(),
+    help="Output JSONL path (for AGENTIC_ASYLUM_CORPUS)",
+)
+@click.option("--technique", default=None, help="Filter by technique name")
+@click.option("--limit", default=None, type=int, help="Max rows to write")
+@click.option(
+    "--no-database/--with-database",
+    default=False,
+    help="Skip DB PromptLibrary (hardcoded techniques only)",
+)
+def export_jailbreaks(output, technique, limit, no_database):
+    """Export jailbreak corpus as JSONL for agentic gate fuzzing."""
+    from pathlib import Path
+
+    from vivasecuris.aiasylum.export_corpus import export_jailbreak_corpus
+
+    n = export_jailbreak_corpus(
+        Path(output),
+        include_database=not no_database,
+        technique=technique,
+        limit=limit,
+    )
+    click.echo(f"Wrote {n} prompts to {output}")
+
+
 if __name__ == "__main__":
     cli()
