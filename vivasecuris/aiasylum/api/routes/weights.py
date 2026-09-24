@@ -41,7 +41,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.api.cancellation import CancellationManager
-from vivasecuris.aiasylum.api.model_jobs import model_slot, slot_status
+from vivasecuris.aiasylum.api.model_jobs import hold, model_slot, slot_status
 from vivasecuris.aiasylum.api.progress_events import ProgressEventManager
 from vivasecuris.aiasylum.constants import (
     STATUS_COMPLETED,
@@ -368,10 +368,12 @@ class WeightRunRequest(BaseModel):
     capability_control: bool = True
     capability_limit: int = 6
 
-    # select
+    # select + compare
     ranks: Optional[List[int]] = None
     ks: Optional[List[float]] = None
     factual_floor: float = 0.05
+    # "builtin" is the 12-question smoke test; "mmlu:<n>" draws n MMLU items.
+    capability_set: str = "builtin"
 
     # surgery
     output_name: Optional[str] = None
@@ -1290,12 +1292,17 @@ def _execute(run_id: int, snap: Dict[str, Any], reporter) -> Dict[str, Any]:
             f"prompts, each gated on the factual capability control"
         )
 
+        from vivasecuris.aiasylum.weights.evaluate import capability_set
+
+        capability = capability_set(opts.get("capability_set") or "builtin", opts["seed"])
+        reporter.note(f"capability control: {capability.name} ({capability.size} items)")
         result = select_edit(
             model, tok, d, prompts,
             ranks=ranks, ks=ks,
             factual_floor=opts.get("factual_floor", 0.05),
             max_new_tokens=opts["max_new_tokens"],
             progress=report,
+            capability=capability,
         )
         summary = dict(result)
         summary["ranks"] = list(ranks)
@@ -1309,7 +1316,7 @@ def _execute(run_id: int, snap: Dict[str, Any], reporter) -> Dict[str, Any]:
         import gc
 
         from vivasecuris.aiasylum.weights.evaluate import (
-            capability_questions, factual_accuracy, generate_greedy,
+            capability_set, compare_verdict, generate_greedy,
         )
         from vivasecuris.aiasylum.weights.manifest import SurgeryManifest
         from vivasecuris.aiasylum.weights.steering import _looks_degenerate, refusal_rate
@@ -1320,7 +1327,9 @@ def _execute(run_id: int, snap: Dict[str, Any], reporter) -> Dict[str, Any]:
         )
         harmful = list(split.harmful_test[: opts["n_prompts"]])
         harmless = list(split.harmless_test[: opts["n_prompts"]])
-        factual_qs = capability_questions()
+        capability = capability_set(opts.get("capability_set") or "builtin", opts["seed"])
+        factual_qs = capability.questions
+        reporter.note(f"capability control: {capability.name} ({capability.size} items)")
 
         metrics: Dict[str, Any] = {}
         # One model resident at a time: two 3B copies would not fit beside each
@@ -1337,13 +1346,13 @@ def _execute(run_id: int, snap: Dict[str, Any], reporter) -> Dict[str, Any]:
             reporter.note(f"{label}: scoring false refusal on harmless prompts")
             harmless_r = generate_greedy(model, tok, harmless, max_new_tokens=opts["max_new_tokens"])
             reporter.note(f"{label}: running the factual capability control")
-            fac = generate_greedy(model, tok, factual_qs, max_new_tokens=32)
+            fac = generate_greedy(model, tok, factual_qs, max_new_tokens=capability.max_new_tokens)
 
             metrics[label] = {
                 "model": model_id,
                 "refuse_harmful": refusal_rate(harm),
                 "refuse_harmless": refusal_rate(harmless_r),
-                "factual_acc": factual_accuracy(fac),
+                "factual_acc": capability.score(fac),
                 "degenerate": bool(_looks_degenerate(harm) or _looks_degenerate(fac)),
                 "responses": {"harmful": harm, "harmless": harmless_r, "factual": fac},
             }
@@ -1362,6 +1371,9 @@ def _execute(run_id: int, snap: Dict[str, Any], reporter) -> Dict[str, Any]:
                 "refuse_harmless": m["refuse_harmless"] - b["refuse_harmless"],
                 "factual_acc": m["factual_acc"] - b["factual_acc"],
             },
+            "verdict": compare_verdict(b, m, opts.get("factual_floor", 0.05)),
+            "capability_set": capability.name,
+            "capability_n": capability.size,
             "manifest": (__import__("dataclasses").asdict(manifest) if manifest else None),
             "elapsed": reporter.total_elapsed(),
         }
@@ -1460,7 +1472,7 @@ async def _run_weights_background(run_id: int) -> None:
                 f"Waiting for the model slot, held by {status['held_by']}",
             )
 
-        async with _semaphore():
+        async with hold(f"weights run {run_id}"):
             row = session.query(WeightRun).filter(WeightRun.id == run_id).first()
             if row is None or weights_cancellation.is_cancelled(run_id):
                 return
@@ -1764,6 +1776,7 @@ async def create_weight_run(request: WeightRunRequest):
                     "ranks": request.ranks,
                     "ks": request.ks,
                     "factual_floor": request.factual_floor,
+                    "capability_set": request.capability_set,
                     "notes": request.notes,
                 },
                 "modified_model": (request.modified_model or "").strip() or None,
@@ -2002,7 +2015,7 @@ async def chat_with_model(name: str, request: ChatRequest):
         return response.content
 
     try:
-        async with _semaphore():
+        async with hold(f"chat with {path.name}"):
             content = await asyncio.to_thread(_turn)
     except Exception as exc:
         logger.exception("Chat turn failed for %s", path)

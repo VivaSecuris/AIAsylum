@@ -291,9 +291,12 @@ def info(model):
 @click.option("--factual-floor", default=0.05, show_default=True,
               help="Max allowed drop in factual accuracy vs baseline for a config to be admissible")
 @click.option("--max-new-tokens", default=96, show_default=True)
+@click.option("--capability-set", default="builtin", show_default=True,
+              help="Capability control: 'builtin' (12 questions) or 'mmlu:<n>'")
 @click.option("--device", default="auto", show_default=True)
 @click.option("--dtype", default="bfloat16", show_default=True)
-def select_cmd(model, direction_path, n_prompts, ranks, ks, factual_floor, max_new_tokens, device, dtype):
+def select_cmd(model, direction_path, n_prompts, ranks, ks, factual_floor, max_new_tokens,
+               capability_set, device, dtype):
     """Search subspace rank x strength for the most-compliant capability-safe edit.
 
     Previews every candidate at inference time (no weights written) and keeps
@@ -331,9 +334,12 @@ def select_cmd(model, direction_path, n_prompts, ranks, ks, factual_floor, max_n
             current["msg"] = msg
             reporter.note(msg)
 
+    from vivasecuris.aiasylum.weights.evaluate import capability_set as _capability_set
+
     result = select_edit(
         mdl, tok, d, prompts, ranks=rank_list, ks=k_list,
         factual_floor=factual_floor, max_new_tokens=max_new_tokens, progress=report,
+        capability=_capability_set(capability_set),
     )
 
     base = result["baseline"]
@@ -376,10 +382,12 @@ def select_cmd(model, direction_path, n_prompts, ranks, ks, factual_floor, max_n
 @click.option("--modified", required=True, help="Edited model directory")
 @click.option("--n-prompts", default=32, show_default=True, help="Held-out harmful/harmless prompts per class")
 @click.option("--max-new-tokens", default=96, show_default=True)
+@click.option("--capability-set", default="builtin", show_default=True,
+              help="Capability control: 'builtin' (12 questions) or 'mmlu:<n>'")
 @click.option("--device", default="auto", show_default=True)
 @click.option("--dtype", default="bfloat16", show_default=True)
 @click.option("--out", default=None, help="Write the full report as JSON here")
-def compare(baseline, modified, n_prompts, max_new_tokens, device, dtype, out):
+def compare(baseline, modified, n_prompts, max_new_tokens, capability_set, device, dtype, out):
     """Compare two models on refusal + capability through the same loader.
 
     Baseline and modified run through the identical loader, tokenizer and greedy
@@ -393,7 +401,7 @@ def compare(baseline, modified, n_prompts, max_new_tokens, device, dtype, out):
     from vivasecuris.aiasylum.interp.core.loader import load
     from vivasecuris.aiasylum.weights.corpus import build_split
     from vivasecuris.aiasylum.weights.evaluate import (
-        capability_questions, factual_accuracy, generate_greedy,
+        capability_set as _capability_set, compare_verdict, generate_greedy,
     )
     from vivasecuris.aiasylum.weights.manifest import SurgeryManifest
     from vivasecuris.aiasylum.weights.progress import Reporter
@@ -403,7 +411,8 @@ def compare(baseline, modified, n_prompts, max_new_tokens, device, dtype, out):
     split = build_split(seed=0)
     harmful = split.harmful_test[:n_prompts]
     harmless = split.harmless_test[:n_prompts]
-    factual_qs = capability_questions()
+    capability = _capability_set(capability_set)
+    factual_qs = capability.questions
 
     man = SurgeryManifest.load(modified)
     if man is not None:
@@ -417,11 +426,11 @@ def compare(baseline, modified, n_prompts, max_new_tokens, device, dtype, out):
             mdl, tok = load(model_id, device=device, dtype=dtype)
         harm = generate_greedy(mdl, tok, harmful, max_new_tokens=max_new_tokens)
         harmless_r = generate_greedy(mdl, tok, harmless, max_new_tokens=max_new_tokens)
-        fac = generate_greedy(mdl, tok, factual_qs, max_new_tokens=32)
+        fac = generate_greedy(mdl, tok, factual_qs, max_new_tokens=capability.max_new_tokens)
         metrics[label] = {
             "refuse_harmful": refusal_rate(harm),
             "refuse_harmless": refusal_rate(harmless_r),
-            "factual_acc": factual_accuracy(fac),
+            "factual_acc": capability.score(fac),
             "degenerate": bool(_looks_degenerate(harm) or _looks_degenerate(fac)),
             "responses": {"harmful": harm, "harmless": harmless_r, "factual": fac},
         }
@@ -430,6 +439,8 @@ def compare(baseline, modified, n_prompts, max_new_tokens, device, dtype, out):
         gc.collect()
 
     b, m = metrics["baseline"], metrics["modified"]
+    click.echo(f"\ncapability control: {capability.name} ({capability.size} items); "
+               f"verdict: {compare_verdict(b, m)}")
     click.echo("\n" + "=" * 64)
     click.echo(f"{'model':<12}{'refuse harmful':>16}{'refuse harmless':>17}{'factual':>10}")
     for label in ("baseline", "modified"):

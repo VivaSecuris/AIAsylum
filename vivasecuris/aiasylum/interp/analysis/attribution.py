@@ -76,7 +76,7 @@ class AttributionAnalyzer:
         }
 
     @staticmethod
-    def classify_head_roles_causal_head_gating(
+    def classify_head_roles_by_contribution(
         result_a: RunResult,
         result_b: RunResult,
         layer_idx: int,
@@ -86,12 +86,14 @@ class AttributionAnalyzer:
         task_performance_metric: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """
-        Classify attention heads using Causal Head Gating approach.
-        
-        Heads are classified as:
-        - Facilitating: Increase task performance when active
-        - Interfering: Decrease task performance when active
-        - Irrelevant: No significant impact
+        Label attention heads by how far their contribution score sits from
+        the layer mean: above one standard deviation "facilitating", below
+        "interfering", otherwise "irrelevant".
+
+        This is a descriptive heuristic on captured activations. It trains no
+        gates and measures no causal effect, so it must not be presented as
+        Causal Head Gating; the payload says so in its ``claim`` field. For a
+        causal head result use head-level activation patching.
         
         Args:
             result_a: First run result
@@ -116,6 +118,8 @@ class AttributionAnalyzer:
             return {
                 "head_roles": [],
                 "classification_available": False,
+                "claim": "descriptive",
+                "method": "contribution_threshold",
             }
         
         head_roles = []
@@ -147,10 +151,16 @@ class AttributionAnalyzer:
         return {
             "head_roles": head_roles,
             "classification_available": True,
+            "claim": "descriptive",
+            "method": "contribution_threshold",
             "num_facilitating": sum(1 for h in head_roles if h["role"] == "facilitating"),
             "num_interfering": sum(1 for h in head_roles if h["role"] == "interfering"),
             "num_irrelevant": sum(1 for h in head_roles if h["role"] == "irrelevant"),
         }
+
+    # Old name, kept so external callers fail loudly in review rather than at
+    # import time. Same heuristic; the label was the problem.
+    classify_head_roles_causal_head_gating = classify_head_roles_by_contribution
 
     @staticmethod
     def identify_mixed_heads(

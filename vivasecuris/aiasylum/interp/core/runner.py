@@ -71,15 +71,36 @@ class ModelRunner:
         # Register hooks if needed
         if self.debug_mode:
             self._register_debug_hooks()
-        
+
+        # SDPA and flash kernels never materialise attention weights, so
+        # `output_attentions=True` returns None under them. Switch to eager for
+        # the capture pass and back afterwards, so generation elsewhere keeps
+        # the fast kernel.
+        restore_impl = None
+        if self.debug_mode:
+            impl = getattr(getattr(self.model, "config", None), "_attn_implementation", None)
+            if impl not in (None, "eager") and hasattr(self.model, "set_attn_implementation"):
+                try:
+                    self.model.set_attn_implementation("eager")
+                    restore_impl = impl
+                except Exception as exc:  # pragma: no cover - depends on transformers version
+                    logger.warning("Could not switch attention to eager for capture: %s", exc)
+
         # Forward pass
-        with torch.no_grad():
-            outputs = self.model(
-                input_ids=input_ids,
-                output_hidden_states=True,
-                output_attentions=self.debug_mode,
-                return_dict=True,
-            )
+        try:
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=input_ids,
+                    output_hidden_states=True,
+                    output_attentions=self.debug_mode,
+                    return_dict=True,
+                )
+        finally:
+            if restore_impl is not None:
+                try:
+                    self.model.set_attn_implementation(restore_impl)
+                except Exception:  # pragma: no cover
+                    pass
         
         # Extract optional debug info from hooks before removing them
         mlp_activations = None

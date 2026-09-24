@@ -257,11 +257,27 @@ class ActivationHooks:
         return hook
 
     def _register_pre_mlp_hook(self, layer_idx: int, mlp_module: nn.Module) -> Optional[Any]:
-        """Register hook for pre-MLP (intermediate) activations if possible."""
-        # Llama/Mistral/Gemma: MLP has gate_proj, up_proj, down_proj. Intermediate = silu(gate)*up
-        # (computed in forward, not a single submodule output). Pre-MLP would require
-        # a forward hook that captures the intermediate inside the MLP forward; left for future work.
-        return None
+        """Capture the input to the MLP down projection: the per-neuron activations.
+
+        For gated MLPs (llama, mistral, gemma, qwen) that tensor is
+        ``act(gate(x)) * up(x)``, so it is already post-activation and each
+        column of the down projection is one neuron's write direction. Fused
+        MoE blocks have no single down projection; they are skipped.
+        """
+        down = None
+        for name in ("down_proj", "dense_4h_to_h", "c_proj", "fc2"):
+            down = getattr(mlp_module, name, None)
+            if isinstance(down, nn.Module):
+                break
+            down = None
+        if down is None:
+            return None
+
+        def hook(_module: nn.Module, args: Any) -> None:
+            if args and hasattr(args[0], "detach"):
+                self.pre_mlp_activations[layer_idx] = args[0].detach().cpu().float()
+
+        return down.register_forward_pre_hook(hook)
 
     def remove(self) -> None:
         """Remove all registered hooks."""

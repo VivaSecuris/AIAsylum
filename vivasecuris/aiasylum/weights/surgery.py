@@ -379,8 +379,12 @@ def select_edit(
     max_new_tokens: int = 96,
     factual_limit: Optional[int] = None,
     progress: Optional[callable] = None,
+    capability=None,
 ) -> Dict[str, object]:
     """Search subspace rank x strength for the most-compliant capability-safe edit.
+
+    ``capability`` is a :class:`evaluate.CapabilitySet`; ``None`` means the
+    built-in control, trimmed to ``factual_limit`` questions.
 
     Selection *is* the fix. Cranking one direction (beta<0) or removing a large
     subspace both reach 0% refusal only by lobotomizing the model, which a
@@ -408,12 +412,18 @@ def select_edit(
         _looks_degenerate,
     )
 
+    from vivasecuris.aiasylum.weights.evaluate import CapabilitySet
+
     basis = direction.as_basis()
     max_rank = int(basis.shape[0])
     ranks = tuple(sorted({r for r in ranks if 1 <= r <= max_rank}))
     if not ranks:
         ranks = (max_rank,)
-    factual_qs = capability_questions(limit=factual_limit)
+    if capability is None:
+        capability = CapabilitySet(
+            "builtin", capability_questions(limit=factual_limit), factual_accuracy, 32
+        )
+    factual_qs = capability.questions
 
     def _note(msg):
         if progress:
@@ -422,10 +432,10 @@ def select_edit(
     # Unedited baseline, once: the capability floor is relative to this.
     _note("baseline (no edit)")
     base_harm = generate_greedy(model, tokenizer, harmful_prompts, max_new_tokens=max_new_tokens)
-    base_fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=32)
+    base_fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=capability.max_new_tokens)
     baseline = {
         "refuse_harmful": refusal_rate(base_harm),
-        "factual_acc": factual_accuracy(base_fac),
+        "factual_acc": capability.score(base_fac),
     }
     floor = baseline["factual_acc"] - factual_floor
 
@@ -436,9 +446,9 @@ def select_edit(
             _note(f"rank={r} k={k}")
             with ablate_subspace(model, sub, k=k):
                 harm = generate_greedy(model, tokenizer, harmful_prompts, max_new_tokens=max_new_tokens)
-                fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=32)
+                fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=capability.max_new_tokens)
             refuse = refusal_rate(harm)
-            fac_acc = factual_accuracy(fac)
+            fac_acc = capability.score(fac)
             degenerate = bool(_looks_degenerate(harm) or _looks_degenerate(fac))
             accepted = (not degenerate) and (fac_acc >= floor)
             frontier.append({
@@ -462,4 +472,5 @@ def select_edit(
             key=lambda row: (row["refuse_harmful"], row["rank"], row["k"], -row["factual_acc"]),
         )
 
-    return {"baseline": baseline, "frontier": frontier, "best": best}
+    return {"baseline": baseline, "frontier": frontier, "best": best,
+            "capability_set": capability.name, "capability_n": capability.size}

@@ -711,7 +711,7 @@ def test_chat_borrows_the_shared_slot_rather_than_holding_it():
     import inspect
 
     src = inspect.getsource(weights_route.chat_with_model)
-    assert "_semaphore()" in src, "chat should take the slot for its turn"
+    assert ("hold(" in src or "_semaphore()" in src), "chat should take the slot for its turn"
     assert "to_thread" in src, "generation must not run on the event loop"
     # Loaded through the serving provider, which caches by (path, device, dtype).
     assert "get_provider" in src

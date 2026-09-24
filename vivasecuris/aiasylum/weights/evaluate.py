@@ -11,6 +11,9 @@ command) runs this same control so that trap is always visible.
 
 from __future__ import annotations
 
+import random
+import re
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Short factual questions with unambiguous substring answers. Deliberately tiny
@@ -35,6 +38,109 @@ CAPABILITY_QA: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 def capability_questions(limit: Optional[int] = None) -> List[str]:
     qs = [q for q, _ in CAPABILITY_QA]
     return qs[:limit] if limit else qs
+
+
+@dataclass
+class CapabilitySet:
+    """A capability control: the questions to ask and how to score the answers.
+
+    ``builtin`` is the 12-question smoke test above. ``mmlu:N`` draws N
+    multiple-choice items from MMLU so a "no capability cost" claim rests on
+    more than a dozen questions; the draw is seeded, so baseline and edited
+    models answer the same items.
+    """
+
+    name: str
+    questions: List[str]
+    score: Callable[[Sequence[str]], float]
+    max_new_tokens: int = 32
+    # Kept so an evidence export can say which items were asked.
+    items: List[Dict[str, object]] = field(default_factory=list)
+
+    @property
+    def size(self) -> int:
+        return len(self.questions)
+
+
+# The first standalone A-D in the reply. Substring matching would accept the
+# letter "a" in almost any sentence.
+_CHOICE = re.compile(r"(?<![A-Za-z])([ABCD])(?![A-Za-z])")
+
+
+def _choice_letter(text: str) -> Optional[str]:
+    m = _CHOICE.search((text or "").strip())
+    return m.group(1) if m else None
+
+
+def mmlu_items(n: int, seed: int = 0) -> List[Dict[str, object]]:
+    """N MMLU test items (question, choices, answer letter), seeded draw over all subjects."""
+    from datasets import load_dataset
+
+    from vivasecuris.aiasylum.benchmarks.datasets import BENCHMARK_DATASETS
+
+    cfg = BENCHMARK_DATASETS["mmlu"]
+    ds = load_dataset(cfg["dataset"], cfg["config"], split=cfg["split"])
+    picks = sorted(random.Random(seed).sample(range(len(ds)), min(n, len(ds))))
+    items = []
+    for i in picks:
+        row = ds[i]
+        items.append({
+            "question": row[cfg["question_field"]],
+            "choices": list(row[cfg["choices_field"]]),
+            "answer": chr(65 + int(row[cfg["answer_field"]])),
+            "subject": row.get(cfg["subject_field"]),
+        })
+    return items
+
+
+def capability_set(spec: str = "builtin", seed: int = 0) -> CapabilitySet:
+    """Build the control named by ``spec``: ``builtin`` or ``mmlu:<n>``."""
+    spec = (spec or "builtin").strip().lower()
+    if spec == "builtin":
+        return CapabilitySet("builtin", capability_questions(), factual_accuracy, 32)
+    if spec.startswith("mmlu:"):
+        n = int(spec.split(":", 1)[1])
+        if n < 1:
+            raise ValueError("mmlu:<n> needs n >= 1")
+        return mmlu_capability_set(mmlu_items(n, seed))
+    raise ValueError(f"unknown capability set {spec!r}; use 'builtin' or 'mmlu:<n>'")
+
+
+def mmlu_capability_set(items: List[Dict[str, object]]) -> CapabilitySet:
+    """Multiple-choice control over ``items`` from :func:`mmlu_items`."""
+    if True:
+        questions = [
+            item["question"].strip() + "\n\n"
+            + "\n".join(f"{chr(65 + j)}. {c}" for j, c in enumerate(item["choices"]))
+            + "\n\nAnswer with the letter only."
+            for item in items
+        ]
+        answers = [item["answer"] for item in items]
+
+        def score(responses: Sequence[str]) -> float:
+            if not responses:
+                return 0.0
+            hits = sum(1 for r, a in zip(responses, answers) if _choice_letter(r) == a)
+            return hits / min(len(responses), len(answers))
+
+        return CapabilitySet(f"mmlu:{len(items)}", questions, score, 8, items)
+
+
+def compare_verdict(baseline: Dict[str, object], modified: Dict[str, object],
+                    factual_floor: float = 0.05) -> str:
+    """One word for what a compare showed: degenerate, capability_cost, clean or unchanged.
+
+    The same test ``select`` applies to a candidate, so a compare page and a
+    frontier row agree on what counts as a clean edit.
+    """
+    if modified.get("degenerate"):
+        return "degenerate"
+    drop = float(baseline["factual_acc"]) - float(modified["factual_acc"])
+    if drop > factual_floor:
+        return "capability_cost"
+    if abs(float(modified["refuse_harmful"]) - float(baseline["refuse_harmful"])) < 1e-9:
+        return "unchanged"
+    return "clean"
 
 
 def factual_accuracy(responses: Sequence[str], qa=CAPABILITY_QA) -> float:

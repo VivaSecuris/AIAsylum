@@ -169,7 +169,7 @@ class ComparisonService:
                         attention_payload[str(layer_idx)] = head_contributions
                         
                         # Attribution analysis
-                        head_roles = AttributionAnalyzer.classify_head_roles_causal_head_gating(
+                        head_roles = AttributionAnalyzer.classify_head_roles_by_contribution(
                             result_a, result_b, layer_idx, start_a, start_b, window_len
                         )
                         attribution_payload[str(layer_idx)] = head_roles

@@ -31,7 +31,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.api.cancellation import CancellationManager
-from vivasecuris.aiasylum.api.model_jobs import model_slot
+from vivasecuris.aiasylum.api.model_jobs import hold, model_slot
 from vivasecuris.aiasylum.api.progress_events import ProgressEventManager
 from vivasecuris.aiasylum.constants import (
     STATUS_COMPLETED,
@@ -120,24 +120,23 @@ ANALYSES = {
     },
     "enable_pre_mlp_capture": {
         "label": "Pre-MLP capture",
-        "description": "Intermediate activations before the MLP, for residual decomposition.",
-        "cost": "Heavier memory; another full activation tensor per layer.",
+        "description": (
+            "Per-neuron activations (the input to the MLP down projection). Required "
+            "for neuron-level patching and for neurons in the minimal-circuit search."
+        ),
+        "cost": "O(layers x seq x d_ffn) memory, on top of MLP capture.",
         "claim": "descriptive",
         "modes": ["comparison"],
-        # The capture hook is a stub that returns None (hook_registry.py), so
-        # pre-MLP activations are always empty. That also silently caps the
-        # minimal-circuit search to attention heads, never neurons. Offering a
-        # checkbox for it would promise something the engine cannot deliver.
-        "available": False,
-        "unavailable_reason": (
-            "The pre-MLP capture hook is not implemented, so this would record "
-            "nothing. It also limits minimal-circuit search to heads only."
-        ),
+        "available": True,
     },
     "enable_patching": {
         "label": "Activation patching",
-        "description": "Substitute activations from one run into the other and re-measure.",
-        "cost": "One extra forward pass per patched location.",
+        "description": (
+            "Substitute one run's activations into the other and re-run the model. "
+            "Sweeps every layer at the last aligned token by default; reports the "
+            "fraction of the logit gap recovered and a random-perturbation null."
+        ),
+        "cost": "One real forward pass per (layer, position, direction); about 2 x layers passes by default.",
         "claim": "causal",
         "modes": ["comparison"],
         "available": True,
@@ -166,7 +165,7 @@ ANALYSES = {
         ),
         "cost": (
             "Slowest analysis in the engine: a greedy sweep over components. "
-            "Searches attention heads only, since pre-MLP capture is unimplemented."
+            "Searches attention heads, and neurons too when pre-MLP capture is on."
         ),
         "claim": "causal",
         "modes": ["comparison"],
@@ -418,7 +417,7 @@ def _execute(run_id: int, row_snapshot: Dict[str, Any], out_dir: Path) -> Dict[s
 
 async def _run_interp_background(run_id: int) -> None:
     """Own semaphore, own managers; never touches the test-run worker pool."""
-    async with _semaphore():
+    async with hold(f"interp run {run_id}"):
         session = get_session()
         try:
             row = session.query(InterpRun).filter(InterpRun.id == run_id).first()

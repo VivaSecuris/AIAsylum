@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+import torch
 import torch.nn as nn
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,60 @@ _MLP_DOWN_ATTRS = ("down_proj", "dense_4h_to_h", "w2")
 
 # Feed-forward submodules that hold a single shared expert alongside the routed ones.
 _SHARED_EXPERT_ATTRS = ("shared_expert", "shared_mlp")
+
+
+def get_final_norm(model: nn.Module) -> Optional[nn.Module]:
+    """The normalisation applied to the final residual before the unembedding.
+
+    A logit lens that skips it reads un-normalised residuals through a matrix
+    trained on normalised ones; on RMSNorm models the norms differ by an order
+    of magnitude across depth, so the raw lens is a different measurement at
+    every layer. Returns ``None`` when no known attribute is found.
+    """
+    for path in (
+        ("model", "norm"),                 # llama, mistral, qwen2/3, gemma, mixtral
+        ("gpt_neox", "final_layer_norm"),  # gpt_neox
+        ("transformer", "ln_f"),           # gpt2-style
+        ("model", "final_layernorm"),      # phi-style
+    ):
+        obj: Any = model
+        for name in path:
+            obj = getattr(obj, name, None)
+            if obj is None:
+                break
+        if isinstance(obj, nn.Module):
+            return obj
+    return None
+
+
+def final_hidden_is_normed(model: nn.Module) -> bool:
+    """Whether ``output_hidden_states`` ends with the post-norm final residual.
+
+    transformers changed this convention over time (4.57 returns the last
+    entry after the final norm; older releases returned it before). Everything
+    that reads or patches hidden-state index ``n_blocks`` has to know which,
+    so it is probed once per model with a one-token forward pass and cached
+    on the module rather than inferred from a version string.
+    """
+    cached = getattr(model, "_aiasylum_final_hidden_is_normed", None)
+    if cached is not None:
+        return bool(cached)
+    result = False
+    try:
+        head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+        if head is not None:
+            ids = torch.tensor([[1]], device=model.device)
+            with torch.no_grad():
+                out = model(input_ids=ids, output_hidden_states=True, return_dict=True)
+                direct = head(out.hidden_states[-1])
+            result = bool(torch.allclose(direct.float(), out.logits.float(), atol=1e-4, rtol=1e-4))
+    except Exception:  # pragma: no cover - probe is best-effort
+        result = False
+    try:
+        setattr(model, "_aiasylum_final_hidden_is_normed", result)
+    except Exception:
+        pass
+    return result
 
 
 def get_decoder_layers(model: nn.Module, arch: str):

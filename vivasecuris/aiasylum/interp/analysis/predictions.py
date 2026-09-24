@@ -5,13 +5,22 @@ import torch.nn.functional as F
 from typing import Dict, Any, List, Tuple
 import numpy as np
 
+from vivasecuris.aiasylum.interp.core.arch import final_hidden_is_normed, get_final_norm
 from vivasecuris.aiasylum.interp.data.models import RunResult
 
 
 class PredictionAnalyzer:
-    """Analyzes token predictions from activations."""
+    """Logit lens: read intermediate residuals through the model's own unembedding.
 
-    def __init__(self, model, tokenizer, topk: int = 10):
+    The final normalisation is applied first (``apply_final_norm=True``), so the
+    reading at the last hidden state is exactly the model's own logits and the
+    readings at earlier layers are on the scale the unembedding was trained
+    for. The un-normalised variant is kept behind the flag for comparison; it
+    is not the default because it silently measures something different at
+    every depth.
+    """
+
+    def __init__(self, model, tokenizer, topk: int = 10, apply_final_norm: bool = True):
         """
         Initialize prediction analyzer.
         
@@ -19,10 +28,17 @@ class PredictionAnalyzer:
             model: Model instance (needed for unembedding matrix)
             tokenizer: Tokenizer instance
             topk: Number of top predictions to consider
+            apply_final_norm: Run hidden states through the final norm before
+                the unembedding (the correct logit lens).
         """
         self.model = model
         self.tokenizer = tokenizer
         self.topk = topk
+        self.apply_final_norm = apply_final_norm
+        self.final_norm = get_final_norm(model) if apply_final_norm else None
+        # transformers may hand back the last hidden state already normed; in
+        # that case the norm is applied to intermediate layers only.
+        self.final_is_normed = final_hidden_is_normed(model) if apply_final_norm else False
         
         # Get unembedding matrix (output projection)
         if hasattr(model, "lm_head"):
@@ -36,6 +52,7 @@ class PredictionAnalyzer:
     def get_predictions_at_position(
         self,
         hidden_state: torch.Tensor,
+        is_final: bool = False,
     ) -> Tuple[List[int], List[float]]:
         """
         Get top-k predictions for a hidden state.
@@ -46,14 +63,29 @@ class PredictionAnalyzer:
         Returns:
             Tuple of (top_k_indices, top_k_probs)
         """
-        # Project through unembedding
-        logits = hidden_state @ self.unembedding.T  # [vocab_size]
+        logits = self.lens_logits(hidden_state, is_final=is_final)
         probs = F.softmax(logits, dim=-1)
         
         # Get top-k
         top_k_probs, top_k_indices = torch.topk(probs, k=self.topk)
         
         return top_k_indices.tolist(), top_k_probs.tolist()
+
+    def lens_logits(self, hidden_state: torch.Tensor, is_final: bool = False) -> torch.Tensor:
+        """Full-vocabulary lens logits for one hidden state, on CPU in float32.
+
+        The hidden state is moved to the unembedding's device and dtype, so a
+        CPU-cached residual can be read through a model resident on MPS or CUDA.
+        ``is_final`` marks the last hidden-state entry, which is skipped by the
+        norm when transformers has already normed it.
+        """
+        W = self.unembedding
+        with torch.no_grad():
+            h = hidden_state.to(device=W.device, dtype=W.dtype)
+            if self.final_norm is not None and not (is_final and self.final_is_normed):
+                h = self.final_norm(h)
+            logits = h @ W.T  # [vocab_size]
+        return logits.float().cpu()
 
     def compute_predictions_single(
         self,
@@ -78,8 +110,9 @@ class PredictionAnalyzer:
         predictions_data = []
         token_to_token_diff = []
         hs = result.hidden_states[layer_idx][0, start : start + window_len, :]
+        is_final = layer_idx == len(result.hidden_states) - 1
         for pos in range(window_len):
-            top_indices, probs = self.get_predictions_at_position(hs[pos])
+            top_indices, probs = self.get_predictions_at_position(hs[pos], is_final=is_final)
             token_str = result.token_strs[start + pos] if start + pos < len(result.token_strs) else ""
             predictions_data.append({
                 "position": pos,
@@ -136,12 +169,13 @@ class PredictionAnalyzer:
         # Get hidden states for this layer
         hs_a = result_a.hidden_states[layer_idx][0, start_a : start_a + window_len, :]
         hs_b = result_b.hidden_states[layer_idx][0, start_b : start_b + window_len, :]
+        is_final = layer_idx == len(result_a.hidden_states) - 1
         
         # Analyze each token position
         for pos in range(window_len):
             # Get predictions
-            top_a, prob_a = self.get_predictions_at_position(hs_a[pos])
-            top_b, prob_b = self.get_predictions_at_position(hs_b[pos])
+            top_a, prob_a = self.get_predictions_at_position(hs_a[pos], is_final=is_final)
+            top_b, prob_b = self.get_predictions_at_position(hs_b[pos], is_final=is_final)
             
             # Compute overlap
             overlap = len(set(top_a) & set(top_b)) / self.topk

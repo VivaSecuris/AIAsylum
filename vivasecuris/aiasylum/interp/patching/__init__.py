@@ -1,103 +1,146 @@
-"""Patching and intervention modules for causal testing (Phase 3).
+"""Activation patching with real forward passes.
 
-This module implements lightweight activation patching experiments that operate
-purely on already-captured hidden states. The design goal is:
+Every patch installs a hook on the target run, re-runs the model, and reads
+the effect off the actual output logits. The previous implementation re-added
+cached pieces into a single residual and projected it through ``lm_head``
+without running the layers above it, so nothing it reported had passed
+through the rest of the network. That is not a causal measurement, and the
+``claim: causal`` label the API attaches to this analysis was not earned.
 
-- **No additional forward passes**: we reuse `RunResult.hidden_states`.
-- **Model-agnostic** for decoder-style LMs with an `lm_head` (same assumption
-  as `PredictionAnalyzer`).
-- **Safe by default**: if anything looks unsupported, we return a structured
-  error in the payload instead of raising.
+Three granularities, all measured the same way:
 
-The current implementation focuses on:
+- ``layer``: replace the residual stream at hidden-state index ``L`` and one
+  position with the source run's value. Index ``L < n_blocks`` is the input to
+  block ``L`` (a pre-hook); index ``n_blocks`` is the final residual (a
+  post-hook on the last block), the same convention as ``weights.steering``.
+- ``head``: add ``(source − target)`` of one head's contribution to the
+  attention sublayer output at one position. Per-head contributions come from
+  :func:`interp.analysis.ov_qk.compute_per_head_outputs`, so attention and
+  Q/K/V capture must be on.
+- ``neuron``: add ``(source − target)`` of one neuron's contribution to the
+  MLP sublayer output at one position. Needs pre-MLP capture (the input to
+  the down projection).
 
-- Patch mode: last-token activation patching at a selected layer
-- Patch direction: A → B and B → A
-- Metrics:
-  - Before/after cosine similarity and delta-norm at the patched position
-  - Local logits/top‑k prediction changes using the unembedding matrix
+Metrics per patch, read at the last position of the target sequence:
+
+- ``logit_diff`` = logit(target's original top token) − logit(source's original
+  top token). ``recovered`` is the fraction of the gap between the target run
+  and the source run that the patch closes; 1.0 means the patched target now
+  predicts exactly like the source at that margin, 0.0 means no effect.
+- ``kl_to_source_after`` / ``kl_to_target_after``: where the patched
+  distribution sits between the two originals.
+- ``cos``/``delta`` before and after: the final residual of the (patched)
+  target against the source's final residual. The dashboard plots the
+  improvement, which is now "how far the final representation moved toward
+  the source".
+
+A null baseline accompanies the layer sweep: at the most effective layer, a
+random perturbation of the same norm as the real patch is applied instead.
+A real patch has to beat that number to mean anything.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Literal, Optional, Tuple
+import logging
+import math
+from dataclasses import asdict, dataclass, field
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from vivasecuris.aiasylum.interp.core.arch import final_hidden_is_normed, get_decoder_layers, get_final_norm
 from vivasecuris.aiasylum.interp.core.config import Config
+from vivasecuris.aiasylum.interp.core.hook_registry import _get_layer_stack, detect_architecture
 from vivasecuris.aiasylum.interp.data.models import RunResult
+
+logger = logging.getLogger(__name__)
 
 
 PatchDirection = Literal["A_to_B", "B_to_A"]
 PatchMode = Literal["last_token", "multi_position"]
 PatchComponents = Literal["layer", "head", "neuron"]
 
+# Default neuron budget when no explicit list is given: the neurons whose
+# activation differs most between the runs at the patched position.
+DEFAULT_NEURON_BUDGET = 50
+
 
 @dataclass
 class SinglePatchResult:
-    """Result for a single (layer, position, direction) patch experiment."""
+    """One (layer, position, direction) patch, measured on a real forward pass."""
 
     layer: int
     position: int
-    direction: PatchDirection
+    direction: str
 
-    # Metrics before patch
+    # Final-residual geometry relative to the source run.
     cos_before: float
     delta_before: float
-    top_a_before: List[str]
-    top_b_before: List[str]
-
-    # Metrics after patch (on target stream only)
     cos_after: float
     delta_after: float
+
+    # Next-token predictions: the two originals and the patched target.
+    top_a_before: List[str]
+    top_b_before: List[str]
     top_target_after: List[str]
+
+    # Causal metrics.
+    logit_diff_before: float
+    logit_diff_after: float
+    logit_diff_source: float
+    recovered: float
+    recovered_kl: float
+    kl_to_target_after: float
+    kl_to_source_after: float
+    top_flipped: bool
 
 
 @dataclass
 class PatchExperiment:
-    """Container for one logical patching experiment."""
+    """One logical experiment: a component patched across positions."""
 
     id: str
     description: str
-    patch_mode: PatchMode
+    patch_mode: str
     layer: int
     positions: List[int]
-    direction: PatchDirection
+    direction: str
     results: List[SinglePatchResult]
+    component: str = "layer"
+    component_index: Optional[int] = None
+
+
+# --------------------------------------------------------------------------
+# Small helpers
+# --------------------------------------------------------------------------
 
 
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute cosine similarity between two 1D tensors."""
-    a_n = F.normalize(a.view(1, -1), dim=-1)
-    b_n = F.normalize(b.view(1, -1), dim=-1)
+    a_n = F.normalize(a.reshape(1, -1).float(), dim=-1)
+    b_n = F.normalize(b.reshape(1, -1).float(), dim=-1)
     return float(torch.sum(a_n * b_n).item())
 
 
 def _delta_norm(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute L2 norm of the difference between two 1D tensors."""
-    return float(torch.linalg.vector_norm(a - b).item())
+    return float(torch.linalg.vector_norm(a.float() - b.float()).item())
 
 
-def _topk_from_hidden(
-    hidden: torch.Tensor,
-    lm_head_weight: torch.Tensor,
-    tokenizer,
-    topk: int,
-) -> List[str]:
-    """Project a hidden state through the unembedding and return top‑k tokens."""
-    # hidden: [d], lm_head_weight: [vocab, d]
-    logits = hidden @ lm_head_weight.t()
-    probs = F.softmax(logits, dim=-1)
-    top_probs, top_indices = torch.topk(probs, k=topk)
-    tokens = [tokenizer.decode([int(i)]) for i in top_indices]
-    return tokens
+def _kl(p_logits: torch.Tensor, q_logits: torch.Tensor) -> float:
+    """KL(p || q) for two logit vectors."""
+    p = F.log_softmax(p_logits.float(), dim=-1)
+    q = F.log_softmax(q_logits.float(), dim=-1)
+    return float((p.exp() * (p - q)).sum().item())
+
+
+def _topk_tokens(logits: torch.Tensor, tokenizer, k: int) -> List[str]:
+    top = torch.topk(logits.float(), k=min(k, logits.shape[-1])).indices
+    return [tokenizer.decode([int(i)]) for i in top]
 
 
 def _get_lm_head_weight(model) -> Optional[torch.Tensor]:
-    """Best-effort retrieval of the unembedding matrix."""
+    """Best-effort retrieval of the unembedding matrix (kept for the scrub code)."""
     if hasattr(model, "lm_head") and hasattr(model.lm_head, "weight"):
         return model.lm_head.weight.detach().cpu().float()
     if hasattr(model, "embed_out") and hasattr(model.embed_out, "weight"):
@@ -105,17 +148,15 @@ def _get_lm_head_weight(model) -> Optional[torch.Tensor]:
     return None
 
 
-def _get_mlp_c_proj(model: Any, layer_idx: int) -> Optional[torch.Tensor]:
-    """Return MLP output projection (down_proj for Llama-style). Shape [d_model, inter_dim]."""
+def _get_mlp_down(model: Any, layer_idx: int) -> Optional[torch.Tensor]:
+    """Return the MLP down projection weight ``[d_model, inter_dim]``."""
     if hasattr(model, "model") and hasattr(model.model, "layers"):
-        block = model.model.layers[layer_idx]
-        mlp = getattr(block, "mlp", None)
-        if mlp is not None and hasattr(mlp, "down_proj") and hasattr(mlp.down_proj, "weight"):
+        mlp = getattr(model.model.layers[layer_idx], "mlp", None)
+        if mlp is not None and hasattr(mlp, "down_proj"):
             return mlp.down_proj.weight.detach().cpu().float()
     if hasattr(model, "gpt_neox") and hasattr(model.gpt_neox, "layers"):
-        block = model.gpt_neox.layers[layer_idx]
-        mlp = getattr(block, "mlp", None)
-        if mlp is not None and hasattr(mlp, "dense_4h_to_h") and hasattr(mlp.dense_4h_to_h, "weight"):
+        mlp = getattr(model.gpt_neox.layers[layer_idx], "mlp", None)
+        if mlp is not None and hasattr(mlp, "dense_4h_to_h"):
             return mlp.dense_4h_to_h.weight.detach().cpu().float()
     return None
 
@@ -127,9 +168,11 @@ def compute_per_neuron_mlp_outputs(
     start: int,
     window_len: int,
 ) -> Optional[torch.Tensor]:
-    """
-    Per-neuron MLP contribution for a layer when pre_mlp_activations and c_proj are available.
-    Returns [n_neurons, window_len, d_model] or None.
+    """Per-neuron MLP contribution ``[n_neurons, window_len, d_model]``.
+
+    ``pre_mlp_activations`` holds the input to the down projection, which is
+    already ``act(gate) * up`` for gated MLPs, so no activation function is
+    applied here.
     """
     pre_mlp = (
         result.pre_mlp_activations.get(layer_idx)
@@ -137,87 +180,217 @@ def compute_per_neuron_mlp_outputs(
     )
     if pre_mlp is None:
         return None
-    c_proj = _get_mlp_c_proj(model, layer_idx)
-    if c_proj is None:
+    down = _get_mlp_down(model, layer_idx)
+    if down is None:
         return None
-    # pre_mlp: [1, seq, inter_dim], c_proj: [d_model, inter_dim]
-    pre = pre_mlp[0, start : start + window_len, :].float()  # [window_len, inter_dim]
-    act = F.gelu(pre)  # Activation before down_proj (Llama uses silu; gelu for compatibility with pre_mlp if added later)
-    # MLP output = act @ c_proj.T -> [window_len, d_model]
-    # Per neuron n: act[:, n:n+1] @ c_proj[:, n:n+1].T -> [window_len, d_model]
-    n_neurons = act.shape[1]
-    d_model = c_proj.shape[0]
-    device = pre.device
-    c_proj = c_proj.to(device)
-    out = torch.zeros(n_neurons, window_len, d_model, device=device, dtype=act.dtype)
-    for n in range(n_neurons):
-        out[n] = act[:, n : n + 1] * c_proj[:, n].unsqueeze(0)
-    return out
+    pre = pre_mlp[0, start : start + window_len, :].float()       # [w, inter]
+    # out[n, t, :] = pre[t, n] * down[:, n]
+    return torch.einsum("tn,dn->ntd", pre, down)
 
 
-def patch_head_into_residual(
-    layer_idx: int,
-    position_in_window: int,
+def _first_tensor(output: Any) -> torch.Tensor:
+    return output[0] if isinstance(output, tuple) else output
+
+
+def _with_first(output: Any, new: torch.Tensor) -> Any:
+    if isinstance(output, tuple):
+        return (new,) + tuple(output[1:])
+    return new
+
+
+# --------------------------------------------------------------------------
+# Hooks
+# --------------------------------------------------------------------------
+
+
+def _replace_positions_pre_hook(pairs: Sequence[Tuple[int, torch.Tensor]]):
+    """Pre-hook on a decoder block: overwrite the residual at given positions."""
+
+    def hook(_module, args, kwargs):
+        if args:
+            hidden = args[0]
+        else:
+            hidden = kwargs.get("hidden_states")
+        if hidden is None or not hasattr(hidden, "shape"):
+            return None
+        hidden = hidden.clone()
+        for pos, vec in pairs:
+            hidden[:, pos, :] = vec.to(device=hidden.device, dtype=hidden.dtype)
+        if args:
+            return (hidden,) + tuple(args[1:]), kwargs
+        kwargs = dict(kwargs)
+        kwargs["hidden_states"] = hidden
+        return args, kwargs
+
+    return hook
+
+
+def _replace_positions_post_hook(pairs: Sequence[Tuple[int, torch.Tensor]]):
+    """Post-hook on the last block: overwrite the final residual at positions."""
+
+    def hook(_module, _args, output):
+        hidden = _first_tensor(output)
+        if hidden is None or not hasattr(hidden, "shape"):
+            return None
+        hidden = hidden.clone()
+        for pos, vec in pairs:
+            hidden[:, pos, :] = vec.to(device=hidden.device, dtype=hidden.dtype)
+        return _with_first(output, hidden)
+
+    return hook
+
+
+def _add_delta_post_hook(pairs: Sequence[Tuple[int, torch.Tensor]]):
+    """Post-hook on a sublayer (attention or MLP): add a delta at positions."""
+
+    def hook(_module, _args, output):
+        hidden = _first_tensor(output)
+        if hidden is None or not hasattr(hidden, "shape"):
+            return None
+        hidden = hidden.clone()
+        for pos, delta in pairs:
+            hidden[:, pos, :] = hidden[:, pos, :] + delta.to(device=hidden.device, dtype=hidden.dtype)
+        return _with_first(output, hidden)
+
+    return hook
+
+
+def _forward(model, input_ids: torch.Tensor, hooks: Sequence[Tuple[Any, str, Callable]]):
+    """Run the model with hooks installed; return (last logits, last final hidden)."""
+    handles = []
+    try:
+        for module, kind, fn in hooks:
+            if kind == "pre":
+                handles.append(module.register_forward_pre_hook(fn, with_kwargs=True))
+            else:
+                handles.append(module.register_forward_hook(fn))
+        with torch.no_grad():
+            out = model(
+                input_ids=input_ids.to(model.device),
+                output_hidden_states=True,
+                return_dict=True,
+            )
+        return out.logits[0, -1].float().cpu(), out.hidden_states[-1][0, -1].float().cpu()
+    finally:
+        for h in handles:
+            h.remove()
+
+
+def _final_target(model, blocks):
+    """Module whose output is hidden-state index ``n_blocks``.
+
+    When transformers returns the last hidden state after the final norm, the
+    cached vector lives in post-norm space and must be written back on the
+    norm's output; otherwise it is the last block's output.
+    """
+    if final_hidden_is_normed(model):
+        norm = get_final_norm(model)
+        if norm is not None:
+            return norm
+    return blocks[-1]
+
+
+def patch_and_run(
+    model,
     result_src: RunResult,
     result_tgt: RunResult,
-    start_src: int,
-    start_tgt: int,
-    window_len: int,
-    head_idx: int,
-    model: Any,
-) -> Optional[torch.Tensor]:
+    layer: int,
+    pairs: Sequence[Tuple[int, int]],
+):
+    """Patch the residual at hidden-state index ``layer`` and re-run the target.
+
+    ``pairs`` are ``(source_position, target_position)`` absolute token indices.
+    Returns ``(last_logits, last_final_hidden)`` of the patched target run.
+    Exposed on its own so a caller can patch a whole window jointly; the
+    experiment runner patches positions independently.
     """
-    Compute residual at (layer_idx+1, position) after patching head `head_idx` from src into tgt.
-    Returns [d_model] tensor or None if data unavailable.
-    """
-    from vivasecuris.aiasylum.interp.analysis.ov_qk import compute_per_head_outputs
-    per_src = compute_per_head_outputs(result_src, model, layer_idx, start_src, window_len)
-    per_tgt = compute_per_head_outputs(result_tgt, model, layer_idx, start_tgt, window_len)
-    if per_src is None or per_tgt is None:
-        return None
-    if head_idx >= per_src.shape[0]:
-        return None
-    # Per-head at this position: [n_heads, d_model]
-    head_src = per_src[:, position_in_window, :]  # [n_heads, d_model]
-    head_tgt = per_tgt[:, position_in_window, :]
-    attn_tgt = result_tgt.attn_outputs[layer_idx][0, start_tgt + position_in_window, :].float()
-    patched_attn = attn_tgt - head_tgt[head_idx] + head_src[head_idx]
-    pos_tgt = start_tgt + position_in_window
-    hidden_before = result_tgt.hidden_states[layer_idx][0, pos_tgt, :].float()
-    mlp_at = result_tgt.mlp_activations[layer_idx][0, pos_tgt, :].float()
-    return (hidden_before + patched_attn + mlp_at).cpu()
+    arch = detect_architecture(model)
+    blocks = get_decoder_layers(model, arch) if arch else None
+    if not blocks:
+        raise ValueError(f"Could not locate decoder layers for patching (arch={arch})")
+    n_blocks = len(blocks)
+    if not 0 <= layer <= n_blocks:
+        raise ValueError(f"layer {layer} outside 0..{n_blocks}")
+    vec_pairs = [(t, result_src.hidden_states[layer][0, s]) for s, t in pairs]
+    if layer < n_blocks:
+        hooks = [(blocks[layer], "pre", _replace_positions_pre_hook(vec_pairs))]
+    else:
+        hooks = [(_final_target(model, blocks), "post", _replace_positions_post_hook(vec_pairs))]
+    return _forward(model, result_tgt.input_ids, hooks)
 
 
-def patch_neuron_into_residual(
-    layer_idx: int,
-    position_in_window: int,
-    result_src: RunResult,
-    result_tgt: RunResult,
-    start_src: int,
-    start_tgt: int,
-    window_len: int,
-    neuron_idx: int,
-    model: Any,
-) -> Optional[torch.Tensor]:
-    """
-    Compute residual at (layer_idx+1, position) after patching neuron `neuron_idx` from src into tgt.
-    Returns [d_model] tensor or None if data unavailable.
-    """
-    per_src = compute_per_neuron_mlp_outputs(result_src, model, layer_idx, start_src, window_len)
-    per_tgt = compute_per_neuron_mlp_outputs(result_tgt, model, layer_idx, start_tgt, window_len)
-    if per_src is None or per_tgt is None:
-        return None
-    if neuron_idx >= per_src.shape[0]:
-        return None
-    # [n_neurons, d_model] at this position
-    neu_src = per_src[:, position_in_window, :]
-    neu_tgt = per_tgt[:, position_in_window, :]
-    mlp_tgt = result_tgt.mlp_activations[layer_idx][0, start_tgt + position_in_window, :].float()
-    patched_mlp = mlp_tgt - neu_tgt[neuron_idx] + neu_src[neuron_idx]
-    pos_tgt = start_tgt + position_in_window
-    hidden_before = result_tgt.hidden_states[layer_idx][0, pos_tgt, :].float()
-    attn_at = result_tgt.attn_outputs[layer_idx][0, pos_tgt, :].float()
-    return (hidden_before + attn_at + patched_mlp).cpu()
+# --------------------------------------------------------------------------
+# Experiment runner
+# --------------------------------------------------------------------------
+
+
+class _Pair:
+    """Everything fixed about one patch direction, computed once."""
+
+    def __init__(self, direction: str, src: RunResult, tgt: RunResult,
+                 start_src: int, start_tgt: int, tokenizer, topk: int):
+        self.direction = direction
+        self.src, self.tgt = src, tgt
+        self.start_src, self.start_tgt = start_src, start_tgt
+        self.src_logits = src.logits[0, -1].float()
+        self.tgt_logits = tgt.logits[0, -1].float()
+        self.src_tok = int(self.src_logits.argmax().item())
+        self.tgt_tok = int(self.tgt_logits.argmax().item())
+        self.same_top = self.src_tok == self.tgt_tok
+        self.ld_before = self.logit_diff(self.tgt_logits)
+        self.ld_source = self.logit_diff(self.src_logits)
+        # Distributional gap between the two originals; the KL-based recovery
+        # is the fraction of it closed, defined even when both runs share a
+        # top token and the logit-difference margin is zero.
+        self.kl_gap = _kl(self.tgt_logits, self.src_logits)
+        self.src_final = src.hidden_states[-1][0, -1].float()
+        self.tgt_final = tgt.hidden_states[-1][0, -1].float()
+        self.cos_before = _cosine(self.tgt_final, self.src_final)
+        self.delta_before = _delta_norm(self.tgt_final, self.src_final)
+        self.top_src = _topk_tokens(self.src_logits, tokenizer, topk)
+        self.top_tgt = _topk_tokens(self.tgt_logits, tokenizer, topk)
+        self.tokenizer, self.topk = tokenizer, topk
+
+    def logit_diff(self, logits: torch.Tensor) -> float:
+        return float((logits[self.tgt_tok] - logits[self.src_tok]).item())
+
+    def recovered_logit_diff(self, ld_after: float) -> float:
+        gap = self.ld_before - self.ld_source
+        if abs(gap) < 1e-6:
+            return float("nan")
+        return float((self.ld_before - ld_after) / gap)
+
+    def recovered_kl(self, logits: torch.Tensor) -> float:
+        if self.kl_gap < 1e-9:
+            return 0.0
+        return float(1.0 - _kl(logits, self.src_logits) / self.kl_gap)
+
+    def recovered(self, logits: torch.Tensor) -> float:
+        """Primary recovery number: logit-difference based, KL based when the
+        two runs already agree on the top token."""
+        r = self.recovered_logit_diff(self.logit_diff(logits))
+        if self.same_top or r != r:  # NaN check
+            return self.recovered_kl(logits)
+        return r
+
+    def result(self, layer: int, pos: int, logits: torch.Tensor, final: torch.Tensor) -> SinglePatchResult:
+        ld_after = self.logit_diff(logits)
+        top_after = _topk_tokens(logits, self.tokenizer, self.topk)
+        flipped = (not self.same_top) and int(logits.argmax().item()) == self.src_tok
+        # A_to_B: source is A, so "top_a_before" is the source's prediction.
+        top_a, top_b = (self.top_src, self.top_tgt) if self.direction == "A_to_B" else (self.top_tgt, self.top_src)
+        return SinglePatchResult(
+            layer=layer, position=pos, direction=self.direction,
+            cos_before=self.cos_before, delta_before=self.delta_before,
+            cos_after=_cosine(final, self.src_final), delta_after=_delta_norm(final, self.src_final),
+            top_a_before=top_a, top_b_before=top_b, top_target_after=top_after,
+            logit_diff_before=self.ld_before, logit_diff_after=ld_after,
+            logit_diff_source=self.ld_source, recovered=self.recovered(logits),
+            recovered_kl=self.recovered_kl(logits),
+            kl_to_target_after=_kl(logits, self.tgt_logits),
+            kl_to_source_after=_kl(logits, self.src_logits),
+            top_flipped=flipped,
+        )
 
 
 def run_patching_experiments(
@@ -233,262 +406,219 @@ def run_patching_experiments(
     start_b: int,
     window_len: int,
 ) -> Dict[str, Any]:
-    """Run Phase 3-style activation patching experiments.
+    """Run activation patching in both directions with real forward passes.
 
-    Notes:
-        - Currently only supports ``patch_mode == 'last_token'``.
-        - We operate on the *spike layer* by default. If
-          ``config.patch_layers`` is set, we intersect that with the spike
-          layer (future work: support multi-layer sweeps).
+    Layer-level patches sweep every hidden-state index unless
+    ``config.patch_layers`` narrows them. Head- and neuron-level patches
+    default to the spike layer. Positions are window-relative; the default
+    is the last token of the aligned window.
     """
-    lm_head_weight = _get_lm_head_weight(model)
-    if lm_head_weight is None:
+    arch = detect_architecture(model)
+    blocks = get_decoder_layers(model, arch) if arch else None
+    stack = _get_layer_stack(model, arch) if arch else None
+    if not blocks or not stack:
         return {
             "enabled": False,
-            "reason": "Model does not expose an lm_head/embed_out weight; "
-            "skipping patching experiments.",
+            "reason": f"Architecture {arch!r} does not expose decoder blocks; skipping patching.",
         }
+    n_blocks = len(blocks)
+    n_hidden = len(result_a.hidden_states)
+    sublayers = {idx: (attn, mlp) for idx, attn, mlp in stack}
 
-    # Determine which layer(s) to patch – for now we only support a single layer.
-    layer_to_use = spike_layer
-    if config.patch_layers:
-        if spike_layer in config.patch_layers:
-            layer_to_use = spike_layer
-        else:
-            layer_to_use = int(config.patch_layers[0])
-
-    # Determine positions to patch: multi-position when patch_positions provided
+    # Positions (window-relative).
     last_pos = window_len - 1 if window_len > 0 else 0
-    if config.patch_positions is not None and len(config.patch_positions) > 0:
-        positions = [p for p in config.patch_positions if 0 <= p < window_len]
-        if not positions:
-            positions = [last_pos]
-        patch_mode = "multi_position"
+    if config.patch_positions:
+        positions = [p for p in config.patch_positions if 0 <= p < window_len] or [last_pos]
+        patch_mode: str = "multi_position"
     else:
         positions = [last_pos]
         patch_mode = "last_token"
 
-    patch_components: Optional[PatchComponents] = (
-        config.patch_components if isinstance(config.patch_components, str) else None
-    )
-    if patch_components not in ("layer", "head", "neuron"):
-        patch_components = "layer"
+    component: str = config.patch_components if isinstance(config.patch_components, str) else "layer"
+    if component not in ("layer", "head", "neuron"):
+        component = "layer"
+
+    if config.patch_layers:
+        layers = [int(l) for l in config.patch_layers if 0 <= int(l) < n_hidden]
+    elif component == "layer":
+        layers = list(range(n_hidden))
+    else:
+        layers = [spike_layer]
+    if not layers:
+        layers = [spike_layer]
+
+    pairs = [
+        _Pair("A_to_B", result_a, result_b, start_a, start_b, tokenizer, config.topk),
+        _Pair("B_to_A", result_b, result_a, start_b, start_a, tokenizer, config.topk),
+    ]
 
     experiments: List[PatchExperiment] = []
+    forward_passes = 0
+    notes: List[str] = []
 
-    # Head-level and neuron-level experiments (granular)
-    if patch_components == "head" and result_a.qkv_outputs is not None and result_a.attn_outputs is not None:
-        head_list = config.patch_heads
-        if not head_list:
-            # Default: all heads in layer (we need n_heads from model or result)
-            from vivasecuris.aiasylum.interp.analysis.ov_qk import compute_per_head_outputs
-            per = compute_per_head_outputs(result_a, model, layer_to_use, start_a, window_len)
-            n_heads = int(per.shape[0]) if per is not None else 0
-            head_list = [(layer_to_use, h) for h in range(n_heads)] if n_heads else []
-        for (ly, head_idx) in head_list:
-            if ly != layer_to_use:
-                continue
-            for direction in ("A_to_B", "B_to_A"):
-                dir_literal: PatchDirection = direction  # type: ignore[assignment]
-                src, tgt = (result_a, result_b) if direction == "A_to_B" else (result_b, result_a)
-                start_src = start_a if direction == "A_to_B" else start_b
-                start_tgt = start_b if direction == "A_to_B" else start_a
-                single_results: List[SinglePatchResult] = []
+    def run(pair: _Pair, hooks) -> Tuple[torch.Tensor, torch.Tensor]:
+        nonlocal forward_passes
+        forward_passes += 1
+        return _forward(model, pair.tgt.input_ids, hooks)
+
+    # ---- layer level -------------------------------------------------------
+    if component == "layer":
+        for pair in pairs:
+            for layer in layers:
+                results: List[SinglePatchResult] = []
                 for pos in positions:
-                    idx_a = start_a + pos
-                    idx_b = start_b + pos
-                    hs_a = result_a.hidden_states[layer_to_use][0, idx_a].detach().cpu().float()
-                    hs_b = result_b.hidden_states[layer_to_use][0, idx_b].detach().cpu().float()
-                    cos_before = _cosine(hs_a, hs_b)
-                    delta_before = _delta_norm(hs_a, hs_b)
-                    top_a_before = _topk_from_hidden(hs_a, lm_head_weight, tokenizer, config.topk)
-                    top_b_before = _topk_from_hidden(hs_b, lm_head_weight, tokenizer, config.topk)
-                    patched = patch_head_into_residual(
-                        layer_to_use, pos, src, tgt, start_src, start_tgt, window_len, head_idx, model
-                    )
-                    if patched is None:
+                    s, t = pair.start_src + pos, pair.start_tgt + pos
+                    vec = pair.src.hidden_states[layer][0, s]
+                    if layer < n_blocks:
+                        hooks = [(blocks[layer], "pre", _replace_positions_pre_hook([(t, vec)]))]
+                    else:
+                        hooks = [(_final_target(model, blocks), "post", _replace_positions_post_hook([(t, vec)]))]
+                    logits, final = run(pair, hooks)
+                    results.append(pair.result(layer, pos, logits, final))
+                experiments.append(PatchExperiment(
+                    id=f"{pair.direction.lower()}_{patch_mode}_layer{layer}",
+                    description=(f"Residual patch ({pair.direction.replace('_', ' ')}) at hidden "
+                                 f"index {layer}, positions={positions}"),
+                    patch_mode=patch_mode, layer=layer, positions=list(positions),
+                    direction=pair.direction, results=results, component="layer",
+                ))
+
+    # ---- head level --------------------------------------------------------
+    elif component == "head":
+        from vivasecuris.aiasylum.interp.analysis.ov_qk import compute_per_head_outputs
+
+        for pair in pairs:
+            for layer in layers:
+                if layer not in sublayers:
+                    continue
+                per_src = compute_per_head_outputs(pair.src, model, layer, pair.start_src, window_len)
+                per_tgt = compute_per_head_outputs(pair.tgt, model, layer, pair.start_tgt, window_len)
+                if per_src is None or per_tgt is None:
+                    notes.append(f"layer {layer}: per-head outputs unavailable (need attention + Q/K/V capture)")
+                    continue
+                n_heads = int(per_src.shape[0])
+                wanted = [h for (ly, h) in (config.patch_heads or []) if ly == layer] or list(range(n_heads))
+                attn_module = sublayers[layer][0]
+                for h in wanted:
+                    if h >= n_heads:
                         continue
-                    # Patched residual is at layer+1
-                    ref = result_a.hidden_states[layer_to_use + 1][0, idx_a].float() if layer_to_use + 1 < len(result_a.hidden_states) else result_a.hidden_states[layer_to_use][0, idx_a].float()
-                    cos_after = _cosine(patched, ref)
-                    delta_after = _delta_norm(patched, ref)
-                    top_target_after = _topk_from_hidden(patched, lm_head_weight, tokenizer, config.topk)
-                    single_results.append(
-                        SinglePatchResult(
-                            layer=layer_to_use,
-                            position=pos,
-                            direction=dir_literal,
-                            cos_before=cos_before,
-                            delta_before=delta_before,
-                            top_a_before=top_a_before,
-                            top_b_before=top_b_before,
-                            cos_after=cos_after,
-                            delta_after=delta_after,
-                            top_target_after=top_target_after,
-                        )
-                    )
-                if single_results:
-                    experiments.append(
-                        PatchExperiment(
-                            id=f"head_{direction.lower()}_L{layer_to_use}_H{head_idx}",
-                            description=f"Head patch L{layer_to_use} H{head_idx} ({direction})",
-                            patch_mode=patch_mode,
-                            layer=layer_to_use,
-                            positions=positions,
-                            direction=dir_literal,
-                            results=single_results,
-                        )
-                    )
-    elif patch_components == "neuron" and getattr(result_a, "pre_mlp_activations", None) and result_a.mlp_activations:
-        neuron_list = config.patch_neurons
-        if not neuron_list:
-            per = compute_per_neuron_mlp_outputs(result_a, model, layer_to_use, start_a, window_len)
-            n_neurons = int(per.shape[0]) if per is not None else 0
-            neuron_list = [(layer_to_use, n) for n in range(min(50, n_neurons))] if n_neurons else []
-        for (ly, neuron_idx) in neuron_list:
-            if ly != layer_to_use:
-                continue
-            for direction in ("A_to_B", "B_to_A"):
-                dir_literal = "A_to_B" if direction == "A_to_B" else "B_to_A"
-                dir_literal = dir_literal  # type: PatchDirection
-                src, tgt = (result_a, result_b) if direction == "A_to_B" else (result_b, result_a)
-                start_src = start_a if direction == "A_to_B" else start_b
-                start_tgt = start_b if direction == "A_to_B" else start_a
-                single_results = []
-                for pos in positions:
-                    idx_a = start_a + pos
-                    idx_b = start_b + pos
-                    hs_a = result_a.hidden_states[layer_to_use][0, idx_a].detach().cpu().float()
-                    hs_b = result_b.hidden_states[layer_to_use][0, idx_b].detach().cpu().float()
-                    cos_before = _cosine(hs_a, hs_b)
-                    delta_before = _delta_norm(hs_a, hs_b)
-                    top_a_before = _topk_from_hidden(hs_a, lm_head_weight, tokenizer, config.topk)
-                    top_b_before = _topk_from_hidden(hs_b, lm_head_weight, tokenizer, config.topk)
-                    patched = patch_neuron_into_residual(
-                        layer_to_use, pos, src, tgt, start_src, start_tgt, window_len, neuron_idx, model
-                    )
-                    if patched is None:
-                        continue
-                    ref = result_a.hidden_states[layer_to_use + 1][0, idx_a].float() if layer_to_use + 1 < len(result_a.hidden_states) else result_a.hidden_states[layer_to_use][0, idx_a].float()
-                    cos_after = _cosine(patched, ref)
-                    delta_after = _delta_norm(patched, ref)
-                    top_target_after = _topk_from_hidden(patched, lm_head_weight, tokenizer, config.topk)
-                    single_results.append(
-                        SinglePatchResult(
-                            layer=layer_to_use,
-                            position=pos,
-                            direction=dir_literal,
-                            cos_before=cos_before,
-                            delta_before=delta_before,
-                            top_a_before=top_a_before,
-                            top_b_before=top_b_before,
-                            cos_after=cos_after,
-                            delta_after=delta_after,
-                            top_target_after=top_target_after,
-                        )
-                    )
-                if single_results:
-                    experiments.append(
-                        PatchExperiment(
-                            id=f"neuron_{direction.lower()}_L{layer_to_use}_N{neuron_idx}",
-                            description=f"Neuron patch L{layer_to_use} N{neuron_idx} ({direction})",
-                            patch_mode=patch_mode,
-                            layer=layer_to_use,
-                            positions=positions,
-                            direction=dir_literal,
-                            results=single_results,
-                        )
-                    )
+                    results = []
+                    for pos in positions:
+                        delta = per_src[h, pos] - per_tgt[h, pos]
+                        hooks = [(attn_module, "post", _add_delta_post_hook([(pair.start_tgt + pos, delta)]))]
+                        logits, final = run(pair, hooks)
+                        results.append(pair.result(layer, pos, logits, final))
+                    experiments.append(PatchExperiment(
+                        id=f"head_{pair.direction.lower()}_L{layer}_H{h}",
+                        description=f"Head patch L{layer} H{h} ({pair.direction})",
+                        patch_mode=patch_mode, layer=layer, positions=list(positions),
+                        direction=pair.direction, results=results,
+                        component="head", component_index=h,
+                    ))
+
+    # ---- neuron level ------------------------------------------------------
     else:
-        # Layer-level (default) patching
-        pass  # fall through to original loop below
+        for pair in pairs:
+            for layer in layers:
+                if layer not in sublayers:
+                    continue
+                per_src = compute_per_neuron_mlp_outputs(pair.src, model, layer, pair.start_src, window_len)
+                per_tgt = compute_per_neuron_mlp_outputs(pair.tgt, model, layer, pair.start_tgt, window_len)
+                if per_src is None or per_tgt is None:
+                    notes.append(f"layer {layer}: per-neuron outputs unavailable (need pre-MLP capture)")
+                    continue
+                n_neurons = int(per_src.shape[0])
+                wanted = [n for (ly, n) in (config.patch_neurons or []) if ly == layer]
+                if not wanted:
+                    # Rank by how much the neuron's contribution differs at the last position.
+                    diff = (per_src[:, positions[-1]] - per_tgt[:, positions[-1]]).norm(dim=-1)
+                    wanted = torch.topk(diff, k=min(DEFAULT_NEURON_BUDGET, n_neurons)).indices.tolist()
+                mlp_module = sublayers[layer][1]
+                for n in wanted:
+                    if n >= n_neurons:
+                        continue
+                    results = []
+                    for pos in positions:
+                        delta = per_src[n, pos] - per_tgt[n, pos]
+                        hooks = [(mlp_module, "post", _add_delta_post_hook([(pair.start_tgt + pos, delta)]))]
+                        logits, final = run(pair, hooks)
+                        results.append(pair.result(layer, pos, logits, final))
+                    experiments.append(PatchExperiment(
+                        id=f"neuron_{pair.direction.lower()}_L{layer}_N{n}",
+                        description=f"Neuron patch L{layer} N{n} ({pair.direction})",
+                        patch_mode=patch_mode, layer=layer, positions=list(positions),
+                        direction=pair.direction, results=results,
+                        component="neuron", component_index=int(n),
+                    ))
 
-    # We'll test both A→B and B→A for symmetry (layer-level)
-    if patch_components == "layer" or not experiments:
-        for direction in ("A_to_B", "B_to_A"):
-            dir_literal: PatchDirection = direction  # type: ignore[assignment]
-            exp_id = f"{direction.lower()}_{patch_mode}_layer{layer_to_use}"
-            description = (
-                f"Activation patching ({direction.replace('_', ' ')}) at layer "
-                f"{layer_to_use}, positions={positions} (mode={patch_mode})"
-            )
-
-            single_results_layer: List[SinglePatchResult] = []
-
-            for pos in positions:
-                # Map aligned window position to absolute token indices
-                idx_a = start_a + pos
-                idx_b = start_b + pos
-                hs_a_layer = result_a.hidden_states[layer_to_use][0, idx_a].detach().cpu().float()
-                hs_b_layer = result_b.hidden_states[layer_to_use][0, idx_b].detach().cpu().float()
-
-                if direction == "A_to_B":
-                    src_h = hs_a_layer
-                    tgt_before = hs_b_layer
-                else:
-                    src_h = hs_b_layer
-                    tgt_before = hs_a_layer
-
-                # Metrics before patch
-                cos_before = _cosine(hs_a_layer, hs_b_layer)
-                delta_before = _delta_norm(hs_a_layer, hs_b_layer)
-
-                top_a_before = _topk_from_hidden(hs_a_layer, lm_head_weight, tokenizer, config.topk)
-                top_b_before = _topk_from_hidden(hs_b_layer, lm_head_weight, tokenizer, config.topk)
-
-                # Apply patch: overwrite target hidden with source hidden
-                tgt_after = src_h
-                cos_after = _cosine(hs_a_layer, tgt_after)
-                delta_after = _delta_norm(hs_a_layer, tgt_after)
-                top_target_after = _topk_from_hidden(
-                    tgt_after, lm_head_weight, tokenizer, config.topk
-                )
-
-                single_results_layer.append(
-                    SinglePatchResult(
-                        layer=layer_to_use,
-                        position=pos,
-                        direction=dir_literal,
-                        cos_before=cos_before,
-                        delta_before=delta_before,
-                        top_a_before=top_a_before,
-                        top_b_before=top_b_before,
-                        cos_after=cos_after,
-                        delta_after=delta_after,
-                        top_target_after=top_target_after,
-                    )
-                )
-
-            experiments.append(
-                PatchExperiment(
-                    id=exp_id,
-                    description=description,
-                    patch_mode=patch_mode,
-                    layer=layer_to_use,
-                    positions=positions,
-                    direction=dir_literal,
-                    results=single_results_layer,
-                )
+    # ---- summary and null baseline ----------------------------------------
+    summary: Dict[str, Any] = {}
+    baseline: Dict[str, Any] = {}
+    for pair in pairs:
+        mine = [e for e in experiments if e.direction == pair.direction and e.results]
+        if not mine:
+            continue
+        best = max(mine, key=lambda e: max(r.recovered for r in e.results))
+        best_r = max(best.results, key=lambda r: r.recovered)
+        summary[pair.direction] = {
+            "best_layer": best.layer,
+            "best_component": best.component,
+            "best_component_index": best.component_index,
+            "best_recovered": best_r.recovered,
+            "best_recovered_kl": best_r.recovered_kl,
+            "best_top_flipped": best_r.top_flipped,
+            "same_top_token": pair.same_top,
+        }
+        if component == "layer":
+            # Same norm as the real patch, random direction: what "any perturbation
+            # of this size" does at the layer where the real patch worked best.
+            pos = best_r.position
+            s, t = pair.start_src + pos, pair.start_tgt + pos
+            real = pair.src.hidden_states[best.layer][0, s].float() - pair.tgt.hidden_states[best.layer][0, t].float()
+            gen = torch.Generator().manual_seed(int(getattr(config, "seed", 0) or 0))
+            noise = torch.randn(real.shape, generator=gen)
+            noise = noise / noise.norm().clamp_min(1e-12) * real.norm()
+            vec = pair.tgt.hidden_states[best.layer][0, t].float() + noise
+            if best.layer < n_blocks:
+                hooks = [(blocks[best.layer], "pre", _replace_positions_pre_hook([(t, vec)]))]
+            else:
+                hooks = [(_final_target(model, blocks), "post", _replace_positions_post_hook([(t, vec)]))]
+            logits, _ = run(pair, hooks)
+            baseline[pair.direction] = {
+                "kind": "random_perturbation_same_norm",
+                "layer": best.layer,
+                "position": pos,
+                "recovered": pair.recovered(logits),
+                "recovered_kl": pair.recovered_kl(logits),
+            }
+            summary[pair.direction]["beats_null"] = (
+                best_r.recovered > baseline[pair.direction]["recovered"] + 0.05
             )
 
     return {
         "enabled": True,
+        "claim": "causal",
         "patch_mode": patch_mode,
-        "layer": layer_to_use,
+        "component": component,
+        "layer": spike_layer,
+        "layers": layers,
         "positions": positions,
+        "forward_passes": forward_passes,
+        "notes": notes,
+        "summary": summary,
+        "baseline": baseline,
         "experiments": [
             {
-                **{
-                    "id": exp.id,
-                    "description": exp.description,
-                    "patch_mode": exp.patch_mode,
-                    "layer": exp.layer,
-                    "positions": exp.positions,
-                    "direction": exp.direction,
-                },
+                "id": exp.id,
+                "description": exp.description,
+                "patch_mode": exp.patch_mode,
+                "layer": exp.layer,
+                "positions": exp.positions,
+                "direction": exp.direction,
+                "component": exp.component,
+                "component_index": exp.component_index,
                 "results": [asdict(r) for r in exp.results],
             }
             for exp in experiments
         ],
     }
-

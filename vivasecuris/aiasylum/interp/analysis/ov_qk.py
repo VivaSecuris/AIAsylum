@@ -63,16 +63,23 @@ def compute_per_head_outputs(
 
     # Slice to window
     attn_w = attn[0, :, start : start + window_len, start : start + window_len]  # [n_heads, w, w]
-    v_w = v[0, start : start + window_len, :, :]  # [w, n_heads, head_dim]
     n_heads = attn_w.shape[0]
+    # V may be stored [1, seq, n_kv, head_dim] or [1, n_kv, seq, head_dim].
+    if v.shape[1] == attn.shape[-1] and v.shape[2] != attn.shape[-1]:
+        v_w = v[0, start : start + window_len, :, :]          # [w, n_kv, head_dim]
+    else:
+        v_w = v[0, :, start : start + window_len, :].transpose(0, 1)  # [w, n_kv, head_dim]
+    n_kv = v_w.shape[1]
     head_dim = v_w.shape[2]
     d_model = w_o.shape[0]
+    # Grouped-query attention: query heads share key/value heads in blocks.
+    group = max(1, n_heads // max(1, n_kv))
 
     # Per head: O_h = attn_h @ V_h -> [window_len, head_dim]
     head_outputs = []
     for h in range(n_heads):
         attn_h = attn_w[h]  # [w, w]
-        v_h = v_w[:, h, :]  # [w, head_dim]
+        v_h = v_w[:, h // group, :]  # [w, head_dim]
         o_h = torch.mm(attn_h, v_h)  # [w, head_dim]
         w_o_h = w_o[:, h * head_dim : (h + 1) * head_dim]  # [d_model, head_dim]
         out_h = torch.mm(o_h, w_o_h.t())  # [w, d_model]
