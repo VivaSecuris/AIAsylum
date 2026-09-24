@@ -5,7 +5,7 @@ import { TestRunTable } from '@/components/test-runs/TestRunTable'
 import { TestRunFilters } from '@/components/test-runs/TestRunFilters'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { useTestRuns, useDeleteTestRun, useMultipleAssessments, useRunAnalysisUnanalyzed } from '@/lib/hooks'
-import { TestRun } from '@/lib/api'
+import { TestRun, Assessment } from '@/lib/api'
 import Link from 'next/link'
 import { Plus, Trash2, TrendingUp } from 'lucide-react'
 import { toast } from '@/lib/toast'
@@ -25,7 +25,7 @@ export default function TestRunsPage() {
     testRuns.filter(run => run.status === 'completed').map(run => run.id),
     [testRuns]
   )
-  const { data: assessmentsMap = new Map() } = useMultipleAssessments(completedRunIds)
+  const { data: assessmentsMap = new Map<number, Assessment[]>() } = useMultipleAssessments(completedRunIds)
 
   const unanalyzedCount = useMemo(() =>
     testRuns.filter(run =>

@@ -22,6 +22,8 @@ from vivasecuris.aiasylum.api.routes import (
     models as models_router,
     conversations as conversations_router,
     config as config_router,
+    interp,
+    weights,
 )
 
 app = FastAPI(
@@ -49,6 +51,32 @@ app.include_router(suites.router, prefix="/api/v1/suites", tags=["suites"])
 app.include_router(models_router.router, prefix="/api/v1/models", tags=["models"])
 app.include_router(conversations_router.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(config_router.router, prefix="/api/v1/config", tags=["config"])
+app.include_router(interp.router, prefix="/api/v1/interp", tags=["interp"])
+app.include_router(weights.router, prefix="/api/v1/weights", tags=["weights"])
+
+# Interpretability dashboards load plotly.js from here rather than a CDN, so
+# they render on machines with no outbound network. Mounted only when the
+# optional interp extra is installed.
+def _mount_static() -> None:
+    try:
+        from fastapi.staticfiles import StaticFiles
+
+        from vivasecuris.aiasylum.interp.visualization.assets import plotly_asset_path
+
+        asset = plotly_asset_path()
+        if asset is None:
+            return
+        app.mount("/static", StaticFiles(directory=str(asset.parent)), name="static")
+    except Exception as exc:  # pragma: no cover - optional dependency
+        import logging
+
+        logging.getLogger(__name__).info(
+            "Static assets not mounted (%s); dashboards will fall back to the CDN", exc
+        )
+
+
+_mount_static()
+
 
 
 @app.get("/")

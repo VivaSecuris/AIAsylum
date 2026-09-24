@@ -178,9 +178,10 @@ class AnalysisService:
                 flags=analysis_results.get("flags", []),
                 concerns=analysis_results.get("concerns"),
                 recommendations=analysis_results.get("recommendations"),
-                metadata=analysis_results.get("metadata", {}),
+                # The ORM attribute is meta_data; a metadata= kwarg is accepted but never persisted
+                meta_data=analysis_results.get("metadata", {}),
             )
-            
+
             session.add(assessment)
             session.commit()
             session.refresh(assessment)

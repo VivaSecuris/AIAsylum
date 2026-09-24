@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -433,3 +434,111 @@ class AnalysisArtifact(Base):
         back_populates="analysis_artifacts",
         foreign_keys=[message_id],
     )
+
+
+class InterpRun(Base):
+    """A mechanistic-interpretability analysis of one or two models.
+
+    Kept separate from TestRun rather than reusing it with a test_type: an
+    interp run has no doctor and no patient, so four of TestRun's NOT NULL
+    columns would carry placeholder values. A separate table also gives interp
+    runs their own id space, which matters because the progress and
+    cancellation managers are keyed by bare integers.
+    """
+
+    __tablename__ = "interp_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # single | comparison | progression | model_diff
+    mode = Column(String(32), nullable=False, index=True)
+    status = Column(String(20), default="pending", index=True)
+
+    # model_b is set only for model_diff (e.g. baseline vs ablated).
+    model_a = Column(String(512), nullable=False)
+    model_b = Column(String(512), nullable=True)
+    provider = Column(String(50), default="transformers")
+
+    # prompt_a/prompt_b for single and comparison; prompts for progression.
+    prompt_a = Column(Text, nullable=True)
+    prompt_b = Column(Text, nullable=True)
+    prompts = Column(JSON, nullable=True)
+
+    # Where the artifacts and dashboard.html were written.
+    out_dir = Column(String(1024), nullable=True)
+
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+    meta_data = Column("metadata", JSON, default=dict)
+
+    def __repr__(self) -> str:
+        return f"<InterpRun(id={self.id}, mode={self.mode}, status={self.status})>"
+
+    def __str__(self) -> str:
+        return f"InterpRun #{self.id}: {self.mode} ({self.status})"
+
+
+class WeightRun(Base):
+    """One stage of the weight-surgery pipeline: derive, sweep, or surgery.
+
+    A single table with a ``kind`` discriminator rather than three. The stages
+    share status, timestamps, an output directory, an SSE stream and a
+    cancellation id space, and they chain -- so they want one id space. Three
+    tables would force a UNION for the run feed and a polymorphic id for the
+    progress manager, which keys on a bare integer.
+
+    ``kind`` is ``surgery`` rather than ``ablate`` because beta selects the
+    behaviour: 0 ablates, 1 is a bit-identical control, 2 amplifies. Naming the
+    stage after one of its three settings reads as a bug the first time someone
+    runs an amplification control.
+
+    ``source_run_id`` points at the direction a sweep or surgery consumed, and
+    is deliberately **not** a ForeignKey: interp_runs set that precedent,
+    SQLite does not enforce FKs by default, and RESTRICT would block deleting a
+    direction that has children -- which is allowed here. The child instead
+    snapshots what it needs into ``meta_data["source_direction"]``, so its page
+    still renders once the parent is gone. That snapshot is also forced by
+    RefusalDirection.load(), which silently drops layer_scores: a round trip
+    through the loader loses the whole AUC curve.
+    """
+
+    __tablename__ = "weight_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # direction | sweep | surgery
+    kind = Column(String(16), nullable=False, index=True)
+    status = Column(String(20), default="pending", index=True)
+
+    # The model being read: a Hugging Face id or a local directory.
+    source_model = Column(String(512), nullable=False)
+    source_run_id = Column(Integer, nullable=True, index=True)
+
+    # Which edit, and what behaviour it targets. Recorded rather than assumed:
+    # the pipeline defaults to direction_scale on refusal, but neither is a
+    # constraint of the engine, and a manifest that omits them cannot say what
+    # a modified model was actually aimed at.
+    method = Column(String(32), default="direction_scale")
+    objective = Column(String(32), default="refusal")
+
+    # direction/sweep: runs/weights/<id>. surgery: models/<name>.
+    out_dir = Column(String(1024), nullable=True)
+    artifact_bytes = Column(BigInteger, nullable=True)
+
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+    meta_data = Column("metadata", JSON, default=dict)
+
+    def __repr__(self) -> str:
+        return f"<WeightRun(id={self.id}, kind={self.kind}, status={self.status})>"
+
+    def __str__(self) -> str:
+        return f"WeightRun #{self.id}: {self.kind} ({self.status})"

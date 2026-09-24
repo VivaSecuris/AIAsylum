@@ -44,6 +44,7 @@ ENV/
 *.sqlite3
 data/*.db
 data/*.sqlite
+data/*.db.backup.*
 
 # Logs
 *.log
@@ -61,6 +62,9 @@ frontend/.next/
 frontend/build/
 frontend/dist/
 frontend/.env.local
+*.tsbuildinfo
+# The Python "lib/" rule above also matches the frontend API client; keep it tracked
+!frontend/lib/
 
 # OS
 .DS_Store
@@ -70,3 +74,8 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+
+# Weight-surgery artifacts (directions, modified models)
+runs/
+models/
+*.safetensors

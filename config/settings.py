@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_request_timeout: int = 1800  # Seconds (default 30 min); large models can be slow
     
+    # Weight surgery. Both are gitignored; a bf16 3B copy is roughly 6 GB.
+    weights_runs_dir: str = "runs/weights"
+    weights_models_dir: str = "models"
+
     # Database
     database_url: str = "sqlite:///./data/aiasylum.db"
     
@@ -77,7 +81,7 @@ class Settings(BaseSettings):
     @property
     def project_root(self) -> Path:
         """Get project root directory."""
-        return Path(__file__).parent.parent.parent
+        return Path(__file__).parent.parent
     
     @property
     def data_dir(self) -> Path:
@@ -88,6 +92,20 @@ class Settings(BaseSettings):
     def config_dir(self) -> Path:
         """Get config directory."""
         return self.project_root / "config"
+
+    @property
+    def weights_runs_root(self) -> Path:
+        """Where derived directions and steering sweeps are written."""
+        return self.project_root / self.weights_runs_dir
+
+    @property
+    def weights_models_root(self) -> Path:
+        """The only directory weight surgery is allowed to write a model into.
+
+        Every output path is built from this root plus a validated slug, so a
+        request can never name a destination of its own.
+        """
+        return self.project_root / self.weights_models_dir
 
 
 # Global settings instance

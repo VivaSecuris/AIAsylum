@@ -1,12 +1,15 @@
 import { cn } from '@/lib/utils'
+import type { TestRunStatus, SuiteStatus } from '@/lib/api'
+
+type Status = TestRunStatus | SuiteStatus
 
 interface StatusBadgeProps {
-  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'partially_failed'
+  status: Status
   className?: string
 }
 
 export function StatusBadge({ status, className }: StatusBadgeProps) {
-  const variants = {
+  const variants: Record<Status, string> = {
     pending: 'bg-yellow-100 text-yellow-800 border-yellow-200',
     running: 'bg-blue-100 text-blue-800 border-blue-200',
     paused: 'bg-purple-100 text-purple-800 border-purple-200',
@@ -15,7 +18,7 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
     partially_failed: 'bg-orange-100 text-orange-800 border-orange-200',
   }
 
-  const labels = {
+  const labels: Record<Status, string> = {
     pending: 'Pending',
     running: 'Running',
     paused: 'Paused',
@@ -24,15 +27,16 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
     partially_failed: 'Partially Failed',
   }
 
+  // The status columns are plain strings in the DB, so tolerate a value outside the known set
   return (
     <span
       className={cn(
         'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium',
-        variants[status],
+        variants[status] ?? 'bg-gray-100 text-gray-800 border-gray-200',
         className
       )}
     >
-      {labels[status]}
+      {labels[status] ?? status}
     </span>
   )
 }

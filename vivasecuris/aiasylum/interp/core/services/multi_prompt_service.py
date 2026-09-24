@@ -1,0 +1,400 @@
+"""Service for analyzing multiple prompts in progression (one-shot, multi-shot analysis)."""
+
+import json
+import logging
+from pathlib import Path
+from typing import Dict, Any, List, Tuple, Optional
+import numpy as np
+import torch
+
+from vivasecuris.aiasylum.interp.core.loader import ModelLoader
+from vivasecuris.aiasylum.interp.core.runner import ModelRunner
+from vivasecuris.aiasylum.interp.core.config import Config
+from vivasecuris.aiasylum.interp.alignment.strategies import get_alignment_strategy
+from vivasecuris.aiasylum.interp.alignment.query_region import find_query_region, align_to_query_region
+from vivasecuris.aiasylum.interp.analysis.similarity import (
+    compute_cosine_similarity,
+    compute_delta_norm,
+)
+from vivasecuris.aiasylum.interp.analysis.pca import PCAAnalyzer
+from vivasecuris.aiasylum.interp.analysis.umap import UMAPAnalyzer
+from vivasecuris.aiasylum.interp.analysis.tsne import TSNEAnalyzer
+from vivasecuris.aiasylum.interp.analysis.predictions import PredictionAnalyzer
+from vivasecuris.aiasylum.interp.data.models import RunResult
+from vivasecuris.aiasylum.interp.data.multi_prompt_models import ProgressionResult
+
+logger = logging.getLogger(__name__)
+
+
+class MultiPromptService:
+    """Orchestrates multi-prompt progression analysis (zero-shot → one-shot → multi-shot)."""
+
+    @staticmethod
+    def run_progression_analysis(
+        model,
+        tokenizer,
+        config: Config,
+    ) -> ProgressionResult:
+        """
+        Run progression analysis across multiple prompts.
+        
+        Args:
+            model: Loaded model
+            tokenizer: Loaded tokenizer
+            config: Configuration with prompts list
+            
+        Returns:
+            ProgressionResult with all analysis data
+        """
+        logger.info("Starting multi-prompt progression analysis")
+        
+        if not config.prompts or len(config.prompts) < 2:
+            raise ValueError("Need at least 2 prompts for progression analysis")
+        
+        # Set deterministic seed
+        ModelLoader.set_deterministic(config.seed)
+        
+        # Initialize runner (same debug_mode logic as comparison for capture)
+        debug_mode = (
+            config.debug_mode
+            or (
+                config.enable_component_analysis
+                and (
+                    config.enable_attention_capture
+                    or config.enable_mlp_capture
+                    or config.enable_attn_output_capture
+                    or config.enable_pre_mlp_capture
+                    or config.enable_qkv_capture
+                )
+            )
+        )
+        runner = ModelRunner(model, tokenizer, debug_mode=debug_mode, config=config)
+        
+        # Run forward passes for all prompts
+        run_results = []
+        prompt_labels = []
+        
+        for i, prompt in enumerate(config.prompts):
+            if i == 0:
+                label = "zero-shot"
+            elif i == 1:
+                label = "one-shot"
+            else:
+                label = f"{i}-shot"
+            
+            prompt_labels.append(label)
+            logger.info(f"Running forward pass for {label}")
+            result = runner.run_once(prompt, max_length=config.max_len)
+            run_results.append(result)
+        
+        # Find query regions in all prompts
+        logger.info("Finding query regions")
+        query_regions = []
+        for prompt in config.prompts:
+            start, length = find_query_region(
+                tokenizer, prompt, config.query_marker
+            )
+            query_regions.append({"start": start, "length": length})
+        
+        # Use the first prompt's query region as reference
+        ref_query_start = query_regions[0]["start"]
+        ref_query_len = query_regions[0]["length"]
+        
+        # Align all prompts to their query regions
+        logger.info("Aligning prompts to query regions")
+        aligned_tokens = []
+        alignment_info = []
+        query_starts = []
+        
+        for i, (result, query_region) in enumerate(zip(run_results, query_regions)):
+            aligned_start, aligned_len = align_to_query_region(
+                tokenizer, result, query_region["start"], query_region["length"], config.window
+            )
+            
+            tokens = result.token_strs[aligned_start : aligned_start + aligned_len]
+            aligned_tokens.append(tokens)
+            alignment_info.append({
+                "start": aligned_start,
+                "window_len": aligned_len,
+            })
+            query_starts.append(query_region["start"] - aligned_start)  # Relative to aligned window
+        
+        # Use minimum window length for consistent comparison
+        min_window_len = min(info["window_len"] for info in alignment_info)
+        query_window_len = min_window_len
+        if query_window_len < 1:
+            raise ValueError(
+                "Progression analysis produced an empty comparison window. The "
+                "prompts are too short to locate a query region; use prompts of "
+                "at least a few tokens, or set query_marker to mark the query "
+                "explicitly."
+            )
+        
+        # Truncate all aligned tokens to same length
+        aligned_tokens = [tokens[:query_window_len] for tokens in aligned_tokens]
+        
+        # Compute progression matrices: how each prompt differs from the previous one
+        logger.info("Computing progression matrices")
+        num_prompts = len(run_results)
+        # Already L+1: hidden_states includes the embedding output.
+        num_layers = len(run_results[0].hidden_states)
+        
+        progression_cos = np.zeros((num_prompts - 1, num_layers, query_window_len))
+        progression_delta = np.zeros((num_prompts - 1, num_layers, query_window_len))
+        
+        for i in range(num_prompts - 1):
+            result_a = run_results[i]
+            result_b = run_results[i + 1]
+            
+            start_a = alignment_info[i]["start"]
+            start_b = alignment_info[i + 1]["start"]
+            
+            # Compute similarity for this pair
+            cos_mat = compute_cosine_similarity(
+                result_a, result_b, start_a, start_b, query_window_len
+            )
+            dn_mat = compute_delta_norm(
+                result_a, result_b, start_a, start_b, query_window_len
+            )
+            
+            progression_cos[i] = cos_mat
+            progression_delta[i] = dn_mat
+        
+        # Compute cumulative progression: how each prompt differs from zero-shot baseline
+        logger.info("Computing cumulative progression (vs zero-shot)")
+        cumulative_cos = np.zeros((num_prompts, num_layers, query_window_len))
+        cumulative_delta = np.zeros((num_prompts, num_layers, query_window_len))
+        
+        zero_shot_result = run_results[0]
+        zero_shot_start = alignment_info[0]["start"]
+        
+        for i in range(num_prompts):
+            if i == 0:
+                # Zero-shot vs itself = all ones for cos, all zeros for delta
+                cumulative_cos[i] = np.ones((num_layers, query_window_len))
+                cumulative_delta[i] = np.zeros((num_layers, query_window_len))
+            else:
+                result = run_results[i]
+                start = alignment_info[i]["start"]
+                
+                cos_mat = compute_cosine_similarity(
+                    zero_shot_result, result, zero_shot_start, start, query_window_len
+                )
+                dn_mat = compute_delta_norm(
+                    zero_shot_result, result, zero_shot_start, start, query_window_len
+                )
+                
+                cumulative_cos[i] = cos_mat
+                cumulative_delta[i] = dn_mat
+        
+        # Compute PCA for selected layers
+        logger.info(f"Computing {config.dim_reduction.upper()} (layers: {config.pca_layers})")
+        pca_layers = PCAAnalyzer.select_pca_layers(
+            config.pca_layers, num_layers, None  # No spike layer for progression
+        )
+        pca_payload = {}
+        
+        for layer_idx in pca_layers:
+            # Fit a single reducer on concatenated activations so all prompts share a space.
+            hiddens = []
+            for i, result in enumerate(run_results):
+                start = alignment_info[i]["start"]
+                hidden = result.hidden_states[layer_idx][0, start : start + query_window_len, :].detach().cpu().numpy()
+                hiddens.append(hidden)
+
+            X = np.vstack(hiddens)
+
+            layer_payload: Dict[str, Any] = {}
+            used_non_pca = False
+            
+            if config.dim_reduction == "umap":
+                try:
+                    # Build a single UMAP reducer and transform each prompt window.
+                    umap = UMAPAnalyzer._get_umap()
+                    reducer = umap.UMAP(
+                        n_components=3,
+                        n_neighbors=config.umap_n_neighbors,
+                        min_dist=config.umap_min_dist,
+                        metric=config.umap_metric,
+                        random_state=config.umap_random_state,
+                    )
+                    reducer.fit(X)
+                    for label, hidden in zip(prompt_labels, hiddens):
+                        coords = reducer.transform(hidden)
+                        layer_payload[label] = {
+                            "pca": coords.tolist(),  # kept as "pca" for dashboard compatibility
+                            "explained_variance": None,
+                        }
+                    used_non_pca = True
+                except Exception as e:
+                    logger.warning(f"Failed to compute UMAP for layer {layer_idx}; falling back to PCA: {e}")
+            
+            elif config.dim_reduction == "tsne":
+                try:
+                    # Build a single t-SNE reducer and transform each prompt window.
+                    from sklearn.manifold import TSNE
+                    
+                    # Adjust perplexity if needed
+                    perplexity = config.tsne_perplexity
+                    n_samples = X.shape[0]
+                    if perplexity >= n_samples:
+                        perplexity = max(1, n_samples - 1)
+                    
+                    reducer = TSNE(
+                        n_components=3,
+                        perplexity=perplexity,
+                        learning_rate=config.tsne_learning_rate if isinstance(config.tsne_learning_rate, (int, float)) else "auto",
+                        n_iter=config.tsne_n_iter,
+                        metric=config.tsne_metric,
+                        random_state=config.tsne_random_state,
+                    )
+                    embedding = reducer.fit_transform(X)
+                    
+                    # Split embedding back into prompts
+                    prompt_lengths = [h.shape[0] for h in hiddens]
+                    start_idx = 0
+                    for label, length in zip(prompt_labels, prompt_lengths):
+                        coords = embedding[start_idx:start_idx + length]
+                        layer_payload[label] = {
+                            "pca": coords.tolist(),  # kept as "pca" for dashboard compatibility
+                            "explained_variance": None,
+                        }
+                        start_idx += length
+                    used_non_pca = True
+                except Exception as e:
+                    logger.warning(f"Failed to compute t-SNE for layer {layer_idx}; falling back to PCA: {e}")
+
+            if not used_non_pca:
+                # PCA (fit once on concatenated)
+                try:
+                    from sklearn.decomposition import PCA
+
+                    # Clamp to what the data supports: a short query window
+                    # can yield fewer samples than components, and sklearn
+                    # raises rather than degrading. pca.py clamps the same way.
+                    n_components = max(1, min(3, X.shape[0], X.shape[1]))
+                    pca = PCA(n_components=n_components)
+                    pca.fit(X)
+                    for label, hidden in zip(prompt_labels, hiddens):
+                        coords = pca.transform(hidden)
+                        layer_payload[label] = {
+                            "pca": coords.tolist(),
+                            "explained_variance": pca.explained_variance_ratio_.tolist(),
+                        }
+                except ImportError:
+                    # Fallback: numpy SVD on concatenated data
+                    Xc = X - np.mean(X, axis=0)
+                    U, s, Vt = np.linalg.svd(Xc, full_matrices=False)
+                    # Project each hidden with top-3 right singular vectors
+                    V3 = Vt[:3].T  # [d, 3]
+                    explained_variance = (s[:3] ** 2) / (s ** 2).sum()
+                    for label, hidden in zip(prompt_labels, hiddens):
+                        coords = (hidden - np.mean(X, axis=0)) @ V3
+                        layer_payload[label] = {
+                            "pca": coords.tolist(),
+                            "explained_variance": explained_variance.tolist(),
+                        }
+
+            pca_payload[str(layer_idx)] = layer_payload
+        
+        # Compute example impact: which layers are most affected by adding examples
+        logger.info("Computing example impact analysis")
+        example_impact = {}
+        
+        # Average delta norm per layer across all progression steps
+        layer_impact = np.mean(progression_delta, axis=(0, 2))  # Average over prompts and tokens
+        most_affected_layers = np.argsort(layer_impact)[::-1][:10]  # Top 10 most affected
+        
+        example_impact = {
+            "layer_impact": layer_impact.tolist(),
+            "most_affected_layers": most_affected_layers.tolist(),
+            "impact_by_step": [
+                {
+                    "step": f"{prompt_labels[i]} → {prompt_labels[i+1]}",
+                    "layer_impact": np.mean(progression_delta[i], axis=1).tolist(),
+                }
+                for i in range(num_prompts - 1)
+            ],
+        }
+        
+        # Get resolved model ID
+        resolved_model_id = ModelLoader.resolve_model_id(config.model)
+        
+        # Build metadata
+        meta = {
+            "model": resolved_model_id,
+            "original_model": config.model,
+            "prompts": config.prompts,
+            "prompt_labels": prompt_labels,
+            "analysis_mode": "progression",
+            "query_marker": config.query_marker,
+            "device": config.device,
+            "dtype": config.dtype,
+            "window": config.window,
+            "query_window_len": query_window_len,
+            "num_prompts": num_prompts,
+            "num_layers": num_layers,
+            "dim_reduction": config.dim_reduction,
+        }
+        
+        # Create progression result
+        result = ProgressionResult(
+            meta=meta,
+            run_results=run_results,
+            prompt_labels=prompt_labels,
+            aligned_tokens=aligned_tokens,
+            alignment_info=alignment_info,
+            progression_cos=progression_cos,
+            progression_delta=progression_delta,
+            cumulative_cos=cumulative_cos,
+            cumulative_delta=cumulative_delta,
+            query_starts=query_starts,
+            query_window_len=query_window_len,
+            pca_payload=pca_payload,
+            example_impact=example_impact,
+        )
+        
+        logger.info("Progression analysis completed successfully")
+        return result
+
+    @staticmethod
+    def save_results(result: ProgressionResult, out_dir: Path):
+        """
+        Save progression results to files.
+        
+        Args:
+            result: ProgressionResult to save
+            out_dir: Output directory
+        """
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save metadata
+        meta_file = out_dir / "meta.json"
+        with open(meta_file, "w") as f:
+            json.dump(result.meta, f, indent=2)
+        
+        # Save progression matrices
+        progression_cos_file = out_dir / "progression_cos.npy"
+        progression_delta_file = out_dir / "progression_delta.npy"
+        np.save(progression_cos_file, result.progression_cos)
+        np.save(progression_delta_file, result.progression_delta)
+        
+        # Save cumulative matrices
+        cumulative_cos_file = out_dir / "cumulative_cos.npy"
+        cumulative_delta_file = out_dir / "cumulative_delta.npy"
+        np.save(cumulative_cos_file, result.cumulative_cos)
+        np.save(cumulative_delta_file, result.cumulative_delta)
+        
+        # Save PCA payload
+        if result.pca_payload:
+            pca_file = out_dir / "pca_payload.json"
+            with open(pca_file, "w") as f:
+                json.dump(result.pca_payload, f, indent=2)
+        
+        # Save example impact
+        if result.example_impact:
+            impact_file = out_dir / "example_impact.json"
+            with open(impact_file, "w") as f:
+                json.dump(result.example_impact, f, indent=2)
+        
+        logger.info(f"Progression results saved to {out_dir}")

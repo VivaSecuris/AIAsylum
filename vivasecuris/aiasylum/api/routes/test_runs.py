@@ -49,7 +49,9 @@ class TestRunResponse(BaseModel):
     suite_id: Optional[int] = None
     suite_name: Optional[str] = None
     meta_data: Optional[dict] = None
-    
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
 
@@ -279,6 +281,8 @@ async def list_test_runs(
                 suite_id=tr.suite_id,
                 suite_name=suite_name,
                 meta_data=tr.meta_data or {},
+                created_at=tr.created_at,
+                updated_at=tr.updated_at,
             ))
         return result
     finally:
@@ -316,6 +320,8 @@ async def get_test_run(test_run_id: int):
         suite_id=test_run.suite_id,
         suite_name=suite_name,
         meta_data=test_run.meta_data or {},
+        created_at=test_run.created_at,
+        updated_at=test_run.updated_at,
     )
 
 

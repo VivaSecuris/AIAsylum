@@ -1,7 +1,7 @@
 import { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
-interface Column<T> {
+export interface Column<T> {
   key: string
   header: string
   render?: (item: T) => ReactNode
@@ -16,7 +16,7 @@ interface DataTableProps<T> {
   emptyMessage?: string
 }
 
-export function DataTable<T extends { id?: number | string }>({
+export function DataTable<T extends object>({
   data,
   columns,
   onRowClick,
@@ -48,9 +48,9 @@ export function DataTable<T extends { id?: number | string }>({
             </tr>
           </thead>
           <tbody>
-            {data.map((item) => (
+            {data.map((item, index) => (
               <tr
-                key={String(item.id || Math.random())}
+                key={'id' in item && item.id != null ? String(item.id) : index}
                 className={cn(
                   'border-b transition-colors hover:bg-muted/50',
                   onRowClick && 'cursor-pointer'

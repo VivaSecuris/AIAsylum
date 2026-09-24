@@ -1,6 +1,7 @@
 """Model interfaces and providers."""
 
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
+from vivasecuris.aiasylum.models.transformers_local import TransformersModel, TransformersProvider
 from vivasecuris.aiasylum.models.providers import (
     ModelProvider,
     OpenAIProvider,
@@ -21,6 +22,8 @@ from vivasecuris.aiasylum.models.vivaos import (
 )
 
 __all__ = [
+    "TransformersModel",
+    "TransformersProvider",
     "BaseModel",
     "ModelResponse",
     "ModelProvider",

@@ -14,6 +14,8 @@ from vivasecuris.aiasylum.database.models import (
     Message,
     SafetyEvent,
     AnalysisArtifact,
+    InterpRun,
+    WeightRun,
 )
 from vivasecuris.aiasylum.database.session import get_session, init_db
 
@@ -31,6 +33,8 @@ __all__ = [
     "Message",
     "SafetyEvent",
     "AnalysisArtifact",
+    "InterpRun",
+    "WeightRun",
     "get_session",
     "init_db",
 ]

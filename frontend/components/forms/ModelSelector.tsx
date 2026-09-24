@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { apiClient } from '@/lib/api'
+import { apiClient, type ProviderInfo } from '@/lib/api'
 
 interface ModelSelectorProps {
   label: string
@@ -9,14 +9,8 @@ interface ModelSelectorProps {
   onModelChange: (model: string) => void
 }
 
-const PROVIDERS = ['openai', 'anthropic', 'google', 'ollama']
-
-const MODELS_BY_PROVIDER: Record<string, string[]> = {
-  openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo', 'gpt-3.5-turbo-16k'],
-  anthropic: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-2', 'claude-instant'],
-  google: ['gemini-pro', 'gemini-pro-vision', 'palm-2'],
-  ollama: [], // Fetched from API (installed models only)
-}
+const INPUT_CLASS =
+  'mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
 
 export function ModelSelector({
   label,
@@ -25,48 +19,80 @@ export function ModelSelector({
   onProviderChange,
   onModelChange,
 }: ModelSelectorProps) {
-  const [availableModels, setAvailableModels] = useState<string[]>([])
-  const [ollamaLoading, setOllamaLoading] = useState(false)
-  const [ollamaPullName, setOllamaPullName] = useState('')
-  const [ollamaPulling, setOllamaPulling] = useState(false)
-  const [ollamaError, setOllamaError] = useState<string | null>(null)
+  // Providers come from the API rather than a hard-coded list: the list used to
+  // drift, leaving providers registered in the backend but unreachable here.
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [providersError, setProvidersError] = useState<string | null>(null)
+  const [fetchedModels, setFetchedModels] = useState<string[]>([])
+  const [fetchLoading, setFetchLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const [pullName, setPullName] = useState('')
+  const [pulling, setPulling] = useState(false)
 
-  const fetchOllamaModels = useCallback(async () => {
-    setOllamaLoading(true)
-    setOllamaError(null)
+  const info = providers.find(
+    (p) => p.name === provider || p.aliases.includes(provider)
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    apiClient
+      .listProviders()
+      .then((list) => {
+        if (!cancelled) setProviders(list)
+      })
+      .catch((e: any) => {
+        if (!cancelled) {
+          setProvidersError(
+            e?.response?.data?.detail || e?.message || 'Could not load providers'
+          )
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const fetchModels = useCallback(async () => {
+    setFetchLoading(true)
+    setFetchError(null)
     try {
       const raw = await apiClient.listOllamaModels()
-      // API returns string[]; handle wrapped { models: [...] } defensively
       const list = Array.isArray(raw)
         ? raw
-        : (raw && typeof raw === 'object' && Array.isArray((raw as { models?: string[] }).models))
+        : raw && typeof raw === 'object' && Array.isArray((raw as { models?: string[] }).models)
           ? (raw as { models: string[] }).models
           : []
-      setAvailableModels(list)
-      // Do NOT clear selection when list loads/refreshes - that was wiping the user's
-      // model choice. Only clear when switching provider (handled in useEffect below).
+      setFetchedModels(list)
     } catch (e: any) {
-      setAvailableModels([])
+      setFetchedModels([])
       const detail = e?.response?.data?.detail
-      setOllamaError(
-        typeof detail === 'string' ? detail : (e?.message || 'Could not list Ollama models. Is Ollama running?')
+      setFetchError(
+        typeof detail === 'string'
+          ? detail
+          : e?.message || 'Could not list models. Is the service running?'
       )
     } finally {
-      setOllamaLoading(false)
+      setFetchLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    if (provider === 'ollama') {
-      fetchOllamaModels()
-    } else if (provider) {
-      setAvailableModels(MODELS_BY_PROVIDER[provider] || [])
-      if (model && !MODELS_BY_PROVIDER[provider]?.includes(model)) {
+    if (!info) return
+    if (info.model_input === 'fetch') {
+      fetchModels()
+    } else {
+      setFetchError(null)
+      // Only clear a selection that this provider cannot offer. Free-text modes
+      // keep whatever was typed.
+      if (info.model_input === 'list' && model && !info.models.includes(model)) {
         onModelChange('')
       }
-      setOllamaError(null)
     }
-  }, [provider])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, providers.length])
+
+  const listOptions = info?.model_input === 'fetch' ? fetchedModels : info?.models ?? []
+  const isFreeText = info?.model_input === 'path' || info?.model_input === 'text'
 
   return (
     <div className="space-y-2">
@@ -77,71 +103,109 @@ export function ModelSelector({
           <select
             value={provider}
             onChange={(e) => onProviderChange(e.target.value)}
-            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            className={INPUT_CLASS}
           >
             <option value="">Select provider</option>
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {p.charAt(0).toUpperCase() + p.slice(1)}
+            {providers.map((p) => (
+              <option key={p.name} value={p.name} disabled={!p.available}>
+                {p.label}
+                {!p.available ? ' (unavailable)' : !p.configured ? ' (no API key)' : ''}
               </option>
             ))}
           </select>
+          {providersError && (
+            <p className="mt-1 text-xs text-destructive">{providersError}</p>
+          )}
+          {info && !info.available && info.unavailable_reason && (
+            <p className="mt-1 text-xs text-destructive">{info.unavailable_reason}</p>
+          )}
+          {info && info.available && !info.configured && info.requires_api_key && (
+            <p className="mt-1 text-xs text-destructive">
+              No API key configured. Set it in Settings.
+            </p>
+          )}
+          {info && <p className="mt-1 text-xs text-muted-foreground">{info.description}</p>}
         </div>
+
         <div>
           <label className="text-xs text-muted-foreground">Model</label>
-          <select
-            value={model}
-            onChange={(e) => onModelChange(e.target.value)}
-            disabled={!provider || (provider === 'ollama' && ollamaLoading)}
-            className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <option value="">
-              {provider === 'ollama' && ollamaLoading ? 'Loading…' : 'Select model'}
-            </option>
-            {availableModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-          {provider === 'ollama' && ollamaError && (
-            <p className="mt-1 text-xs text-destructive">{ollamaError}</p>
+
+          {isFreeText ? (
+            <input
+              type="text"
+              value={model}
+              placeholder={info?.placeholder ?? 'Model identifier'}
+              onChange={(e) => onModelChange(e.target.value)}
+              className={INPUT_CLASS}
+            />
+          ) : (
+            <select
+              value={model}
+              onChange={(e) => onModelChange(e.target.value)}
+              disabled={!provider || fetchLoading}
+              className={INPUT_CLASS}
+            >
+              <option value="">{fetchLoading ? 'Loading…' : 'Select model'}</option>
+              {listOptions.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
           )}
-          {provider === 'ollama' && !ollamaLoading && !ollamaError && availableModels.length === 0 && (
-            <p className="mt-1 text-xs text-muted-foreground">No models installed. Pull one below or ensure Ollama is running.</p>
+
+          {info?.model_input === 'path' && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              A local directory or a Hugging Face id. Modified models produced by{' '}
+              <code>aiasylum weights ablate</code> carry their surgery manifest into each
+              response.
+            </p>
           )}
-          {provider === 'ollama' && !ollamaLoading && (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <input
-                type="text"
-                placeholder="Model name (e.g. llama3.2)"
-                value={ollamaPullName}
-                onChange={(e) => setOllamaPullName(e.target.value)}
-                className="flex-1 min-w-[120px] rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground"
-              />
-              <button
-                type="button"
-                disabled={!ollamaPullName.trim() || ollamaPulling}
-                onClick={async () => {
-                  const name = ollamaPullName.trim()
-                  if (!name) return
-                  setOllamaPulling(true)
-                  setOllamaError(null)
-                  try {
-                    await apiClient.pullOllamaModel(name)
-                    setOllamaPullName('')
-                    await fetchOllamaModels()
-                  } catch (e: any) {
-                    setOllamaError(e?.response?.data?.detail || e?.message || 'Pull failed')
-                  } finally {
-                    setOllamaPulling(false)
-                  }
-                }}
-                className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground hover:bg-muted disabled:opacity-50"
-              >
-                {ollamaPulling ? 'Downloading…' : 'Download model'}
-              </button>
-            </div>
+
+          {info?.model_input === 'fetch' && (
+            <>
+              {fetchError && <p className="mt-1 text-xs text-destructive">{fetchError}</p>}
+              {!fetchLoading && !fetchError && listOptions.length === 0 && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  No models installed. Pull one below, or check the service is running.
+                </p>
+              )}
+              {!fetchLoading && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Model name (e.g. llama3.2)"
+                    value={pullName}
+                    onChange={(e) => setPullName(e.target.value)}
+                    className="flex-1 min-w-[120px] rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground"
+                  />
+                  <button
+                    type="button"
+                    disabled={!pullName.trim() || pulling}
+                    onClick={async () => {
+                      const name = pullName.trim()
+                      if (!name) return
+                      setPulling(true)
+                      setFetchError(null)
+                      try {
+                        await apiClient.pullOllamaModel(name)
+                        setPullName('')
+                        await fetchModels()
+                      } catch (e: any) {
+                        setFetchError(
+                          e?.response?.data?.detail || e?.message || 'Pull failed'
+                        )
+                      } finally {
+                        setPulling(false)
+                      }
+                    }}
+                    className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground hover:bg-muted disabled:opacity-50"
+                  >
+                    {pulling ? 'Downloading…' : 'Download model'}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

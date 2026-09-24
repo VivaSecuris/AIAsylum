@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import traceback
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -26,6 +26,38 @@ class AnalysisRequest(BaseModel):
     evaluator_provider: Optional[str] = None
     evaluator_model: Optional[str] = None
     evaluator_system_prompt_id: Optional[int] = None
+
+
+class AssessmentResponse(BaseModel):
+    """Assessment response."""
+    id: int
+    test_run_id: int
+    created_at: Optional[datetime] = None
+    assessment_text: str
+    scores: dict
+    overall_score: float
+    analysis_type: Optional[str] = None
+    flags: List[str]
+    concerns: Optional[str] = None
+    recommendations: Optional[str] = None
+    metadata: dict
+
+    @classmethod
+    def from_orm(cls, obj: Assessment):
+        """Create response from SQLAlchemy model, handling metadata conflict."""
+        return cls(
+            id=obj.id,
+            test_run_id=obj.test_run_id,
+            created_at=obj.created_at,
+            assessment_text=obj.assessment_text,
+            scores=obj.scores or {},
+            overall_score=obj.overall_score,
+            analysis_type=obj.analysis_type,
+            flags=obj.flags or [],
+            concerns=obj.concerns,
+            recommendations=obj.recommendations,
+            metadata=obj.meta_data or {},
+        )
 
 
 async def _run_analysis_background(
@@ -271,7 +303,7 @@ async def analyze_unanalyzed(
     return {"started": len(created), "test_run_ids": started_ids}
 
 
-@router.get("/test-run/{test_run_id}/assessments")
+@router.get("/test-run/{test_run_id}/assessments", response_model=List[AssessmentResponse])
 async def get_assessments(test_run_id: int):
     """Get assessments for a test run."""
     from vivasecuris.aiasylum.database import get_session
@@ -283,6 +315,6 @@ async def get_assessments(test_run_id: int):
             .order_by(Assessment.created_at.desc())
             .all()
         )
-        return assessments
+        return [AssessmentResponse.from_orm(a) for a in assessments]
     finally:
         session.close()

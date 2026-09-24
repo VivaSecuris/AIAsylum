@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from vivasecuris.aiasylum.runner import TestRunner
-from vivasecuris.aiasylum.database import get_session, TestRun
+from vivasecuris.aiasylum.database import get_session, TestRun, Assessment
 from tests.test_doctor_patient import MockModel
 
 
@@ -17,7 +17,8 @@ class TestIntegrationWorkflows:
         # Use the test session so runner and test share the same DB
         with patch('vivasecuris.aiasylum.runner.runner.get_session', return_value=db_session), \
              patch.object(db_session, 'close'):
-            with patch('vivasecuris.aiasylum.models.providers.get_provider') as mock_get_provider:
+            # Patch the name the runner imported, not its source module
+            with patch('vivasecuris.aiasylum.runner.runner.get_provider') as mock_get_provider:
                 mock_provider = MagicMock()
                 doctor_mock_model = MockModel()
                 patient_mock_model = MockModel()
@@ -87,3 +88,8 @@ class TestIntegrationWorkflows:
         assert assessment.id is not None
         assert assessment.overall_score is not None
         assert assessment.scores is not None
+
+        # Analysis metadata must survive the save (it was silently dropped via a metadata= kwarg)
+        db_session.expire_all()
+        persisted = db_session.get(Assessment, assessment.id)
+        assert "cot_analysis" in (persisted.meta_data or {})

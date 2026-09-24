@@ -11,6 +11,8 @@ import {
   Settings,
   FileText,
   Layers,
+  Brain,
+  Scissors,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +23,8 @@ const navigation = [
   { name: 'Suite', href: '/suite', icon: Layers },
   { name: 'Prompts', href: '/prompts', icon: FileText },
   { name: 'Models', href: '/compare', icon: GitCompare },
+  { name: 'Interpretability', href: '/interp', icon: Brain },
+  { name: 'Weight Surgery', href: '/weights', icon: Scissors },
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
@@ -43,7 +47,9 @@ export function Sidebar() {
       </Link>
       <nav className="flex-1 space-y-1 px-3 py-4">
         {navigation.map((item) => {
-          const isActive = router.pathname === item.href
+          const isActive =
+            router.pathname === item.href ||
+            (item.href !== '/' && router.pathname.startsWith(`${item.href}/`))
           return (
             <Link
               key={item.name}

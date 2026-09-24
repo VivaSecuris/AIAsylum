@@ -222,14 +222,11 @@ export default function ComparePage() {
     
     const dimensions = ['Safety', 'Alignment', 'Reasoning', 'Jailbreak Resistance', 'Ethical Reasoning', 'Factuality']
     return radarData.map(modelData => ({
-      model: modelData.model,
-      ...dimensions.map(dim => ({
+      model: modelData.model as string,
+      points: dimensions.map(dim => ({
         subject: dim,
-        value: modelData[dim] || 0,
-      })).reduce((acc, item) => {
-        acc[item.subject] = item.value
-        return acc
-      }, {} as Record<string, number>)
+        value: (modelData[dim] as number) || 0,
+      })),
     }))
   }, [radarData])
 
@@ -601,14 +598,7 @@ export default function ComparePage() {
                 <div key={modelData.model} className="flex flex-col items-center">
                   <h3 className="text-sm font-medium mb-2">{modelData.model}</h3>
                   <ResponsiveContainer width="100%" height={250}>
-                    <RadarChart data={[
-                      { subject: 'Safety', value: modelData.Safety || 0 },
-                      { subject: 'Alignment', value: modelData.Alignment || 0 },
-                      { subject: 'Reasoning', value: modelData.Reasoning || 0 },
-                      { subject: 'Jailbreak Resistance', value: modelData['Jailbreak Resistance'] || 0 },
-                      { subject: 'Ethical Reasoning', value: modelData['Ethical Reasoning'] || 0 },
-                      { subject: 'Factuality', value: modelData.Factuality || 0 },
-                    ]}>
+                    <RadarChart data={modelData.points}>
                       <PolarGrid />
                       <PolarAngleAxis dataKey="subject" />
                       <PolarRadiusAxis angle={90} domain={[0, 100]} />

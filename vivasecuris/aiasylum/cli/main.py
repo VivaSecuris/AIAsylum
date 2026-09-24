@@ -9,6 +9,7 @@ import click
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.database import get_session, TestRun
 from vivasecuris.aiasylum.cli import ollama as ollama_cli
+from vivasecuris.aiasylum.weights import cli as weights_cli
 
 
 @click.group()
@@ -110,6 +111,7 @@ def list_benchmarks():
 
 # Add Ollama subcommands
 cli.add_command(ollama_cli.ollama)
+cli.add_command(weights_cli.weights)
 
 
 @cli.command()

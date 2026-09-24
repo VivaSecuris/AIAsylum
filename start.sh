@@ -86,8 +86,8 @@ source venv/bin/activate
 # Install dependencies if needed
 if [ ! -f "venv/.installed" ]; then
     echo "📥 Installing dependencies..."
-    pip install --upgrade pip
-    pip install -r requirements.txt
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
     touch venv/.installed
 fi
 
@@ -150,7 +150,7 @@ fi
 if [ ! -f "data/aiasylum.db" ]; then
     echo "🗄️  Initializing database..."
     mkdir -p data
-    alembic upgrade head || echo "⚠️  Database initialization skipped (run 'make init' manually)"
+    python -m alembic upgrade head || echo "⚠️  Database initialization skipped (run 'make init' manually)"
 fi
 
 # Start services
@@ -163,8 +163,8 @@ echo ""
 echo "Press Ctrl+C to stop all services"
 echo ""
 
-# Start API in background
-uvicorn vivasecuris.aiasylum.api.main:app --host 0.0.0.0 --port 8000 &
+# Start API in background (python -m survives the venv's script shebangs going stale if the project moves)
+python -m uvicorn vivasecuris.aiasylum.api.main:app --host 0.0.0.0 --port 8000 &
 API_PID=$!
 
 # Wait a moment for API to start

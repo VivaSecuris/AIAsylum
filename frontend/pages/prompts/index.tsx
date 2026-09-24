@@ -46,8 +46,8 @@ export default function PromptsPage() {
     new Set(
       prompts
         .filter(p => isJailbreakPrompt(p) && p.metadata?.jailbreak_technique)
-        .map(p => p.metadata.jailbreak_technique)
-        .filter(Boolean)
+        .map(p => p.metadata.jailbreak_technique as string)
+        .filter((technique): technique is string => Boolean(technique))
     )
   ).sort()
 
@@ -183,7 +183,9 @@ export default function PromptsPage() {
   ]
   
   // Only show categories from visible prompts
-  const allCategories = Array.from(new Set(visiblePrompts.map((p) => p.category).filter(Boolean)))
+  const allCategories = Array.from(new Set(
+    visiblePrompts.map((p) => p.category).filter((category): category is string => Boolean(category))
+  ))
   
   // Exclude forbidden_question from categories list - they're not for general use
   // Forbidden questions should only be used AFTER a jailbreak is achieved
@@ -569,7 +571,7 @@ function PromptCard({ prompt, onDelete }: { prompt: Prompt; onDelete: (id: numbe
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-primary">Technique:</span>
           <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded font-medium">
-            {prompt.metadata.jailbreak_technique.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+            {String(prompt.metadata.jailbreak_technique).replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
           </span>
         </div>
       )}

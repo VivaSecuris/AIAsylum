@@ -468,6 +468,8 @@ class GoogleModel(BaseModel):
 def get_provider(provider_name: str) -> ModelProvider:
     """Get a model provider by name."""
     from vivasecuris.aiasylum.models.vivaos import AgenticA2AProvider, ServusProvider
+    # Imported lazily: this module pulls torch, which is an optional extra.
+    from vivasecuris.aiasylum.models.transformers_local import TransformersProvider
 
     providers = {
         "openai": OpenAIProvider,
@@ -477,6 +479,8 @@ def get_provider(provider_name: str) -> ModelProvider:
         "servus": ServusProvider,
         "agentic_a2a": AgenticA2AProvider,
         "agentic": AgenticA2AProvider,
+        "transformers": TransformersProvider,
+        "local": TransformersProvider,
     }
     
     from vivasecuris.aiasylum.exceptions import ModelProviderError

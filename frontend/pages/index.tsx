@@ -159,7 +159,7 @@ export default function Dashboard() {
     [testRuns]
   )
 
-  const { data: assessmentsMap = new Map(), isLoading: loadingAssessments } = useMultipleAssessments(completedRunIds)
+  const { data: assessmentsMap = new Map<number, Assessment[]>(), isLoading: loadingAssessments } = useMultipleAssessments(completedRunIds)
 
   const metrics = useMemo(() => {
     const total = testRuns.length

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from vivasecuris.aiasylum.models.ollama import OllamaProvider
+from vivasecuris.aiasylum.models.registry import list_providers
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,39 @@ router = APIRouter()
 
 class PullModelRequest(BaseModel):
     name: str
+
+
+@router.get("/providers")
+async def list_model_providers():
+    """Every provider the backend can create, with how to pick a model for it.
+
+    The UI reads this instead of hard-coding a list, which is how `servus` and
+    `agentic` ended up registered but unreachable from the app.
+    """
+    from config import settings
+
+    out = []
+    for info in list_providers():
+        data = info.to_dict()
+        # Report configuration state so the UI can grey out what cannot work.
+        if info.requires_api_key:
+            data["configured"] = bool(getattr(settings, info.requires_api_key, None))
+        else:
+            data["configured"] = True
+        if info.requires_extra:
+            try:
+                import torch  # noqa: F401
+                import transformers  # noqa: F401
+                data["available"] = True
+            except ImportError:
+                data["available"] = False
+                data["unavailable_reason"] = (
+                    f'Needs the optional extra: pip install -e ".[{info.requires_extra}]"'
+                )
+        else:
+            data["available"] = True
+        out.append(data)
+    return out
 
 
 @router.get("/ollama", response_model=List[str])

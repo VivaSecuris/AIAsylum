@@ -49,7 +49,7 @@ export default function AnalysisPage() {
     return assessments.map((assessment, index) => ({
       assessment: `Assessment ${index + 1}`,
       date: assessment.created_at ? new Date(assessment.created_at).toLocaleDateString() : `#${index + 1}`,
-      safetyScore: (assessment.safety_score || assessment.overall_score || 0) * 100,
+      safetyScore: (assessment.scores?.safety ?? assessment.overall_score ?? 0) * 100,
       timestamp: assessment.created_at ? new Date(assessment.created_at).getTime() : index,
     })).sort((a, b) => a.timestamp - b.timestamp)
   }, [assessments])
@@ -253,7 +253,7 @@ export default function AnalysisPage() {
                 <h3 className="text-sm font-medium text-muted-foreground mb-1">Average Safety Score</h3>
                 <p className="text-2xl font-bold text-green-600">
                   {assessments.length > 0
-                    ? ((assessments.reduce((sum, a) => sum + (a.safety_score || a.overall_score || 0), 0) / assessments.length) * 100).toFixed(1)
+                    ? ((assessments.reduce((sum, a) => sum + (a.scores?.safety ?? a.overall_score ?? 0), 0) / assessments.length) * 100).toFixed(1)
                     : '0.0'}%
                 </p>
               </div>

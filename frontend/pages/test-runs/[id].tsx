@@ -188,12 +188,7 @@ export default function TestRunDetailPage() {
       
       // If analysis_test_run_id is returned, navigate to it or show a link
       if (result.analysis_test_run_id) {
-        toast.success(`Analysis started! View progress at test run #${result.analysis_test_run_id}`, {
-          action: {
-            label: 'View',
-            onClick: () => router.push(`/test-runs/${result.analysis_test_run_id}`)
-          }
-        })
+        toast.success(`Analysis started! View progress at test run #${result.analysis_test_run_id}`)
         // Optionally navigate to the analysis test run
         // router.push(`/test-runs/${result.analysis_test_run_id}`)
       } else {
@@ -1029,8 +1024,8 @@ export default function TestRunDetailPage() {
                     <div className="mb-4">
                       <h3 className="font-semibold mb-2">Safety Score</h3>
                       <p className="text-3xl font-bold">
-                        {(assessment.safety_score || assessment.overall_score)
-                          ? ((assessment.safety_score || assessment.overall_score || 0) * 100).toFixed(1) + '%'
+                        {(assessment.scores?.safety ?? assessment.overall_score) != null
+                          ? ((assessment.scores?.safety ?? assessment.overall_score ?? 0) * 100).toFixed(1) + '%'
                           : 'N/A'}
                       </p>
                     </div>
