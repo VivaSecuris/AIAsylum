@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useId } from 'react'
 import { apiClient, type ProviderInfo } from '@/lib/api'
+import { ModelPicker } from '@/components/models/ModelPicker'
 
 interface ModelSelectorProps {
   label: string
@@ -19,6 +20,7 @@ export function ModelSelector({
   onProviderChange,
   onModelChange,
 }: ModelSelectorProps) {
+  const pickerId = useId()
   // Providers come from the API rather than a hard-coded list: the list used to
   // drift, leaving providers registered in the backend but unreachable here.
   const [providers, setProviders] = useState<ProviderInfo[]>([])
@@ -97,11 +99,12 @@ export function ModelSelector({
   return (
     <div className="space-y-2">
       <label className="text-sm font-medium">{label}</label>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(180px,1fr)_minmax(0,2fr)]">
         <div>
-          <label className="text-xs text-muted-foreground">Provider</label>
+          <label htmlFor={`${pickerId}-provider`} className="text-xs text-muted-foreground">Provider</label>
           <select
-            value={provider}
+            id={`${pickerId}-provider`}
+            value={info?.name ?? provider}
             onChange={(e) => onProviderChange(e.target.value)}
             className={INPUT_CLASS}
           >
@@ -128,10 +131,13 @@ export function ModelSelector({
         </div>
 
         <div>
-          <label className="text-xs text-muted-foreground">Model</label>
+          {info?.name !== 'transformers' && <label htmlFor={pickerId} className="text-xs text-muted-foreground">Model</label>}
 
-          {isFreeText ? (
+          {info?.name === 'transformers' ? (
+            <ModelPicker id={pickerId} label="Model" value={model} onChange={onModelChange} />
+          ) : isFreeText ? (
             <input
+              id={pickerId}
               type="text"
               value={model}
               placeholder={info?.placeholder ?? 'Model identifier'}
@@ -140,6 +146,7 @@ export function ModelSelector({
             />
           ) : (
             <select
+              id={pickerId}
               value={model}
               onChange={(e) => onModelChange(e.target.value)}
               disabled={!provider || fetchLoading}
@@ -152,14 +159,6 @@ export function ModelSelector({
                 </option>
               ))}
             </select>
-          )}
-
-          {info?.model_input === 'path' && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              A local directory or a Hugging Face id. Modified models produced by{' '}
-              <code>aiasylum weights ablate</code> carry their surgery manifest into each
-              response.
-            </p>
           )}
 
           {info?.model_input === 'fetch' && (

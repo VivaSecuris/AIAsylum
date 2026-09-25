@@ -1,0 +1,110 @@
+{
+  "description": "Common checkpoints for text generation and text-only use of multimodal models, not a compatibility or evaluation matrix. Repository IDs and access metadata checked against the public Hugging Face API on 2026-09-24. Newer architectures use the isolated benchmark runtime; this does not imply interpretability support. Gating can change; the Hub is authoritative when downloading.",
+  "models": [
+    {
+      "repo_id": "Qwen/Qwen3.8-27B",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen3.5-4B",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen3.5-9B",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "google/gemma-4-12B-it",
+      "family": "Gemma",
+      "gated": false
+    },
+    {
+      "repo_id": "mistralai/Ministral-3-8B-Instruct-2512-BF16",
+      "family": "Mistral",
+      "gated": false
+    },
+    {
+      "repo_id": "HuggingFaceTB/SmolLM3-3B",
+      "family": "SmolLM",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen3-0.6B",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen3-4B",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen3-8B",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen2.5-0.5B-Instruct",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "Qwen/Qwen2.5-3B-Instruct",
+      "family": "Qwen",
+      "gated": false
+    },
+    {
+      "repo_id": "meta-llama/Llama-3.2-1B-Instruct",
+      "family": "Llama",
+      "gated": "manual"
+    },
+    {
+      "repo_id": "meta-llama/Llama-3.2-3B-Instruct",
+      "family": "Llama",
+      "gated": "manual"
+    },
+    {
+      "repo_id": "meta-llama/Llama-3.1-8B-Instruct",
+      "family": "Llama",
+      "gated": "manual"
+    },
+    {
+      "repo_id": "google/gemma-3-1b-it",
+      "family": "Gemma",
+      "gated": "manual"
+    },
+    {
+      "repo_id": "mistralai/Mistral-7B-Instruct-v0.3",
+      "family": "Mistral",
+      "gated": false
+    },
+    {
+      "repo_id": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "family": "SmolLM",
+      "gated": false
+    },
+    {
+      "repo_id": "HuggingFaceTB/SmolLM2-360M-Instruct",
+      "family": "SmolLM",
+      "gated": false
+    },
+    {
+      "repo_id": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "family": "SmolLM",
+      "gated": false
+    },
+    {
+      "repo_id": "microsoft/Phi-3.5-mini-instruct",
+      "family": "Phi",
+      "gated": false
+    },
+    {
+      "repo_id": "microsoft/Phi-4-mini-instruct",
+      "family": "Phi",
+      "gated": false
+    }
+  ]
+}

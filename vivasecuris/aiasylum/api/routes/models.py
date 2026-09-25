@@ -3,9 +3,10 @@
 import logging
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from vivasecuris.aiasylum.api.model_downloads import get_manager
 from vivasecuris.aiasylum.models.ollama import OllamaProvider
 from vivasecuris.aiasylum.models.registry import list_providers
 
@@ -16,6 +17,62 @@ router = APIRouter()
 
 class PullModelRequest(BaseModel):
     name: str
+
+
+class DownloadRequest(BaseModel):
+    repo_id: str
+    revision: str = "main"
+
+
+class DeleteCustomRequest(BaseModel):
+    names: List[str]
+
+
+@router.post("/custom/delete")
+def delete_custom_models(body: DeleteCustomRequest):
+    """Remove explicitly selected custom weights, preserving run history."""
+    from vivasecuris.aiasylum.api.custom_checkpoints import delete_custom_checkpoints
+
+    try:
+        return delete_custom_checkpoints(body.names)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.get("/catalog")
+def model_catalog():
+    """Base and custom checkpoints visible to this API server, without downloads."""
+    from vivasecuris.aiasylum.api.model_catalog import build_model_catalog
+
+    return build_model_catalog()
+
+
+@router.get("/discover")
+def discover_models(q: str = Query(default="", max_length=80)):
+    """Common suggestions or public Hub search; never download checkpoints."""
+    from vivasecuris.aiasylum.api.model_discovery import discover_models as discover
+
+    return discover(q)
+
+
+@router.get("/huggingface/status")
+def huggingface_status():
+    """Report only whether this server has a token, without validating access."""
+    from vivasecuris.aiasylum.api.model_discovery import huggingface_status as status
+
+    return status()
+
+
+@router.get("/lineage")
+def model_lineage():
+    """Recorded creation, analysis, and modification branches across origins."""
+    from vivasecuris.aiasylum.api.model_lineage import build_model_lineage
+
+    return build_model_lineage()
 
 
 @router.get("/providers")
@@ -80,3 +137,55 @@ async def pull_ollama_model(body: PullModelRequest):
     except Exception as e:
         logger.warning(f"Failed to pull Ollama model {model_name}: {e}")
         raise HTTPException(status_code=502, detail=str(e))
+
+
+# -- Hugging Face checkpoints on this server ---------------------------------
+# The server's Hub cache is what the `transformers` provider and every weights
+# and interp run load from. Unlike an Ollama pull these are background jobs
+# with progress and cancellation: on a GPU box one pull is tens of gigabytes.
+
+
+@router.get("/downloads")
+def list_downloads():
+    """Every download this server process has run, newest first, plus cache disk space."""
+    manager = get_manager()
+    return {"downloads": manager.list(), **manager.disk()}
+
+
+@router.post("/downloads", status_code=202)
+def start_download(body: DownloadRequest):
+    """Fetch a checkpoint into the server's cache. Returns at once; poll the download."""
+    try:
+        return get_manager().start(body.repo_id, body.revision)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/downloads/{download_id}")
+def get_download(download_id: str):
+    try:
+        return get_manager().get(download_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/downloads/{download_id}/cancel")
+def cancel_download(download_id: str):
+    """Stop the worker. Bytes already fetched stay, and a later download resumes from them."""
+    try:
+        return get_manager().cancel(download_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.delete("/cache/{repo_id:path}")
+def delete_cached_model(repo_id: str):
+    """Remove a cached base model from this server to free disk."""
+    try:
+        return get_manager().delete_cached(repo_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
