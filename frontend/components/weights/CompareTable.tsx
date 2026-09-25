@@ -6,6 +6,17 @@ interface ModelMetrics {
   refuse_harmless: number
   factual_acc: number
   degenerate: boolean
+  // Optional controls (compare_rederive / misalignment_control).
+  misalignment_rate?: number
+  rederived?: {
+    layer: number
+    auc: number
+    cohens_d: number
+    usable: boolean
+    stable_rank: number | null
+    stable_rank_band: string | null
+    ablate_refuse_harmful: number
+  }
 }
 
 interface Props {
@@ -107,7 +118,78 @@ export function CompareTable({ metrics, deltas, responses, prompts }: Props) {
         </p>
       </div>
 
+      <ExtraControls metrics={metrics} />
+
       {responses && prompts && <Samples responses={responses} prompts={prompts} />}
+    </div>
+  )
+}
+
+/**
+ * The two controls a capability check does not cover: whether the edited
+ * model still holds a derivable refusal direction (the attack-after-defence
+ * check), and whether its open-ended answers turned hostile.
+ */
+function ExtraControls({ metrics }: { metrics: Props['metrics'] }) {
+  const { baseline, modified } = metrics
+  const hasMis = baseline.misalignment_rate != null || modified.misalignment_rate != null
+  const hasRe = baseline.rederived != null || modified.rederived != null
+  if (!hasMis && !hasRe) return null
+  const num = (v: number | null | undefined, f: (x: number) => string) => (v == null ? '—' : f(v))
+  return (
+    <div className="overflow-hidden rounded-lg border bg-card shadow-sm">
+      <div className="border-b p-3">
+        <h2 className="text-sm font-semibold">Additional controls</h2>
+        <p className="text-xs text-muted-foreground">
+          Re-deriving the direction on the modified model shows whether refusal is still there to find;
+          the misalignment rate uses a heuristic marker judge and is a screen, not a verdict.
+        </p>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b text-left text-xs text-muted-foreground">
+            <th className="px-3 py-2 font-medium">control</th>
+            <th className="px-3 py-2 font-medium">baseline</th>
+            <th className="px-3 py-2 font-medium">modified</th>
+          </tr>
+        </thead>
+        <tbody>
+          {hasMis && (
+            <tr className="border-b">
+              <td className="px-3 py-2">broad misalignment rate</td>
+              <td className="px-3 py-2 font-mono">{num(baseline.misalignment_rate, pct)}</td>
+              <td className="px-3 py-2 font-mono">{num(modified.misalignment_rate, pct)}</td>
+            </tr>
+          )}
+          {hasRe && (
+            <>
+              <tr className="border-b">
+                <td className="px-3 py-2">re-derived direction AUC (layer)</td>
+                <td className="px-3 py-2 font-mono">
+                  {num(baseline.rederived?.auc, (v) => v.toFixed(3))} (L{baseline.rederived?.layer ?? '—'})
+                </td>
+                <td className="px-3 py-2 font-mono">
+                  {num(modified.rederived?.auc, (v) => v.toFixed(3))} (L{modified.rederived?.layer ?? '—'})
+                </td>
+              </tr>
+              <tr className="border-b">
+                <td className="px-3 py-2">stable rank of refusal residuals</td>
+                <td className="px-3 py-2 font-mono">
+                  {num(baseline.rederived?.stable_rank, (v) => v.toFixed(1))} {baseline.rederived?.stable_rank_band ?? ''}
+                </td>
+                <td className="px-3 py-2 font-mono">
+                  {num(modified.rederived?.stable_rank, (v) => v.toFixed(1))} {modified.rederived?.stable_rank_band ?? ''}
+                </td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2">refusal after ablating the re-derived direction</td>
+                <td className="px-3 py-2 font-mono">{num(baseline.rederived?.ablate_refuse_harmful, pct)}</td>
+                <td className="px-3 py-2 font-mono">{num(modified.rederived?.ablate_refuse_harmful, pct)}</td>
+              </tr>
+            </>
+          )}
+        </tbody>
+      </table>
     </div>
   )
 }

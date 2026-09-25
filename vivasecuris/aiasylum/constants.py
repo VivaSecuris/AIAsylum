@@ -11,6 +11,19 @@ TEST_TYPE_ANALYSIS = "analysis"
 TEST_TYPE_SCENARIO = "scenario"
 TEST_TYPE_ADVERSARIAL = "adversarial"
 
+# Weight-run kinds. Kept here, torch-free, so the API routes, the model catalog,
+# lineage and history agree on which runs produce a model directory without any
+# of them importing the weights package.
+WEIGHT_KINDS = (
+    "direction", "sweep", "select", "surgery", "expert_surgery", "routing",
+    "probe", "compare", "lora", "distill",
+)
+# Kinds whose out_dir is a Hugging Face model directory under the models root.
+WEIGHT_KINDS_WRITING_MODELS = frozenset({"surgery", "expert_surgery", "lora", "distill"})
+# Kinds that always consume a derived direction (expert_surgery does so only
+# for its direction-scaling method).
+WEIGHT_KINDS_CONSUMING_DIRECTION = frozenset({"sweep", "select", "surgery"})
+
 # Test status values
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"

@@ -2,9 +2,6 @@ import { useState } from 'react'
 import { useRouter } from 'next/router'
 import { GitCompare } from 'lucide-react'
 
-import { useCreateInterpRun } from '@/lib/hooks'
-import { toast } from '@/lib/toast'
-
 interface Props {
   sourceModel: string
   editedPath: string
@@ -12,36 +9,20 @@ interface Props {
 }
 
 /**
- * Launch the model_diff that shows what the edit actually changed.
- *
- * Entirely client-side: useCreateInterpRun already exists, so a backend
- * endpoint that proxied into the interp router would be pure duplication.
+ * Review the models, prompt and resource estimate before creating a run.
  *
  * The prompt defaults to one the direction was actually fitted against,
  * snapshotted by the direction run, rather than asking the user to invent one.
  */
 export function CompareInInterpButton({ sourceModel, editedPath, probePrompts = [] }: Props) {
   const router = useRouter()
-  const createRun = useCreateInterpRun()
   const [prompt, setPrompt] = useState(probePrompts[0] ?? '')
   const [open, setOpen] = useState(false)
 
   async function launch() {
-    try {
-      const run = await createRun.mutateAsync({
-        mode: 'model_diff',
-        model_a: sourceModel,
-        model_b: editedPath,
-        prompt_a: prompt,
-        max_len: 512,
-        device: 'auto',
-        dtype: 'bfloat16',
-      })
-      toast.success('Started model comparison')
-      router.push(`/interp/${run.id}`)
-    } catch (e: any) {
-      toast.error(e?.response?.data?.detail || e?.message || 'Could not start the comparison')
-    }
+    await router.push({ pathname: '/interp', query: {
+      mode: 'model_diff', model_a: sourceModel, model_b: editedPath, prompt,
+    } })
   }
 
   if (!open) {
@@ -52,17 +33,16 @@ export function CompareInInterpButton({ sourceModel, editedPath, probePrompts = 
         className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
       >
         <GitCompare className="h-4 w-4" />
-        Compare against baseline
+        Compare with original
       </button>
     )
   }
 
   return (
     <div className="rounded-lg border bg-card p-4 shadow-sm">
-      <h3 className="text-sm font-semibold">Compare against the baseline</h3>
+      <h3 className="text-sm font-semibold">Compare with the original model</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        Runs both models on one prompt and reports what diverged, layer by layer. Both are
-        loaded, so this queues behind the same single model slot as everything else here.
+        Choose a prompt to compare layer activations. Next, review both models and check memory before running.
       </p>
 
       <label className="mt-3 block text-xs text-muted-foreground">Prompt</label>
@@ -92,10 +72,10 @@ export function CompareInInterpButton({ sourceModel, editedPath, probePrompts = 
         <button
           type="button"
           onClick={launch}
-          disabled={!prompt.trim() || createRun.isPending}
+          disabled={!prompt.trim() || !editedPath}
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {createRun.isPending ? 'Starting…' : 'Run comparison'}
+          Review comparison
         </button>
         <button
           type="button"

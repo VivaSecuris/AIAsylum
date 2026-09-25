@@ -16,6 +16,11 @@ const FIELDS: Array<[string, string]> = [
   ['embeddings_tied', 'Embeddings tied'],
   ['embeddings_edited', 'Embeddings edited'],
   ['mean_relative_change', 'Mean relative change'],
+  ['model_type', 'Model type'],
+  ['coverage_verified', 'Coverage verified'],
+  ['moe_layers', 'MoE layers'],
+  ['expert_matrices', 'Expert matrices'],
+  ['shared_expert_matrices', 'Shared-expert matrices'],
   ['created_at', 'Created'],
   ['notes', 'Notes'],
 ]
@@ -74,6 +79,15 @@ export function ManifestCard({ manifest }: { manifest: Record<string, any> }) {
           embedding table also edited the unembedding. When comparing against the baseline,
           read the overlap of the top-k predictions rather than comparing probabilities: the
           two sides decode through different unembeddings.
+        </p>
+      )}
+
+      {manifest.coverage_verified === false && (
+        <p className="mt-3 rounded border border-yellow-500/50 bg-yellow-50 p-3 text-xs dark:bg-yellow-950">
+          This edit is partial by design: it touched {render(manifest.matrices_edited)} matrices in
+          chosen experts and left every other residual writer alone. The untouched experts still
+          write the direction whenever the router picks them, so read this model as an expert-level
+          intervention, not as a removal of the direction.
         </p>
       )}
     </div>

@@ -92,7 +92,7 @@ multiplier and the base costs its 2 bytes.
 | Method | Trains | 3B peak | 8B peak | Fits here? |
 |---|---|---|---|---|
 | **Prompt / prefix tuning, IA³** | A tiny tensor | ~7 GB | ~17 GB | 3B yes, 8B tight |
-| **LoRA** (r=8–32 on q/k/v/o) | 0.1–1% of params | ~9–12 GB | ~20–24 GB | **3B yes**, 8B borderline |
+| **LoRA** (r=8–32 on q/k/v/o) | 0.1–1% of params | ~9–12 GB | ~20–24 GB | **3B yes**, 8B borderline — built: `weights/lora.py`, WEIGHT_SURGERY.md §15 |
 | **DoRA / rsLoRA** | Same order as LoRA | ~10–13 GB | ~21–25 GB | 3B yes |
 | **Bottleneck adapters** | Inserted layers | ~9 GB | ~19 GB | Yes — the vivamodels pattern |
 | **ReFT** | Interventions on representations | ~8 GB | ~18 GB | Yes; far fewer params than LoRA |
@@ -101,7 +101,7 @@ multiplier and the base costs its 2 bytes.
 | **DPO / ORPO / KTO / SimPO** | Preference alignment | 2× the SFT cost (two models) | — | Only as LoRA, ≤3B |
 | **PPO / RLHF** | Policy + reward + ref + value | 4 models in memory | — | No |
 | **Continued pretraining** | Everything, on a large corpus | — | — | No |
-| **Knowledge distillation** | Student on teacher outputs | Depends on student | — | Yes if the student is small |
+| **Knowledge distillation** | Student on teacher outputs | Depends on student | — | Yes if the student is small — built: `weights/distill.py`, WEIGHT_SURGERY.md §16 |
 
 ### Distillation, specifically
 
@@ -111,9 +111,12 @@ Three levels, cheapest first:
    Simplest; only needs a generation endpoint. Under ADR-009 the teacher must be
    a *local open-weights* model for the output to be class B and therefore
    trainable on. Claude output is class C: **eval only until GC rules**.
+   Built: `weights/distill.py`, level `response`; the loader's name rule is the
+   enforcement point (Ollama names and hosted APIs are refused as teachers).
 2. **Logit / KL distillation** — student matches the teacher's output
    distribution. Much more signal per example. This is what shipped in
-   `vivamodels` for embeddings.
+   `vivamodels` for embeddings. Built: level `logit`, temperature-softened KL
+   mixed with cross-entropy; both models resident, tokenizers must match.
 3. **Feature / attention distillation** — match intermediate representations.
    Most signal, most memory, needs architectural compatibility.
 
@@ -140,7 +143,7 @@ harder to verify than it looks, and it degrades neighbors.
 | Weight surgery on 3B | Works, minutes, produced a 5.8 GB model |
 | Inference on 0.5B | Works, seconds per generation |
 | **Generation on 3B via MPS** | **Pathologically slow — >7 min for 16 tokens.** See §7 |
-| LoRA on ≤3B | Expected to fit (~9–12 GB); slow |
+| LoRA on ≤3B | Built (`aiasylum weights lora`); expected to fit (~9–12 GB), slow. Record measured step times here after the first real run |
 | Full fine-tune of anything | Fails (26.7 GiB on a small student) |
 
 ### Options
@@ -260,7 +263,7 @@ have no MPS kernel.
 | Capability | Where | State |
 |---|---|---|
 | Model loading, device/dtype, MPS handling | `interp/core/loader.py` | Working |
-| Architecture detection, residual-write enumeration | `interp/core/arch.py` | Working |
+| Architecture detection, residual-write enumeration | `interp/core/arch.py` | Working: dense + MoE (per-expert modules, shared experts under both spellings); fused expert tensors rejected |
 | Activation capture | `weights/capture.py` | Working |
 | Harmful/harmless corpus with seeded split | `weights/corpus.py` | Working |
 | Refusal-direction derivation with AUC gate | `weights/direction.py` | Working |
@@ -278,8 +281,10 @@ have no MPS kernel.
 | Capability-gated edit search | `weights/surgery.py::select_edit` | Working, CLI + UI |
 | Refusal + capability measurement | `weights/evaluate.py` | Working, CLI + UI |
 | Causal interp tools over HTTP | `enable_patching` / `enable_scrub` / `enable_minimal_circuit` | Working |
-| LoRA | `setup.py` declares the extra | **Not implemented** |
-| Distillation | — | **Not implemented** |
+| Expert routing statistics (MoE) | `weights/routing.py`, `weights/cli.py` (`routing`) | Working, CLI + UI |
+| Expert-selective surgery (partial by design, MoE) | `interp/core/arch.py::expert_down_matrices`, `weights/surgery.py::ablate_experts`, `weights/cli.py` (`experts`) | Working, CLI + UI |
+| LoRA | `weights/lora.py`, `weights/train_worker.py`, `api/train_runtime.py`, `weights/cli.py` (`lora`) | Working: plain-precision peft adapter merged into a model, ≤3B on the M4, CLI + UI |
+| Distillation | `weights/distill.py` (response text, or logit KL; LoRA student), `weights/cli.py` (`distill`) | Working, CLI + UI; teacher must be local open-weights |
 
 See [WEIGHT_SURGERY.md](WEIGHT_SURGERY.md) for how to drive what exists.
 

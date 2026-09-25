@@ -71,6 +71,99 @@ def format_prompts(
     return formatted
 
 
+def capture_pooled_residuals(
+    model,
+    tokenizer,
+    prompts: Sequence[str],
+    pooling: str = "last",
+    last_k: int = 8,
+    batch_size: int = 8,
+    max_length: int = 512,
+    apply_template: bool = True,
+    system_prompt: Optional[str] = None,
+    prompt_suffix: Optional[str] = None,
+    thinking: bool = False,
+    progress: Optional[callable] = None,
+):
+    """Per-layer residuals pooled over the prompt: ``[n_layers+1, n_prompts, d_model]``.
+
+    ``capture_last_token_residuals`` reads one position, which is right for
+    deriving a direction but is a documented failure mode for a *monitor*:
+    final-token-only probes miss signal that is present earlier in the prompt
+    (arXiv 2605.12726). ``pooling`` selects how positions are combined, over
+    real tokens only -- padding is masked out, so a short prompt in a batch of
+    long ones is not averaged with filler.
+
+    - ``last``    the final prompt token, matching the direction pipeline
+    - ``mean``    mean over the prompt
+    - ``max``     elementwise max over the prompt
+    - ``last_k``  mean over the final ``last_k`` real tokens
+
+    ``prompt_suffix`` appends an eliciting question before templating (the
+    "prompted probe" of arXiv 2504.20271, the most data-efficient monitor in
+    that comparison): the model is asked about the input, so its answer-position
+    activations carry the judgement rather than only the content.
+    """
+    import torch
+
+    if pooling not in ("last", "mean", "max", "last_k"):
+        raise ValueError(f"pooling must be last|mean|max|last_k, got {pooling!r}")
+
+    texts = list(prompts)
+    if prompt_suffix:
+        texts = [f"{p}\n\n{prompt_suffix}" for p in texts]
+    if apply_template:
+        texts = format_prompts(tokenizer, texts, system_prompt, thinking=thinking)
+    if not texts:
+        raise ValueError("No prompts to capture")
+
+    original_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+
+    per_batch = []
+    try:
+        for start in range(0, len(texts), batch_size):
+            chunk = texts[start : start + batch_size]
+            encoded = tokenizer(
+                chunk, return_tensors="pt", padding=True, truncation=True,
+                max_length=max_length, add_special_tokens=not apply_template,
+            ).to(model.device)
+            mask = encoded["attention_mask"].unsqueeze(-1)          # [b, seq, 1]
+
+            with torch.no_grad():
+                out = model(**encoded, output_hidden_states=True, return_dict=True)
+
+            pooled = []
+            for h in out.hidden_states:                              # [b, seq, d]
+                hm = h * mask
+                if pooling == "last":
+                    pooled.append(h[:, -1, :])
+                elif pooling == "mean":
+                    pooled.append(hm.sum(dim=1) / mask.sum(dim=1).clamp_min(1))
+                elif pooling == "max":
+                    # Padding is left-side, so masked positions must not win the
+                    # max; push them to -inf rather than zero, which a negative
+                    # activation would otherwise lose to.
+                    pooled.append(h.masked_fill(mask == 0, float("-inf")).max(dim=1).values)
+                else:
+                    k = min(int(last_k), h.shape[1])
+                    tail, tail_mask = hm[:, -k:, :], mask[:, -k:, :]
+                    pooled.append(tail.sum(dim=1) / tail_mask.sum(dim=1).clamp_min(1))
+            per_batch.append(torch.stack(pooled, dim=0).to(torch.float32).cpu())
+
+            del out, encoded
+            if model.device.type == "mps":
+                torch.mps.empty_cache()
+            if progress:
+                progress(min(start + batch_size, len(texts)), len(texts))
+    finally:
+        tokenizer.padding_side = original_side
+
+    result = torch.cat(per_batch, dim=1)
+    logger.info("Captured pooled(%s) %s", pooling, tuple(result.shape))
+    return result
+
+
 def capture_last_token_residuals(
     model,
     tokenizer,

@@ -24,7 +24,7 @@ MANIFEST_NAME = "asylum_surgery.json"
 @dataclass
 class SurgeryManifest:
     source_model: str
-    method: str                       # "direction_scale" | "lora_merge"
+    method: str                       # direction_scale | direction_subspace | expert_* | lora_merge
     beta: Optional[float] = None
     direction_layer: Optional[int] = None
     direction_auc: Optional[float] = None
@@ -34,6 +34,14 @@ class SurgeryManifest:
     embeddings_tied: Optional[bool] = None
     embeddings_edited: Optional[bool] = None
     mean_relative_change: Optional[float] = None
+    # What the enumeration proved. ``coverage_verified`` is True when every decoder
+    # layer contributed on both sides (a full-model edit), False for an edit that is
+    # partial by design (expert-selective surgery), None when it does not apply.
+    model_type: Optional[str] = None
+    coverage_verified: Optional[bool] = None
+    moe_layers: Optional[int] = None
+    expert_matrices: Optional[int] = None
+    shared_expert_matrices: Optional[int] = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     notes: Optional[str] = None
     extra: dict = field(default_factory=dict)
@@ -73,6 +81,8 @@ class SurgeryManifest:
                 "direction_layer": self.direction_layer,
                 "direction_auc": self.direction_auc,
                 "split_hash": self.split_hash,
+                "model_type": self.model_type,
+                "coverage_verified": self.coverage_verified,
                 "created_at": self.created_at,
             }
         }

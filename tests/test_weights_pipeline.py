@@ -27,6 +27,14 @@ def tiny_model_dir(tmp_path_factory):
     Shrinking the vocab instead would be faster, but then the borrowed
     tokenizer emits ids past the end of the embedding table and every forward
     pass dies with "index out of range in self".
+
+    Seeded, for the same reason the direction below it is. Without this the
+    weights come from whatever global RNG state earlier tests happened to leave
+    behind, so the model differs between running this file alone and running
+    the whole suite. Thresholds measured on one draw then fail on another and
+    the failure looks like a regression in the code under test rather than in
+    the fixture: ablation left 0.142 of the residual in a full-suite run and
+    under 0.1 in an isolated one, from the same source.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2Config
 
@@ -39,6 +47,7 @@ def tiny_model_dir(tmp_path_factory):
         max_position_embeddings=128, tie_word_embeddings=False,
         bos_token_id=tok.bos_token_id, eos_token_id=tok.eos_token_id,
     )
+    torch.manual_seed(0)
     AutoModelForCausalLM.from_config(cfg).save_pretrained(str(out))
     tok.save_pretrained(str(out))
     return out
@@ -198,15 +207,71 @@ def test_ablation_mode_removes_direction_from_activations(loaded):
     gen = torch.Generator().manual_seed(0)
     v = torch.nn.functional.normalize(torch.randn(D_MODEL, generator=gen), dim=0)
 
-    with steer(model, v, mode="ablate"):
+    def shares():
         with torch.no_grad():
             out = model(**ids, output_hidden_states=True)
+        return [float((h @ v).abs().mean() / h.norm(dim=-1).mean())
+                for h in out.hidden_states]
 
-    # Every block's input had the direction projected out, so the component
-    # surviving into later layers is small relative to the residual norm.
-    h = out.hidden_states[-2]
-    share = (h @ v).abs().mean() / h.norm(dim=-1).mean()
-    assert share < 0.1, f"direction still carries {share:.3f} of the residual"
+    before = shares()
+    with steer(model, v, mode="ablate"):
+        after = shares()
+
+    # An intermediate index is measured against the unablated run, not against a
+    # fixed threshold. `hidden_states[k]` is recorded as block k-1 produced it,
+    # before the pre-hook on block k runs, so it legitimately carries whatever
+    # the preceding block wrote back. On random weights that share depends
+    # entirely on the draw -- it was 0.142 here -- so an absolute bound tests
+    # the fixture, not the ablation.
+    # Direction only: on a four-block random model this index sees ablation at
+    # two block inputs and whatever those blocks wrote back, so how *much* it
+    # falls is a property of the draw (0.209 -> 0.122 here). That it falls at
+    # all is the property of the ablation.
+    mid = len(before) // 2
+    assert after[mid] < before[mid], (
+        f"ablation did not reduce the mid-stack share ({before[mid]:.3f} -> {after[mid]:.3f})"
+    )
+
+    # The final residual is different: no block consumes it, so it is hooked
+    # directly and must come out clean in absolute terms. This index was
+    # skipped here for a long time and the bug it hid was not cosmetic --
+    # `steer` hooked block *inputs* only, so the last block wrote the direction
+    # straight back. On Qwen3-8B the final residual kept 83% of its original
+    # component and a causal direction measured as moving refusal by zero
+    # points, which the sweep then reported as "inconclusive".
+    assert after[-1] < 0.1, (
+        f"the final residual still carries {after[-1]:.3f} of the direction; "
+        f"ablation must cover the last block's output, not only block inputs"
+    )
+    assert after[-1] < before[-1] * 0.5
+
+
+def test_ablate_mode_equals_a_rank_one_subspace_ablation(loaded):
+    """The two ablation paths must be the same operation.
+
+    `steer(mode="ablate")` backs the sweep's causal check; `ablate_subspace`
+    backs the rank curve and the capability-gated search. With one direction at
+    strength one they are the same formula, so any disagreement means one of
+    them is not doing what its docstring says -- which is exactly how a
+    direction came to score 0 points through one path and 62 through the other.
+    """
+    from vivasecuris.aiasylum.weights.steering import ablate_subspace, steer
+
+    model, tok = loaded
+    ids = tok("hello world", return_tensors="pt")
+    gen = torch.Generator().manual_seed(0)
+    v = torch.nn.functional.normalize(torch.randn(D_MODEL, generator=gen), dim=0)
+
+    def logits(ctx):
+        with ctx:
+            with torch.no_grad():
+                return model(**ids).logits.clone()
+
+    assert torch.allclose(
+        logits(steer(model, v, mode="ablate")),
+        logits(ablate_subspace(model, v.reshape(1, -1), k=1.0)),
+        atol=1e-4,
+    ), "steer(mode='ablate') and a rank-1 ablate_subspace must agree"
 
 
 def test_invalid_steering_mode_raises(loaded):

@@ -224,6 +224,21 @@ class PromptSplit:
             "n_harmless_test": len(self.harmless_test),
         }
 
+    def to_dict(self) -> dict:
+        """Persist the actual partition, not instructions for resampling it."""
+        return {**asdict(self), "split_hash": self.hash}
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "PromptSplit":
+        split = cls(**{key: payload[key] for key in cls.__dataclass_fields__})
+        if payload.get("split_hash") != split.hash:
+            raise ValueError("Saved prompt split failed its integrity check. Derive a new direction.")
+        train = set(split.harmful_train) | set(split.harmless_train)
+        test = set(split.harmful_test) | set(split.harmless_test)
+        if train & test:
+            raise ValueError("Saved prompt split contains training/evaluation overlap.")
+        return split
+
 
 def load_harmful_prompts(
     limit: Optional[int] = None,
@@ -343,6 +358,10 @@ def build_split(
     rng = random.Random(seed)
     harmful = sorted(set(harmful))
     harmless = sorted(set(harmless))
+    if not 0 < test_fraction < 1:
+        raise ValueError("test_fraction must be between zero and one.")
+    if set(harmful) & set(harmless):
+        raise ValueError("The two prompt classes overlap; use disjoint contrast sets.")
     rng.shuffle(harmful)
     rng.shuffle(harmless)
 

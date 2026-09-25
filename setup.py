@@ -30,7 +30,7 @@ setup(
         # and the API/CLI continue to install in seconds.
         "interp": [
             "torch>=2.2",
-            "transformers>=4.45,<5",
+            "transformers>=4.51,<5",
             "huggingface-hub<1.0",
             "accelerate>=0.30",
             "safetensors>=0.4",
@@ -45,7 +45,7 @@ setup(
         # Gradient-based behavior modification. Plain LoRA only: bitsandbytes
         # has no MPS backend, so 4-bit QLoRA is unavailable on Apple silicon.
         "lora": [
-            "peft>=0.11",
+            "peft>=0.13,<1",
             "datasets>=2.14",
         ],
     },

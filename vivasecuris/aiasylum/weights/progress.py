@@ -88,6 +88,27 @@ class Reporter:
     def note(self, text: str) -> None:
         self._write(f"  {text}")
 
+    def metrics(self, data: dict) -> None:
+        """A training tick (step, loss, learning rate) or an evaluation loss.
+
+        The terminal form is one line per call; the SSE reporter in the API
+        overrides this to throttle and stream the same record.
+        """
+        if not self.enabled:
+            return
+        step, total = data.get("step"), data.get("total")
+        if data.get("phase") == "eval":
+            loss = data.get("eval_loss")
+            self._write(f"    eval at step {step}: loss {loss:.4f}" if loss is not None else f"    eval at step {step}")
+            return
+        loss, lr = data.get("loss"), data.get("lr")
+        text = f"    step {step}/{total}"
+        if loss is not None:
+            text += f"  loss {loss:.4f}"
+        if lr is not None:
+            text += f"  lr {lr:.2e}"
+        self._write(text)
+
     def total_elapsed(self) -> str:
         return format_duration(time.time() - self.started)
 
@@ -111,6 +132,27 @@ class Reporter:
         return report
 
 
+def _parse_meminfo(text: str) -> dict:
+    """``/proc/meminfo`` -> the same four fields the macOS branch reports."""
+    kb = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].endswith(":"):
+            try:
+                kb[parts[0][:-1]] = int(parts[1])
+            except ValueError:
+                pass
+    gb = lambda k: kb.get(k, 0) / 2**20
+    return {
+        "total_gb": gb("MemTotal"),
+        # MemAvailable is the kernel's own estimate of what can be allocated
+        # without swapping; MemFree alone ignores reclaimable cache.
+        "free_gb": gb("MemAvailable") or gb("MemFree"),
+        "swap_total_gb": gb("SwapTotal"),
+        "swap_used_gb": gb("SwapTotal") - gb("SwapFree"),
+    }
+
+
 def memory_report() -> dict:
     """Physical memory, free pages and swap, for a preflight check.
 
@@ -118,11 +160,26 @@ def memory_report() -> dict:
     Mac an Ollama model left resident takes a quarter of it, and the result is
     not an error but a silent collapse in speed: a 3B load measured 66s against
     6s for a 0.5B, and a 16-token generation exceeded seven minutes.
+
+    Branches on platform. The macOS probes (``sysctl``, ``vm_stat``) do not
+    exist on Linux, and before the Linux branch every field there silently came
+    back 0 -- which the checks read as "nothing to warn about". ``measured``
+    says whether any probe succeeded, so a caller can tell "fine" from "blind".
     """
     import re
     import subprocess
 
     info = {"total_gb": 0.0, "free_gb": 0.0, "swap_used_gb": 0.0, "swap_total_gb": 0.0}
+
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo") as fh:
+                info.update(_parse_meminfo(fh.read()))
+        except OSError:
+            pass
+        info["measured"] = info["total_gb"] > 0
+        return info
+
     try:
         out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5)
         info["total_gb"] = int(out.stdout.strip()) / 2**30
@@ -153,7 +210,50 @@ def memory_report() -> dict:
             info["swap_used_gb"] = float(used.group(1)) / 1024
     except Exception:
         pass
+    info["measured"] = info["total_gb"] > 0
     return info
+
+
+def _parse_nvidia_smi(text: str) -> list:
+    """``memory.used,memory.total,name`` CSV (MiB) -> one dict per GPU."""
+    gpus = []
+    for i, line in enumerate(l for l in text.splitlines() if l.strip()):
+        parts = [p.strip() for p in line.split(",", 2)]
+        if len(parts) < 3:
+            continue
+        try:
+            used, total = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        gpus.append({
+            "index": i,
+            "name": parts[2],
+            "used_gb": used / 1024,
+            "total_gb": total / 1024,
+            "free_gb": (total - used) / 1024,
+        })
+    return gpus
+
+
+def gpu_report() -> list:
+    """Per-GPU memory from ``nvidia-smi``; ``[]`` where there is none (the M4).
+
+    Host RAM says nothing about whether a model fits on the card, and on a
+    rented box the card is what is being paid for.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total,name",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    if out.returncode != 0:
+        return []
+    return _parse_nvidia_smi(out.stdout)
 
 
 def resident_ollama_models() -> list:

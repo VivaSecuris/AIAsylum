@@ -16,9 +16,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# Short factual questions with unambiguous substring answers. Deliberately tiny
+# Short factual questions with accepted answer phrases. Deliberately tiny
 # and generic: this is a capability *smoke test*, not a benchmark. Any acceptable
-# answer for a question is a list of case-insensitive substrings.
+# answer for a question is a list of case-insensitive whole phrases.
 CAPABILITY_QA: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("What is the capital of France?", ("paris",)),
     ("What is 17 multiplied by 4? Answer with the number only.", ("68",)),
@@ -68,8 +68,10 @@ _CHOICE = re.compile(r"(?<![A-Za-z])([ABCD])(?![A-Za-z])")
 
 
 def _choice_letter(text: str) -> Optional[str]:
-    m = _CHOICE.search((text or "").strip())
-    return m.group(1) if m else None
+    from vivasecuris.aiasylum.benchmarks.simple import choice_answer
+
+    answer = choice_answer(text, ["A", "B", "C", "D"])
+    return chr(65 + answer) if answer is not None else None
 
 
 def mmlu_items(n: int, seed: int = 0) -> List[Dict[str, object]]:
@@ -120,8 +122,11 @@ def mmlu_capability_set(items: List[Dict[str, object]]) -> CapabilitySet:
         def score(responses: Sequence[str]) -> float:
             if not responses:
                 return 0.0
-            hits = sum(1 for r, a in zip(responses, answers) if _choice_letter(r) == a)
-            return hits / min(len(responses), len(answers))
+            from vivasecuris.aiasylum.benchmarks.simple import exact_response_matches
+
+            hits = sum(exact_response_matches(r, a, item["choices"])
+                       for r, a, item in zip(responses, answers, items))
+            return hits / len(answers) if answers else 0.0
 
         return CapabilitySet(f"mmlu:{len(items)}", questions, score, 8, items)
 
@@ -144,16 +149,22 @@ def compare_verdict(baseline: Dict[str, object], modified: Dict[str, object],
 
 
 def factual_accuracy(responses: Sequence[str], qa=CAPABILITY_QA) -> float:
-    """Fraction of ``responses`` that contain an accepted answer substring.
+    """Fraction with an accepted whole phrase in the final answer.
 
     ``responses`` must line up with ``qa`` (or ``capability_questions``) in order.
     """
     if not responses:
         return 0.0
     hits = 0
+    from vivasecuris.aiasylum.benchmarks.simple import final_answer_text
+
     for resp, (_, answers) in zip(responses, qa):
-        low = (resp or "").lower()
-        if any(a in low for a in answers):
+        low = final_answer_text(resp or "").lower()
+        # A mention in a rejection, alternative or thinking trace is not an
+        # affirmative answer. This remains a documented capability smoke test.
+        if re.search(r"\b(?:not|wrong|incorrect|isn't|isnt|or|maybe|uncertain)\b", low):
+            continue
+        if any(re.search(r"(?<!\w)" + re.escape(a) + r"(?!\w)", low) for a in answers):
             hits += 1
     return hits / min(len(responses), len(qa))
 

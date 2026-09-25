@@ -33,6 +33,9 @@ class LayerScore:
     auc: float
     cohens_d: float
     train_norm: float
+    # Stable rank of the benign-centred refusal residuals at this layer; a
+    # prediction of how much a single vector can remove (weights/diagnostics.py).
+    stable_rank: float = float("nan")
 
 
 @dataclass
@@ -56,6 +59,13 @@ class RefusalDirection:
     layer_scores: List[LayerScore] = field(default_factory=list)
     basis: object = None        # torch.Tensor [m, d_model], orthonormal rows; row 0 == vector
     basis_layers: List[int] = field(default_factory=list)  # source layer of each basis row (best-effort)
+    # Per-row removal weights for soft ablation (mu_i / mu_1 for an RFM cone).
+    # None means every row is removed at full strength, the pre-2026 behaviour.
+    weights: Optional[List[float]] = None
+    method: str = "diff_in_means"
+    # Method-specific provenance and the class projection means the timeline
+    # and any threshold use. Free-form JSON.
+    extra: dict = field(default_factory=dict)
 
     @property
     def usable(self) -> bool:
@@ -72,6 +82,13 @@ class RefusalDirection:
             return self.basis
         return self.vector.reshape(1, -1)
 
+    def as_weights(self, rank: Optional[int] = None) -> Optional[List[float]]:
+        """Removal weights for the first ``rank`` rows, or ``None`` for uniform."""
+        if not self.weights:
+            return None
+        w = [float(x) for x in self.weights]
+        return w[: int(rank)] if rank is not None else w
+
     def metadata(self) -> dict:
         meta = {
             "layer": self.layer,
@@ -83,13 +100,23 @@ class RefusalDirection:
             "min_usable_auc": MIN_USABLE_AUC,
             "usable": self.usable,
             "rank": self.rank,
+            "method": self.method,
             "layer_scores": [
-                {"layer": s.layer, "auc": round(s.auc, 4), "cohens_d": round(s.cohens_d, 4)}
+                {
+                    "layer": s.layer,
+                    "auc": round(s.auc, 4),
+                    "cohens_d": round(s.cohens_d, 4),
+                    "stable_rank": (round(s.stable_rank, 3) if s.stable_rank == s.stable_rank else None),
+                }
                 for s in self.layer_scores
             ],
         }
         if self.basis is not None:
             meta["basis_layers"] = list(self.basis_layers)
+        if self.weights:
+            meta["weights"] = [round(float(w), 6) for w in self.weights]
+        if self.extra:
+            meta["extra"] = self.extra
         return meta
 
     def save(self, out_dir: str | Path) -> Path:
@@ -110,6 +137,8 @@ class RefusalDirection:
             if basis.data_ptr() == tensors["direction"].data_ptr():
                 tensors["direction"] = tensors["direction"].clone()
             tensors["basis"] = basis
+        if self.weights:
+            tensors["weights"] = torch.tensor([float(w) for w in self.weights], dtype=torch.float32)
         save_file(tensors, str(out / "direction.safetensors"))
         (out / "direction.json").write_text(json.dumps(self.metadata(), indent=2))
         logger.info(
@@ -144,6 +173,15 @@ class RefusalDirection:
 
         tensors = load_file(str(vec_path))
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        weights = tensors.get("weights")
+        layer_scores = [
+            LayerScore(
+                layer=int(s["layer"]), auc=float(s.get("auc", float("nan"))),
+                cohens_d=float(s.get("cohens_d", float("nan"))), train_norm=float("nan"),
+                stable_rank=float(s["stable_rank"]) if s.get("stable_rank") is not None else float("nan"),
+            )
+            for s in meta.get("layer_scores", []) or []
+        ]
         return cls(
             vector=tensors["direction"],
             layer=meta.get("layer", -1),
@@ -151,8 +189,12 @@ class RefusalDirection:
             cohens_d=meta.get("cohens_d", float("nan")),
             model_id=meta.get("model_id", "unknown"),
             split_hash=meta.get("split_hash", "unknown"),
+            layer_scores=layer_scores,
             basis=tensors.get("basis"),
             basis_layers=meta.get("basis_layers", []),
+            weights=([float(w) for w in weights.tolist()] if weights is not None else None),
+            method=meta.get("method", "diff_in_means"),
+            extra=dict(meta.get("extra") or {}),
         )
 
 
@@ -194,13 +236,20 @@ def _score_layers(
     max_length: int = 512,
     layer_range: Optional[tuple] = None,
     progress: Optional[callable] = None,
+    return_captures: bool = False,
 ):
     """Capture residuals and compute the per-layer difference-in-means direction.
 
     Returns ``(directions, scores)`` where ``directions[layer]`` is the unit
     diff-in-means vector fit on the train half and ``scores`` are held-out
     separation scores. Shared by ``derive_direction`` and ``derive_subspace`` so
-    both fit and select on exactly the same seeded split.
+    both fit and select on exactly the same seeded split. With
+    ``return_captures=True`` a third element holds the raw ``[n_layers+1, n, d]``
+    captures under ``harmful_train``, ``harmless_train``, ``harmful_test`` and
+    ``harmless_test`` so RFM and the diagnostics never re-run the model.
+
+    Each ``LayerScore`` also carries the stable rank of the benign-centred
+    refusal residuals on the train half (see ``weights/diagnostics.py``).
     """
     from vivasecuris.aiasylum.weights.capture import capture_last_token_residuals
 
@@ -225,6 +274,8 @@ def _score_layers(
     if progress:
         progress(f"scoring {hi - lo} layers on held-out prompts")
 
+    from vivasecuris.aiasylum.weights.diagnostics import benign_centred_residuals, stable_rank
+
     scores: List[LayerScore] = []
     directions: Dict[int, object] = {}
 
@@ -242,12 +293,34 @@ def _score_layers(
         pos = harmful_te[layer] @ r
         neg = harmless_te[layer] @ r
         scores.append(
-            LayerScore(layer=layer, auc=_auc(pos, neg), cohens_d=_cohens_d(pos, neg), train_norm=norm.item())
+            LayerScore(
+                layer=layer, auc=_auc(pos, neg), cohens_d=_cohens_d(pos, neg), train_norm=norm.item(),
+                stable_rank=stable_rank(benign_centred_residuals(harmful_tr[layer], harmless_tr[layer])),
+            )
         )
 
     if not scores:
         raise ValueError("No usable layer produced a non-degenerate direction.")
+    if return_captures:
+        captures = {
+            "harmful_train": harmful_tr, "harmless_train": harmless_tr,
+            "harmful_test": harmful_te, "harmless_test": harmless_te,
+        }
+        return directions, scores, captures
     return directions, scores
+
+
+def _projection_extra(directions, scores, captures, layer: int, vector) -> dict:
+    """Class projection means at ``layer`` plus the stable-rank summary."""
+    from vivasecuris.aiasylum.weights.diagnostics import stable_rank_summary
+
+    h = (captures["harmful_train"][layer] @ vector).mean().item()
+    b = (captures["harmless_train"][layer] @ vector).mean().item()
+    sr = {s.layer: s.stable_rank for s in scores if s.stable_rank == s.stable_rank}
+    return {
+        "projection_means": {"harmful": h, "harmless": b, "layer": int(layer), "centered": False},
+        "stable_rank": stable_rank_summary(sr, layer),
+    }
 
 
 def _rank_layers(scores: List[LayerScore]) -> List[LayerScore]:
@@ -269,20 +342,23 @@ def derive_direction(
     """Fit a direction on ``split``'s train half and select the layer on its test half."""
     import torch
 
-    directions, scores = _score_layers(
+    directions, scores, caps = _score_layers(
         model, tokenizer, split, batch_size=batch_size,
         max_length=max_length, layer_range=layer_range, progress=progress,
+        return_captures=True,
     )
 
     best = _rank_layers(scores)[0]
+    vec = directions[best.layer].to(torch.float32)
     direction = RefusalDirection(
-        vector=directions[best.layer].to(torch.float32),
+        vector=vec,
         layer=best.layer,
         auc=best.auc,
         cohens_d=best.cohens_d,
         model_id=model_id,
         split_hash=split.hash,
         layer_scores=sorted(scores, key=lambda s: s.layer),
+        extra=_projection_extra(directions, scores, caps, best.layer, vec),
     )
 
     logger.info("Best layer %d: held-out AUC %.3f, Cohen's d %.2f", best.layer, best.auc, best.cohens_d)
@@ -328,9 +404,10 @@ def derive_subspace(
     if rank < 1:
         raise ValueError(f"rank must be >= 1, got {rank}")
 
-    directions, scores = _score_layers(
+    directions, scores, caps = _score_layers(
         model, tokenizer, split, batch_size=batch_size,
         max_length=max_length, layer_range=layer_range, progress=progress,
+        return_captures=True,
     )
 
     ranked = _rank_layers(scores)
@@ -377,6 +454,8 @@ def derive_subspace(
         layer_scores=sorted(scores, key=lambda s: s.layer),
         basis=basis,
         basis_layers=row_layers,
+        method="diff_in_means",
+        extra=_projection_extra(directions, scores, caps, best.layer, best_vec),
     )
     logger.info(
         "Derived rank-%d refusal subspace from layers %s (best layer %d, AUC %.3f)",

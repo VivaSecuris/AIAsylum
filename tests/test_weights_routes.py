@@ -41,8 +41,8 @@ def no_preflight(monkeypatch):
     """Clear the machine-state checks so tests assert on logic, not on the host."""
     real = weights_route._preflight_checks
 
-    def patched(kind, source_model="", direction_row=None, output_name=None):
-        out = real(kind, source_model, direction_row, output_name)
+    def patched(kind, source_model="", direction_row=None, output_name=None, modified_model=None, dtype="bfloat16", **kw):
+        out = real(kind, source_model, direction_row, output_name, modified_model, dtype, **kw)
         keep = {"low_auc", "model_mismatch", "output_exists"}
         out.checks = [c for c in out.checks if c.code in keep]
         out.blocking_codes = [c.code for c in out.checks if c.severity == "blocking"]
@@ -109,10 +109,14 @@ def _cleanup(run_id):
 
 
 def test_stages_covers_the_whole_pipeline(client):
+    """The five stages of the edit pipeline must all be offered.
+
+    A subset check, not equality: stages that measure rather than edit (the
+    harmful-intent probe, for one) are added over time and do not belong in
+    this assertion, but none of these five may ever disappear.
+    """
     d = client.get("/api/v1/weights/stages").json()
-    assert {s["name"] for s in d["stages"]} == {
-        "direction", "sweep", "select", "surgery", "compare",
-    }
+    assert {"direction", "sweep", "select", "surgery", "compare"} <= {s["name"] for s in d["stages"]}
 
 
 def test_every_stage_has_exactly_one_default_method(client):
@@ -150,15 +154,21 @@ def test_unbuilt_methods_are_listed_not_hidden(client):
     methods = {m["name"]: m for m in client.get("/api/v1/weights/stages").json()["methods"]}
     assert methods["direction_scale"]["available"] is True
     assert methods["diff_in_means"]["available"] is True
-    assert methods["lora"]["available"] is False
-    assert methods["lora"]["unavailable_reason"]
+    assert methods["lora"]["available"] is True
+    assert methods["pruning"]["available"] is False
+    assert methods["pruning"]["unavailable_reason"]
     assert methods["quantization"]["available"] is False
 
 
 def test_surgery_is_the_only_permanent_method(client):
     methods = client.get("/api/v1/weights/stages").json()["methods"]
     permanent = [m["name"] for m in methods if m.get("permanent")]
-    assert permanent == ["direction_scale"]
+    # Every permanent method belongs to a stage that writes a model directory.
+    assert set(permanent) == {
+        "direction_scale", "expert_direction_scale", "expert_ablate",
+        "lora", "response_distill", "logit_distill",
+    }
+    assert all(m["stage"] in ("surgery", "expert_surgery", "lora", "distill") for m in methods if m.get("permanent"))
 
 
 @pytest.fixture
@@ -191,7 +201,7 @@ def seeded_scenarios():
 
 def test_objectives_report_live_scenario_counts(client, seeded_scenarios):
     d = client.get("/api/v1/weights/objectives").json()
-    assert {o["name"] for o in d["objectives"]} == {"refusal", "refusal_narrow", "custom"}
+    assert {"refusal", "refusal_narrow", "custom", "over_refusal"} <= {o["name"] for o in d["objectives"]}
     assert d["min_per_class"] == 8
     # The restricted-advice scenarios must be visible but flagged, not dropped.
     excluded = [s for s in d["scenarios"] if s["excluded_reason"]]
@@ -201,7 +211,7 @@ def test_objectives_report_live_scenario_counts(client, seeded_scenarios):
 
 def test_requesting_an_unbuilt_method_explains_why(client, roots, no_preflight, no_execute):
     r = client.post("/api/v1/weights/runs", json={
-        "kind": "direction", "source_model": "m", "method": "lora"})
+        "kind": "direction", "source_model": "m", "method": "pruning"})
     assert r.status_code == 409
     assert "not implemented" in r.json()["detail"].lower()
 
@@ -344,6 +354,36 @@ def test_models_scan_reads_disk_not_the_database(client, roots):
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_deleting_an_active_weight_run_is_refused(client, roots, status):
+    runs, _ = roots
+    out = runs / "active"
+    out.mkdir()
+    artifact = out / "in-progress.bin"
+    artifact.write_bytes(b"unfinished")
+    session = get_session()
+    try:
+        row = WeightRun(kind="direction", status=status, source_model="m",
+                        out_dir=str(out), meta_data={})
+        session.add(row)
+        session.commit()
+        run_id = row.id
+    finally:
+        session.close()
+
+    response = client.delete(
+        f"/api/v1/weights/runs/{run_id}", params={"delete_artifacts": True},
+    )
+    assert response.status_code == 409
+    assert "Stop this run" in response.json()["detail"]
+    assert artifact.read_bytes() == b"unfinished"
+    session = get_session()
+    try:
+        assert session.get(WeightRun, run_id).status == status
+    finally:
+        session.close()
+
+
 def test_deleting_a_surgery_run_keeps_the_weights_by_default(client, roots, no_preflight):
     runs, models = roots
     out = models / "keepme"
@@ -435,6 +475,88 @@ def test_weights_and_interp_share_one_model_slot():
         assert weights_route._semaphore()._value == 1
 
     asyncio.run(check())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cooperative_exit", [False, True])
+async def test_cancelled_weight_worker_holds_slot_until_it_exits(
+    tmp_path, monkeypatch, cooperative_exit,
+):
+    """A queued model must not load while a cancelled worker still owns memory."""
+    import asyncio
+    import threading
+
+    from vivasecuris.aiasylum.api import model_jobs
+    from vivasecuris.aiasylum.api.cancellation import CancellationManager
+
+    monkeypatch.setattr(model_jobs, "_slot", None)
+    monkeypatch.setattr(model_jobs, "_held_by", None)
+    monkeypatch.setattr(model_jobs, "_waiting", [])
+    monkeypatch.setenv("AIASYLUM_MODEL_LOCK", str(tmp_path / "model.lock"))
+    monkeypatch.setattr(weights_route, "weights_cancellation", CancellationManager())
+    entered, release, second_entered = (threading.Event() for _ in range(3))
+    stopping = asyncio.Event()
+    order = []
+
+    async def progress(run_id, event_type, *args):
+        if event_type == "weights_stopping":
+            stopping.set()
+
+    monkeypatch.setattr(weights_route.weights_progress, "emit_event", progress)
+    session = get_session()
+    try:
+        rows = [WeightRun(kind="direction", status="pending", source_model="m",
+                          meta_data={"options": {}}) for _ in range(2)]
+        session.add_all(rows)
+        session.commit()
+        first_id, second_id = [row.id for row in rows]
+    finally:
+        session.close()
+
+    def execute(run_id, *args):
+        if run_id == first_id:
+            entered.set()
+            assert release.wait(5), "test failed to release the first worker"
+            order.append("first_exited")
+            if cooperative_exit:
+                raise weights_route.RunCancelled()
+        else:
+            order.append("second_entered")
+            second_entered.set()
+        return {}
+
+    monkeypatch.setattr(weights_route, "_execute", execute)
+    first = asyncio.create_task(weights_route._run_weights_background(first_id))
+    weights_route.weights_cancellation.register_task(first_id, first)
+    second = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        second = asyncio.create_task(weights_route._run_weights_background(second_id))
+        await asyncio.sleep(0)
+        assert f"weights run {second_id}" in model_jobs.slot_status()["waiting"]
+        assert (await weights_route.stop_weight_run(first_id))["stopped"]
+        await asyncio.wait_for(stopping.wait(), 1)
+        # A second Stop click must not break out of the shield loop either.
+        assert (await weights_route.stop_weight_run(first_id))["stopped"]
+        await asyncio.sleep(0)
+        assert model_jobs.slot_status()["held_by"] == f"weights run {first_id}"
+        assert not first.done()
+        assert not second_entered.is_set()
+    finally:
+        release.set()
+        await asyncio.wait_for(first, 5)
+        if second is not None:
+            await asyncio.wait_for(second, 5)
+
+    assert order == ["first_exited", "second_entered"]
+    assert model_jobs.slot_status() == {"held_by": None, "waiting": []}
+    session = get_session()
+    try:
+        cancelled = session.get(WeightRun, first_id)
+        assert cancelled.status == "failed" and cancelled.meta_data["cancelled"]
+        assert session.get(WeightRun, second_id).status == "completed"
+    finally:
+        session.close()
 
 
 def test_weights_uses_its_own_progress_and_cancellation_managers():
@@ -819,3 +941,100 @@ def test_compare_assembles_the_shape_the_ui_reads(monkeypatch):
 
     assert set(summary["prompts"]) == {"harmful", "harmless", "factual"}
     assert set(summary["responses"]) == {"baseline", "modified"}
+
+
+# --------------------------------------------------------------------------
+# Linux / GPU preflight
+# --------------------------------------------------------------------------
+
+MEMINFO = """MemTotal:       263786232 kB
+MemFree:         2048000 kB
+MemAvailable:   201326592 kB
+SwapTotal:       8388608 kB
+SwapFree:        4194304 kB
+"""
+
+
+def test_meminfo_is_parsed():
+    from vivasecuris.aiasylum.weights.progress import _parse_meminfo
+
+    m = _parse_meminfo(MEMINFO)
+    assert round(m["total_gb"]) == 252
+    assert round(m["free_gb"]) == 192, "MemAvailable, not MemFree, is what can be allocated"
+    assert round(m["swap_total_gb"]) == 8 and round(m["swap_used_gb"]) == 4
+
+
+def test_nvidia_smi_is_parsed_and_absence_is_empty(monkeypatch):
+    import subprocess
+
+    from vivasecuris.aiasylum.weights import progress
+
+    gpus = progress._parse_nvidia_smi("1024, 81920, NVIDIA H100 80GB HBM3\n")
+    assert gpus[0]["name"] == "NVIDIA H100 80GB HBM3"
+    assert round(gpus[0]["free_gb"]) == 79
+
+    def missing(*a, **k):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert progress.gpu_report() == []
+
+
+def test_blind_preflight_says_it_is_blind(monkeypatch):
+    """Every probe failing used to look exactly like a healthy machine."""
+    from vivasecuris.aiasylum.weights import progress
+
+    monkeypatch.setattr(progress, "memory_report", lambda: {
+        "total_gb": 0.0, "free_gb": 0.0, "swap_used_gb": 0.0, "swap_total_gb": 0.0,
+        "measured": False})
+    monkeypatch.setattr(progress, "gpu_report", lambda: [])
+    monkeypatch.setattr(progress, "resident_ollama_models", lambda: [])
+
+    out = weights_route._preflight_checks("direction", "m")
+    assert "memory_unmeasured" in [c.code for c in out.checks]
+
+
+def test_low_vram_blocks_heavy_stages(monkeypatch, tmp_path):
+    from vivasecuris.aiasylum.weights import progress
+
+    model_dir = tmp_path / "m"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(b"\0" * (3 * 2**20))
+
+    monkeypatch.setattr(progress, "gpu_report", lambda: [
+        {"index": 0, "name": "GPU", "used_gb": 1, "total_gb": 1.001, "free_gb": 0.001}])
+    monkeypatch.setattr(progress, "resident_ollama_models", lambda: [])
+
+    heavy = weights_route._preflight_checks("select", str(model_dir))
+    light = weights_route._preflight_checks("direction", str(model_dir))
+    sev = lambda out: {c.code: c.severity for c in out.checks}.get("gpu_memory_low")
+    assert sev(heavy) == "blocking"
+    assert sev(light) == "advisory"
+
+
+def test_missing_comparison_checkpoint_cannot_be_acknowledged(client, roots, no_execute):
+    request = {"kind": "compare", "source_model": "Qwen/Qwen2.5-0.5B-Instruct",
+               "modified_model": str(roots[1] / "not-saved"),
+               "acknowledge": ["modified_model_unavailable"]}
+    response = client.post('/api/v1/weights/runs', json=request)
+    assert response.status_code == 409
+    checks = response.json()['detail']['blocking']
+    assert any(c['code'] == 'modified_model_unavailable' and not c['acknowledgeable'] for c in checks)
+
+
+def test_new_branch_records_parent_and_unique_identity(client, roots, no_preflight, no_execute):
+    parent = 'weight:workspace-example:12'
+    created = []
+    try:
+        for _ in range(2):
+            response = client.post('/api/v1/weights/runs', json={
+                'kind': 'direction', 'source_model': 'Qwen/Qwen2.5-0.5B-Instruct',
+                'lineage_parent': parent,
+            })
+            assert response.status_code == 200
+            created.append(response.json())
+        assert all(row['metadata']['lineage_parent'] == parent for row in created)
+        assert len({row['metadata']['lineage_id'] for row in created}) == 2
+    finally:
+        for row in created:
+            _cleanup(row['id'])

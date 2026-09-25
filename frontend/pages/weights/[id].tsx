@@ -1,4 +1,5 @@
 import { useRouter } from 'next/router'
+import Link from 'next/link'
 import { ArrowLeft, Square } from 'lucide-react'
 
 import { Layout } from '@/components/layout/Layout'
@@ -11,8 +12,15 @@ import { FrontierChart } from '@/components/weights/FrontierChart'
 import { LayerScoreChart } from '@/components/weights/LayerScoreChart'
 import { ManifestCard, ProvenanceCard } from '@/components/weights/ManifestCard'
 import { SweepTable } from '@/components/weights/SweepTable'
+import { SubspaceCurveChart } from '@/components/weights/SubspaceCurveChart'
+import { RefusalTimelineChart } from '@/components/weights/RefusalTimelineChart'
+import { ProbeResults } from '@/components/weights/ProbeResults'
+import { RoutingHeatmap } from '@/components/weights/RoutingHeatmap'
+import { TrainingCurve } from '@/components/weights/TrainingCurve'
+import { WRITING_WEIGHT_KINDS } from '@/lib/api'
 import {
   useEditedModel,
+  useRoutingStats,
   useStopWeightRun,
   useWeightRun,
   useWeightRunProgress,
@@ -32,8 +40,12 @@ export default function WeightRunDetailPage() {
 
   const summary = run?.metadata?.summary ?? {}
   const outName = run?.out_dir ? run.out_dir.split('/').filter(Boolean).pop() ?? '' : ''
+  const writesModel = !!run && WRITING_WEIGHT_KINDS.includes(run.kind)
+  const training = run?.kind === 'lora' || run?.kind === 'distill'
+  // A training run that kept only its adapter has no model directory to look up.
+  const producedModel = writesModel && (!training || summary.merged === true)
   const { data: modelDetail } = useEditedModel(
-    run?.kind === 'surgery' && run?.status === 'completed' ? outName : '',
+    producedModel && run?.status === 'completed' ? outName : '',
   )
 
   if (isLoading) {
@@ -83,6 +95,11 @@ export default function WeightRunDetailPage() {
                   select: 'Capability search',
                   surgery: 'Weight surgery',
                   compare: 'Measurement',
+                  probe: 'Harmful-intent probe',
+                  routing: 'Expert routing',
+                  expert_surgery: 'Expert surgery',
+                  lora: 'LoRA fine-tune',
+                  distill: 'Distillation',
                 }[run.kind] ?? run.kind}{' '}
                 #{run.id}
               </h1>
@@ -129,6 +146,15 @@ export default function WeightRunDetailPage() {
             <p className="text-sm text-muted-foreground">
               {progress?.message ?? 'Waiting to start…'}
             </p>
+            {training && progress?.data?.step != null && (
+              <p className="mt-1 font-mono text-xs text-muted-foreground">
+                {progress.data.phase === 'eval'
+                  ? `eval loss ${Number(progress.data.eval_loss).toFixed(4)} at step ${progress.data.step}`
+                  : `step ${progress.data.step}${progress.data.total ? `/${progress.data.total}` : ''}` +
+                    (progress.data.loss != null ? ` · loss ${Number(progress.data.loss).toFixed(4)}` : '') +
+                    (progress.data.lr != null ? ` · lr ${Number(progress.data.lr).toExponential(1)}` : '')}
+              </p>
+            )}
             {progress?.event_type === 'weights_queued' && (
               <p className="mt-1 text-xs text-muted-foreground">
                 Only one model-heavy job runs at a time, so this is queued rather than stuck.
@@ -143,6 +169,13 @@ export default function WeightRunDetailPage() {
             <p className="font-mono text-sm text-muted-foreground">{run.error}</p>
           </div>
         )}
+
+        {summary.evaluation && <div className="rounded-lg border bg-card p-4 text-sm">
+          <p>Evaluated {summary.evaluation.actual} saved held-out prompts (requested {summary.evaluation.requested}) · split {summary.evaluation.split_hash}</p>
+          {(summary.evaluation.warnings ?? []).map((warning: string) => <p key={warning} className="mt-1 text-amber-700 dark:text-amber-300">{warning}</p>)}
+        </div>}
+
+        {run.status === 'completed' && run.kind === 'probe' && <ProbeResults summary={summary} />}
 
         {/* The direction this stage consumed, snapshotted at creation so it
             still renders after the parent run is deleted. */}
@@ -171,6 +204,35 @@ export default function WeightRunDetailPage() {
                 subtitle="tiebreak when AUC saturates"
               />
               <MetricCard title="d_model" value={summary.d_model ?? '—'} subtitle={summary.split_hash} />
+              <MetricCard
+                title="Stable rank"
+                value={
+                  summary.extra?.stable_rank?.at_layer != null
+                    ? Number(summary.extra.stable_rank.at_layer).toFixed(1)
+                    : '—'
+                }
+                subtitle={
+                  summary.extra?.stable_rank?.band
+                    ? `${summary.extra.stable_rank.band} — ${summary.extra.stable_rank.note}`
+                    : 'of refusal residuals at the chosen layer'
+                }
+              />
+              <MetricCard
+                title="Method"
+                value={summary.method === 'rfm_agop' ? 'RFM-AGOP cone' : 'diff-in-means'}
+                subtitle={
+                  summary.rank && summary.rank > 1
+                    ? `rank ${summary.rank}${summary.weights ? ` · weights ${summary.weights.map((w: number) => w.toFixed(2)).join(', ')}` : ''}`
+                    : 'single direction'
+                }
+              />
+              {summary.refusal_overlap && (
+                <MetricCard
+                  title="Overlap with refusal"
+                  value={Number(summary.refusal_overlap.cosine_with_refusal).toFixed(2)}
+                  subtitle={summary.refusal_overlap.interpretation}
+                />
+              )}
             </div>
 
             <div
@@ -222,7 +284,13 @@ export default function WeightRunDetailPage() {
           </>
         )}
 
-        {run.status === 'completed' && run.kind === 'sweep' && (
+        {run.status === 'completed' && run.kind === 'sweep' && summary.curve && (
+          <SubspaceCurveChart rows={summary.curve} summary={summary} />
+        )}
+        {run.status === 'completed' && run.kind === 'sweep' && summary.timelines?.length > 0 && (
+          <RefusalTimelineChart timelines={summary.timelines} />
+        )}
+        {run.status === 'completed' && run.kind === 'sweep' && (summary.rows?.length ?? 0) > 0 && (
           <SweepTable
             rows={summary.rows ?? []}
             verdict={summary.verdict}
@@ -283,10 +351,47 @@ export default function WeightRunDetailPage() {
           />
         )}
 
-        {run.status === 'completed' && run.kind === 'surgery' && (
+        {run.status === 'completed' && run.kind === 'routing' && (
+          <RoutingSection runId={run.id} sourceModel={run.source_model} summary={summary} />
+        )}
+
+        {run.status === 'completed' && training && (
+          <TrainingSection run={run} summary={summary} />
+        )}
+
+        {run.status === 'completed' && writesModel && (
           <>
+            {summary.manifest?.coverage_verified === false && (
+              <div className="rounded-lg border border-yellow-500/50 bg-yellow-50 p-4 text-sm dark:bg-yellow-950">
+                <p className="font-medium">
+                  Partial edit: {summary.manifest?.extra?.experts_edited ?? '?'} expert
+                  {summary.manifest?.extra?.experts_edited === 1 ? '' : 's'} in{' '}
+                  {summary.manifest?.extra?.layers_edited ?? '?'} layer
+                  {summary.manifest?.extra?.layers_edited === 1 ? '' : 's'}
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  Only the experts you named were touched. Every other expert still writes what it
+                  carries when the router picks it, so read this as an expert-level intervention rather
+                  than a removal of the direction.
+                </p>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <MetricCard title="Beta" value={summary.manifest?.beta ?? '—'} subtitle="0 removes, 1 no-op, 2 amplifies" />
+              {run.kind === 'expert_surgery' ? (
+                <MetricCard
+                  title={summary.manifest?.extra?.expert_mode === 'ablate' ? 'Expert scale' : 'Expert edit'}
+                  value={
+                    summary.manifest?.extra?.expert_mode === 'ablate'
+                      ? summary.manifest?.extra?.expert_scale ?? '—'
+                      : summary.manifest?.beta ?? (summary.manifest?.extra?.k != null ? `k=${summary.manifest.extra.k}` : '—')
+                  }
+                  subtitle={summary.manifest?.extra?.expert_mode === 'ablate' ? '0 removes their write, 1 no-op' : summary.manifest?.extra?.expert_mode}
+                />
+              ) : run.kind === 'surgery' ? (
+                <MetricCard title="Beta" value={summary.manifest?.beta ?? '—'} subtitle="0 removes, 1 no-op, 2 amplifies" />
+              ) : (
+                <MetricCard title="Method" value={summary.manifest?.method ?? run.method ?? '—'} subtitle={summary.manifest?.extra?.distill?.teacher ? `from ${summary.manifest.extra.distill.teacher}` : undefined} />
+              )}
               <MetricCard title="Matrices edited" value={summary.manifest?.matrices_edited ?? '—'} />
               <MetricCard
                 title="Mean relative change"
@@ -304,13 +409,28 @@ export default function WeightRunDetailPage() {
               />
             </div>
 
-            <CompareInInterpButton
-              sourceModel={run.source_model}
-              editedPath={run.out_dir ?? ''}
-              probePrompts={sourceDirection.probe_prompts ?? []}
-            />
+            {producedModel ? (
+              <>
+                <CompareInInterpButton
+                  sourceModel={run.source_model}
+                  editedPath={run.out_dir ?? ''}
+                  probePrompts={sourceDirection.probe_prompts ?? []}
+                />
 
-            {summary.manifest && <ManifestCard manifest={summary.manifest} />}
+                <div className="flex flex-wrap gap-3 text-sm">
+                  <Link href={{ pathname: '/compare', query: { search: outName } }} className="rounded-md border px-4 py-2 hover:bg-muted">View in model library</Link>
+                  <Link href={{ pathname: '/create-test', query: { provider: 'transformers', model: run.out_dir } }} className="rounded-md border px-4 py-2 hover:bg-muted">Evaluate this model</Link>
+                  <Link href={{ pathname: '/weights', query: { kind: 'compare', source_model: run.source_model, modified_model: run.out_dir } }} className="rounded-md border px-4 py-2 hover:bg-muted">Compare behavior with original</Link>
+                </div>
+              </>
+            ) : (
+              <p className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+                This run kept only its adapter, under <code className="text-xs">{summary.adapter_path ?? run.out_dir}</code>.
+                Merge is off, so no model directory was written and nothing new appears in the library.
+              </p>
+            )}
+
+            {summary.manifest && Object.keys(summary.manifest).length > 0 && <ManifestCard manifest={summary.manifest} />}
             {modelDetail && <ProvenanceCard detail={modelDetail} />}
 
             <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -320,14 +440,105 @@ export default function WeightRunDetailPage() {
                 provider too — comparing this against a stock model served through Ollama would
                 measure the serving stack as much as the weights.
               </p>
-              <pre className="overflow-auto rounded bg-muted/50 p-3 font-mono text-xs">
-{`provider: transformers
-model:    ${run.out_dir}`}
-              </pre>
+              <p className="text-sm text-muted-foreground">Evaluate this model opens a test with the saved checkpoint already selected. Layer-by-layer comparison shows changes in activations; behavior comparison measures responses and capability on held-out prompts.</p>
             </div>
           </>
         )}
       </div>
     </Layout>
+  )
+}
+
+function TrainingSection({ run, summary }: { run: { kind: string; method: string | null }; summary: Record<string, any> }) {
+  const train = summary.train ?? {}
+  const distill = summary.distill ?? summary.manifest?.extra?.distill
+  const fmt = (value: any, digits = 4) => (typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—')
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <MetricCard title="Optimizer steps" value={train.steps ?? '—'} subtitle={train.trainable_params != null ? `${Number(train.trainable_params).toLocaleString()} trainable parameters` : undefined} />
+        <MetricCard title="Final train loss" value={fmt(train.final_loss)} subtitle={train.mean_kl != null ? `mean KL to teacher ${fmt(train.mean_kl)}` : 'response tokens only'} />
+        <MetricCard
+          title="Eval loss"
+          value={fmt(train.eval_loss_after)}
+          subtitle={train.eval_loss_before != null ? `from ${fmt(train.eval_loss_before)} before training` : 'no held-out rows'}
+        />
+        <MetricCard
+          title={distill ? 'Teacher' : 'Adapter'}
+          value={distill ? String(distill.teacher_model ?? '—').split('/').pop() ?? '—' : summary.merged ? 'merged' : 'kept separately'}
+          subtitle={distill ? `${distill.level} level${distill.level === 'logit' ? `, T=${distill.temperature}` : ''}` : train.target_modules ? `${train.target_modules.length} module names` : undefined}
+        />
+      </div>
+
+      {Array.isArray(summary.history) && summary.history.length > 0 && <TrainingCurve history={summary.history} />}
+
+      {Array.isArray(summary.teacher_samples) && summary.teacher_samples.length > 0 && (
+        <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <h2 className="text-lg font-semibold">What the teacher said</h2>
+          <p className="mb-3 mt-1 text-sm text-muted-foreground">
+            The first few responses the student was trained to imitate. The full set is in the run
+            directory as <code className="text-xs">teacher_responses.jsonl</code>.
+          </p>
+          <ul className="space-y-3 text-sm">
+            {summary.teacher_samples.map((sample: { prompt: string; response: string }, i: number) => (
+              <li key={i} className="rounded border p-3">
+                <p className="font-medium">{sample.prompt}</p>
+                <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{sample.response}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {summary.worker_log && (
+        <p className="text-xs text-muted-foreground">
+          Trained in a worker process; its log is <code>{summary.worker_log}</code>.
+          {run.method ? ` Method: ${run.method}.` : ''}
+        </p>
+      )}
+    </>
+  )
+}
+
+function RoutingSection({
+  runId,
+  sourceModel,
+  summary,
+}: {
+  runId: number
+  sourceModel: string
+  summary: Record<string, any>
+}) {
+  const { data, isLoading, error } = useRoutingStats(runId)
+  const top = summary.ranking?.[0]
+  const consistent = summary.consistency?.gate_vs_expert_counts_match !== false
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <MetricCard title="MoE layers" value={summary.moe_layers ?? '—'} subtitle={`of ${summary.n_layers ?? '?'} decoder layers`} />
+        <MetricCard title="Experts per token" value={summary.top_k ?? '—'} subtitle={summary.model_type ?? undefined} />
+        <MetricCard
+          title="Most differential"
+          value={top ? `L${top.layer} E${top.expert}` : '—'}
+          subtitle={top ? `${(top.delta * 100).toFixed(1)} pts more on harmful` : 'no ranking'}
+        />
+        <MetricCard
+          title="Replay verified"
+          value={consistent ? 'yes' : 'no'}
+          subtitle={consistent ? 'gate replay matched expert row counts' : 'fractions are unverified'}
+        />
+      </div>
+      {isLoading && <LoadingSpinner />}
+      {error && (
+        <p className="text-sm text-destructive">
+          Could not load the per-expert tables: {error instanceof Error ? error.message : 'unknown error'}
+        </p>
+      )}
+      {data && <RoutingHeatmap result={data} sourceModel={sourceModel} />}
+      <p className="text-sm text-muted-foreground">
+        Nothing here was written to a model. Pick experts in the table and edit exactly those; the
+        result is a normal model directory whose manifest says the edit was partial.
+      </p>
+    </>
   )
 }
