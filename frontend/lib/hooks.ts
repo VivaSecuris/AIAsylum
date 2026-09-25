@@ -233,7 +233,7 @@ export function useBenchmarks() {
 export function useRunBenchmark() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: { provider: string; model: string; benchmark: string; num_samples?: number }) =>
+    mutationFn: (data: Parameters<typeof apiClient.runBenchmark>[0]) =>
       apiClient.runBenchmark(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['test-runs'] })
@@ -402,7 +402,7 @@ export function useTestRunProgress(testRunId: number, enabled: boolean = true) {
     const url = `${API_BASE_URL}/api/v1/test-runs/${testRunId}/progress`
     console.log('[useTestRunProgress] SSE URL:', url)
     
-    const eventSource = new EventSource(url)
+    const eventSource = new EventSource(url, { withCredentials: true })
 
     eventSource.onopen = () => {
       console.log('[useTestRunProgress] SSE connection opened')
@@ -483,6 +483,9 @@ export function useInterpRun(id: number) {
     queryKey: ['interp-run', id],
     queryFn: () => apiClient.getInterpRun(id),
     enabled: !!id && id > 0,
+    // Keep status moving even when a proxy drops the event stream.
+    refetchInterval: (query) =>
+      ['pending', 'running'].includes(query.state.data?.status ?? '') ? 5_000 : false,
   })
 }
 
@@ -532,10 +535,15 @@ export function useInterpRunProgress(runId: number, enabled: boolean = true) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    setProgress(null)
+    setError(null)
+    setIsConnected(false)
     if (!enabled || !runId || runId === 0) return
 
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-    const eventSource = new EventSource(`${API_BASE_URL}/api/v1/interp/runs/${runId}/progress`)
+    const eventSource = new EventSource(`${API_BASE_URL}/api/v1/interp/runs/${runId}/progress`, {
+      withCredentials: true,
+    })
 
     eventSource.onopen = () => {
       setIsConnected(true)
@@ -604,7 +612,7 @@ export function useWeightObjectives() {
  * a stale "all clear" is worse than none at all.
  */
 export function useWeightPreflight(
-  params: { kind: string; source_model?: string; source_run_id?: number; output_name?: string },
+  params: { kind: string; source_model?: string; source_run_id?: number; output_name?: string; modified_model?: string; dtype?: string; expert_selection?: string; merge?: boolean },
   enabled = true,
 ) {
   return useQuery({
@@ -612,6 +620,15 @@ export function useWeightPreflight(
     queryFn: () => apiClient.weightPreflight(params),
     enabled: enabled && !!params.kind,
     staleTime: 5_000,
+  })
+}
+
+export function useRoutingStats(id: number, enabled = true) {
+  return useQuery({
+    queryKey: ['weight-routing', id],
+    queryFn: () => apiClient.getRoutingStats(id),
+    enabled: enabled && !!id && id > 0,
+    staleTime: Infinity,
   })
 }
 
@@ -680,6 +697,7 @@ export function useDeleteWeightRun() {
       queryClient.invalidateQueries({ queryKey: ['weight-runs'] })
       queryClient.invalidateQueries({ queryKey: ['weight-directions'] })
       queryClient.invalidateQueries({ queryKey: ['weight-models'] })
+      queryClient.invalidateQueries({ queryKey: ['model-catalog'] })
     },
   })
 }
@@ -712,7 +730,9 @@ export function useWeightRunProgress(runId: number, enabled: boolean = true) {
     if (!enabled || !runId || runId === 0) return
 
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-    const eventSource = new EventSource(`${API_BASE_URL}/api/v1/weights/runs/${runId}/progress`)
+    const eventSource = new EventSource(`${API_BASE_URL}/api/v1/weights/runs/${runId}/progress`, {
+      withCredentials: true,
+    })
 
     eventSource.onopen = () => {
       setIsConnected(true)
@@ -732,6 +752,7 @@ export function useWeightRunProgress(runId: number, enabled: boolean = true) {
           queryClient.invalidateQueries({ queryKey: ['weight-runs'] })
           queryClient.invalidateQueries({ queryKey: ['weight-directions'] })
           queryClient.invalidateQueries({ queryKey: ['weight-models'] })
+          queryClient.invalidateQueries({ queryKey: ['model-catalog'] })
         }
       } catch (err) {
         setError(`Parse error: ${err}`)

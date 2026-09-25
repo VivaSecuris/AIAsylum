@@ -1,4 +1,8 @@
 import axios, { AxiosInstance } from 'axios'
+import type { ModelCatalog, ModelDownload, ModelDownloads, ModelLineage } from './model-catalog'
+import type { ModelOrganization, ModelExperiment } from './model-organization'
+import type { ModelDiscoveryResult, HuggingFaceStatus } from './model-discovery'
+import type { BenchmarkCampaign, BenchmarkCampaignRequest } from './benchmark-campaigns'
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -34,6 +38,35 @@ export interface InterpModes {
   analyses?: InterpAnalysis[]
   limits: { max_len_default: number; max_len_ceiling: number; note: string }
   warnings: string[]
+  hardware?: InterpHardware
+  model_presets?: Array<{ id: string; label: string; parameters_b: number; description: string }>
+}
+
+export interface InterpHardware {
+  available: boolean
+  default_device: string
+  devices: Array<{ device: string; name: string; total_gb?: number | null; free_gb?: number | null }>
+}
+
+export interface InterpPreflight {
+  ready: boolean
+  errors: string[]
+  warnings: string[]
+  device: string
+  dtype: string
+  models: Array<{
+    id: string
+    model_type: string
+    num_layers: number
+    hidden_size: number
+    num_attention_heads: number
+    num_key_value_heads: number
+    parameters_b: number
+    weights_gb: number
+    estimated_device_gb: number
+    capture_gb: number
+  }>
+  hardware: InterpHardware
 }
 
 export interface InterpRun {
@@ -54,6 +87,12 @@ export interface InterpRun {
 }
 
 export interface InterpRunRequest {
+  patch_components?: 'layer' | 'head' | 'neuron'
+  patch_layers?: number[]
+  patch_positions?: number[]
+  patch_heads?: [number, number][]
+  patch_neurons?: [number, number][]
+  lineage_parent?: string
   mode: InterpMode
   model_a: string
   model_b?: string
@@ -68,16 +107,113 @@ export interface InterpRunRequest {
   dim_reduction?: string
   enable_attention_capture?: boolean
   enable_mlp_capture?: boolean
+  enable_qkv_capture?: boolean
+  enable_pre_mlp_capture?: boolean
+  enable_patching?: boolean
+  enable_scrub?: boolean
+  enable_minimal_circuit?: boolean
 }
 
 // ---------------------------------------------------------------- Weight surgery
 
-export type WeightRunKind = 'direction' | 'sweep' | 'select' | 'surgery' | 'compare'
+export type WeightRunKind =
+  | 'direction'
+  | 'sweep'
+  | 'select'
+  | 'surgery'
+  | 'compare'
+  | 'probe'
+  | 'routing'
+  | 'expert_surgery'
+  | 'lora'
+  | 'distill'
+
+// Kinds whose out_dir is a model directory under the models root.
+export const WRITING_WEIGHT_KINDS: WeightRunKind[] = ['surgery', 'expert_surgery', 'lora', 'distill']
+
+// {"12": [3, 7], "15": "all"}: which experts an expert_surgery run edits.
+export type ExpertSelection = Record<string, number[] | 'all'>
+
+export interface RoutingClassStats {
+  tokens: number
+  prompts: number
+  selection_frac: number[]
+  mean_weight: number[]
+  last_token_frac: number[]
+}
+
+export interface RoutingLayer {
+  layer: number
+  n_experts: number
+  top_k: number | null
+  gate_kind: string
+  has_shared: boolean
+  harmful: RoutingClassStats
+  harmless: RoutingClassStats
+  delta_frac: number[]
+  delta_last_token: number[]
+}
+
+export interface RoutingRank {
+  layer: number
+  expert: number
+  harmful_frac: number
+  harmless_frac: number
+  delta: number
+  last_token_delta: number
+}
+
+export interface RoutingSummary {
+  model_type: string | null
+  architecture: string | null
+  n_layers: number
+  moe_layers: number
+  top_k: number | null
+  prompts: { harmful: number; harmless: number }
+  layers: RoutingLayer[]
+  ranking: RoutingRank[]
+  consistency: { gate_vs_expert_counts_match: boolean }
+  split?: Record<string, any>
+}
 
 export interface LayerScore {
   layer: number
   auc: number
   cohens_d: number
+  // Stable rank of the benign-centred refusal residuals at this layer.
+  stable_rank?: number | null
+}
+
+// One point of the refusal-vs-directions-removed curve (sweep, method subspace_curve).
+export interface CurveRow {
+  label: string
+  rank: number
+  k: number
+  refusal_rate: number
+  compliance: number
+  n: number
+  degenerate: boolean
+  samples: string[]
+  factual_acc?: number
+}
+
+// Refusal projection per generated token for one prompt.
+export interface TimelinePayload {
+  layer: number
+  prompt: string
+  text: string
+  tokens: string[]
+  projection: number[]
+  score: number[]
+  in_think: boolean[]
+  think_end_index: number | null
+  decision_index: number | null
+  decision_in_think: boolean | null
+  final_side: 'refuse' | 'comply' | null
+  sign_changes: number
+  normalisation: 'class_means' | 'z_score'
+  midpoint: number | null
+  scale: number | null
 }
 
 export interface SweepRow {
@@ -133,6 +269,11 @@ export interface WeightStages {
   interp_extra_installed: boolean
   models_root: string
   slot: { held_by: string | null; waiting: string[] }
+  device?: {
+    type: string
+    name?: string
+    gpus: Array<{ name: string; free_gb: number; total_gb: number }>
+  }
 }
 
 export interface ScenarioCount {
@@ -181,9 +322,20 @@ export interface WeightRun {
   started_at: string | null
   completed_at: string | null
   metadata: Record<string, any>
+  // Wall-clock for the stage; on a machine billed by the hour, this is cost.
+  elapsed_seconds?: number | null
 }
 
 export interface WeightRunRequest {
+  jailbreak_examples?: Array<{ prompt: string; technique: string }>
+  pooling?: 'last' | 'mean' | 'max' | 'last_k'
+  prompt_suffix?: string
+  use_eliciting_suffix?: boolean
+  n_direct?: number
+  n_jailbreak?: number
+  n_benign?: number
+  holdout_techniques?: number
+  lineage_parent?: string
   kind: WeightRunKind
   source_model: string
   source_run_id?: number
@@ -204,10 +356,43 @@ export interface WeightRunRequest {
   output_name?: string
   beta?: number
   include_embeddings?: boolean
+  // expert_surgery
+  expert_selection?: ExpertSelection
+  expert_scale?: number
+  include_shared_expert?: boolean
+  // lora + distill
+  dataset_rows?: Array<{ prompt: string; response?: string; system?: string }>
+  dataset_benchmark?: { name: string; count: number }
+  dataset_source?: 'rows' | 'benchmark' | 'objective'
+  lora_rank?: number
+  lora_alpha?: number
+  lora_dropout?: number
+  lora_targets?: string
+  epochs?: number
+  max_steps?: number
+  lr?: number
+  train_batch_size?: number
+  grad_accum?: number
+  gradient_checkpointing?: boolean
+  merge?: boolean
+  eval_rows?: number
+  teacher_model?: string
+  distill_temperature?: number
+  ce_weight?: number
+  teacher_max_new_tokens?: number
+  teacher_system_prompt?: string
   use_subspace?: boolean
   k?: number
   subspace_rank?: number
   pool_layers?: number
+  rfm_rank?: number
+  rfm_iterations?: number
+  rfm_beta?: number
+  report_overlap?: boolean
+  thinking?: boolean
+  timeline_prompts?: number
+  rederive?: boolean
+  misalignment_control?: boolean
   ranks?: number[]
   ks?: number[]
   factual_floor?: number
@@ -307,6 +492,7 @@ export interface TestRun {
 }
 
 export interface TestRunRequest {
+  lineage_parent?: string
   doctor_provider: string
   doctor_model: string
   patient_provider: string
@@ -537,6 +723,11 @@ class ApiClient {
     )
   }
 
+  async getSession(): Promise<{ authenticated: boolean; auth: 'enabled' | 'disabled' }> {
+    const response = await this.client.get('/api/v1/auth/session')
+    return response.data
+  }
+
   async login(apiKey: string) {
     await this.client.post('/api/v1/auth/session', { api_key: apiKey })
   }
@@ -664,7 +855,7 @@ class ApiClient {
     return response.data
   }
 
-  async runBenchmark(data: { provider: string; model: string; benchmark: string; num_samples?: number }): Promise<any> {
+  async runBenchmark(data: { provider: string; model: string; benchmark: string; num_samples?: number; seed?: number; max_new_tokens?: number; dataset_revision?: string }): Promise<any> {
     const response = await this.client.post('/api/v1/benchmarks/run', data)
     return response.data
   }
@@ -747,6 +938,47 @@ class ApiClient {
   }
 
   // Models (Ollama)
+  async listModelCatalog(): Promise<ModelCatalog> {
+    const response = await this.client.get('/api/v1/models/catalog')
+    return response.data
+  }
+
+  async deleteCustomModels(names: string[]): Promise<{ freed_bytes: number; deleted: Array<{ name: string }> }> {
+    const response = await this.client.post('/api/v1/models/custom/delete', { names })
+    return response.data
+  }
+
+  async discoverModels(query = ''): Promise<ModelDiscoveryResult> {
+    const response = await this.client.get('/api/v1/models/discover', { params: { q: query } })
+    return response.data
+  }
+
+  async getHuggingFaceStatus(): Promise<HuggingFaceStatus> {
+    const response = await this.client.get('/api/v1/models/huggingface/status')
+    return response.data
+  }
+
+  async getModelOrganization(): Promise<ModelOrganization> {
+    return (await this.client.get('/api/v1/model-organization')).data
+  }
+
+  async createModelExperiment(data: { name: string; notes?: string }): Promise<ModelExperiment> {
+    return (await this.client.post('/api/v1/model-organization/experiments', data)).data
+  }
+
+  async updateModelExperiment(id: string, data: { name?: string; notes?: string }): Promise<ModelExperiment> {
+    return (await this.client.patch(`/api/v1/model-organization/experiments/${encodeURIComponent(id)}`, data)).data
+  }
+
+  async saveModelOrganizationItem(data: { key: string; label: string; notes: string; experiment_ids: string[] }): Promise<ModelOrganization> {
+    return (await this.client.put('/api/v1/model-organization/items', data)).data
+  }
+
+  async getModelLineage(): Promise<ModelLineage> {
+    const response = await this.client.get('/api/v1/models/lineage')
+    return response.data
+  }
+
   async listProviders(): Promise<ProviderInfo[]> {
     const response = await this.client.get('/api/v1/models/providers')
     return response.data
@@ -759,6 +991,28 @@ class ApiClient {
 
   async pullOllamaModel(name: string): Promise<{ status?: string; model?: string; error?: string }> {
     const response = await this.client.post('/api/v1/models/ollama/pull', { name })
+    return response.data
+  }
+
+  // Hugging Face checkpoints in the server's cache
+  async listModelDownloads(): Promise<ModelDownloads> {
+    const response = await this.client.get('/api/v1/models/downloads')
+    return response.data
+  }
+
+  async startModelDownload(data: { repo_id: string; revision?: string }): Promise<ModelDownload> {
+    const response = await this.client.post('/api/v1/models/downloads', data)
+    return response.data
+  }
+
+  async cancelModelDownload(id: string): Promise<ModelDownload> {
+    const response = await this.client.post(`/api/v1/models/downloads/${encodeURIComponent(id)}/cancel`)
+    return response.data
+  }
+
+  async deleteCachedModel(repoId: string): Promise<{ repo_id: string; freed_bytes: number }> {
+    // The id keeps its slash: the route takes it as a path.
+    const response = await this.client.delete(`/api/v1/models/cache/${repoId}`)
     return response.data
   }
 
@@ -776,6 +1030,11 @@ class ApiClient {
   // Interpretability
   async listInterpModes(): Promise<InterpModes> {
     const response = await this.client.get('/api/v1/interp/modes')
+    return response.data
+  }
+
+  async interpPreflight(data: InterpRunRequest): Promise<InterpPreflight> {
+    const response = await this.client.post('/api/v1/interp/preflight', data)
     return response.data
   }
 
@@ -823,9 +1082,13 @@ class ApiClient {
 
   async weightPreflight(params: {
     kind: string
+    dtype?: string
     source_model?: string
     source_run_id?: number
     output_name?: string
+    modified_model?: string
+    expert_selection?: string
+    merge?: boolean
   }): Promise<PreflightResponse> {
     const response = await this.client.get('/api/v1/weights/preflight', { params })
     return response.data
@@ -846,6 +1109,12 @@ class ApiClient {
     return response.data
   }
 
+  // The per-expert tables of a routing run; the row itself keeps only the ranking.
+  async getRoutingStats(id: number): Promise<RoutingSummary> {
+    const response = await this.client.get(`/api/v1/weights/runs/${id}/routing`)
+    return response.data
+  }
+
   // delete_artifacts defaults false on the server: removing the row and
   // removing gigabytes of weights are deliberately separate decisions.
   async deleteWeightRun(
@@ -859,6 +1128,26 @@ class ApiClient {
   async stopWeightRun(id: number): Promise<{ stopped: boolean; status?: string; reason?: string }> {
     const response = await this.client.post(`/api/v1/weights/runs/${id}/stop`)
     return response.data
+  }
+
+  async listBenchmarkCampaigns(): Promise<{ campaigns: BenchmarkCampaign[] }> {
+    return (await this.client.get('/api/v1/benchmark-campaigns')).data
+  }
+
+  async getBenchmarkCampaign(id: string): Promise<BenchmarkCampaign> {
+    return (await this.client.get(`/api/v1/benchmark-campaigns/${encodeURIComponent(id)}`)).data
+  }
+
+  async createBenchmarkCampaign(data: BenchmarkCampaignRequest): Promise<BenchmarkCampaign> {
+    return (await this.client.post('/api/v1/benchmark-campaigns', data)).data
+  }
+
+  async cancelBenchmarkCampaign(id: string): Promise<BenchmarkCampaign> {
+    return (await this.client.post(`/api/v1/benchmark-campaigns/${encodeURIComponent(id)}/cancel`)).data
+  }
+
+  async rescoreBenchmarkCampaign(id: string): Promise<BenchmarkCampaign> {
+    return (await this.client.post(`/api/v1/benchmark-campaigns/${encodeURIComponent(id)}/rescore`)).data
   }
 
   async listDirections(usableOnly = false): Promise<DirectionOption[]> {
@@ -887,9 +1176,16 @@ class ApiClient {
       system_prompt?: string
       temperature?: number
       max_tokens?: number
+      device?: 'auto' | 'cpu' | 'cuda' | 'mps'
+      dtype?: 'float32' | 'float16' | 'bfloat16'
     },
-  ): Promise<{ content: string; model: string; edited: boolean; manifest: any }> {
-    const response = await this.client.post(`/api/v1/weights/models/${name}/chat`, data, {
+  ): Promise<{
+    content: string; model: string; edited: boolean; manifest: any
+    usage: Record<string, number>; finish_reason: string | null; elapsed_seconds: number
+    refused: boolean; refusal_detector: 'phrase_heuristic'; truncated: boolean
+    settings: { temperature: number; max_tokens: number; dtype: string; device: string }
+  }> {
+    const response = await this.client.post(`/api/v1/weights/models/${encodeURIComponent(name)}/chat`, data, {
       // The first turn loads the model, which on a cold cache is minutes.
       timeout: 600_000,
     })

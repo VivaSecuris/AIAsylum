@@ -6,22 +6,52 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** FastAPI may return a string, field errors, or a structured preflight result. */
+export function formatApiError(error: unknown, fallback = 'The request failed'): string {
+  const candidate = error as { response?: { data?: { detail?: unknown } }; message?: string }
+  const detail = candidate?.response?.data?.detail
+  function describe(value: unknown): string {
+    if (typeof value === 'string') return value
+    if (Array.isArray(value)) return value.map(describe).filter(Boolean).join('; ')
+    if (value && typeof value === 'object') {
+      const item = value as Record<string, unknown>
+      if (typeof item.msg === 'string') {
+        const field = Array.isArray(item.loc) ? item.loc.filter((part) => part !== 'body').join('.') : ''
+        return `${field ? `${field}: ` : ''}${item.msg}`
+      }
+      if (item.errors) return describe(item.errors)
+      if (item.message) return describe(item.message)
+      return JSON.stringify(value)
+    }
+    return ''
+  }
+  return describe(detail) || candidate?.message || fallback
+}
+
+/** API timestamps without an offset are UTC; explicit offsets and date-only inputs keep their meaning. */
+export function parseApiDate(date: string | Date): Date {
+  if (date instanceof Date) return date
+  const value = date.trim()
+  const naiveTimestamp = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(value)
+  return new Date(naiveTimestamp ? `${value.replace(' ', 'T')}Z` : value)
+}
+
 export function formatDate(date: string | Date | null | undefined): string {
   if (!date) return ''
-  const d = typeof date === 'string' ? new Date(date) : date
+  const d = parseApiDate(date)
   return format(d, 'PPp')
 }
 
 export function formatDateTime(date: string | Date | null | undefined): string {
   if (!date) return ''
-  const d = typeof date === 'string' ? new Date(date) : date
+  const d = parseApiDate(date)
   // Format: "Jan 26, 2025 at 3:45 PM" - clear date and time
   return format(d, 'MMM d, yyyy \'at\' h:mm a')
 }
 
 export function formatRelativeDate(date: string | Date | null | undefined): string {
   if (!date) return ''
-  const d = typeof date === 'string' ? new Date(date) : date
+  const d = parseApiDate(date)
   return formatDistanceToNow(d, { addSuffix: true })
 }
 
