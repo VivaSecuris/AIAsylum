@@ -1,6 +1,7 @@
 """Test execution runner."""
 
 import logging
+from copy import deepcopy
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -33,6 +34,30 @@ from vivasecuris.aiasylum.api.progress_events import progress_event_manager
 from vivasecuris.aiasylum.api.cancellation import cancellation_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_multi_shot_prompts(session: Session, config: Dict) -> None:
+    """Resolve an ordered library selection before running any model calls."""
+    if config.get("prompts"):
+        config.pop("prompt_id", None)
+        return
+    ids = config.get("prompt_ids")
+    if not ids:
+        return
+    if not isinstance(ids, list) or any(type(value) is not int or value <= 0 for value in ids):
+        raise ValueError("Multi-shot prompt_ids must be a list of positive integer IDs")
+    rows = session.query(PromptLibrary).filter(
+        PromptLibrary.id.in_(ids), PromptLibrary.prompt_type == "test_prompt"
+    ).all()
+    by_id = {row.id: row for row in rows}
+    missing = [value for value in ids if value not in by_id]
+    if missing:
+        raise ValueError(f"Selected test prompts are unavailable: {missing}")
+    config["prompts"] = [by_id[value].prompt_text for value in ids]
+    config.pop("prompt_id", None)
+    for value in ids:
+        by_id[value].usage_count = (by_id[value].usage_count or 0) + 1
+    session.commit()
 
 
 def safe_commit(session: Session, test_run_id: int, test_run: Optional[TestRun] = None):
@@ -121,6 +146,9 @@ class TestRunner:
             session.refresh(test_run)
             
             try:
+                test_config = deepcopy(test_config or {})
+                if test_type == TEST_TYPE_MULTI_SHOT:
+                    _resolve_multi_shot_prompts(session, test_config)
                 # Get providers and create models
                 doctor_provider_instance = get_provider(doctor_provider)
                 patient_provider_instance = get_provider(patient_provider)
@@ -496,7 +524,10 @@ class TestRunner:
                         await patient_model_instance.pull_model()
                 
                 # Get test config from metadata if available
-                test_config = test_run.meta_data.get("test_config") if test_run.meta_data else {}
+                # Runtime callbacks must never enter the persisted JSON config.
+                test_config = deepcopy((test_run.meta_data or {}).get("test_config") or {})
+                if test_run.test_type == TEST_TYPE_MULTI_SHOT:
+                    _resolve_multi_shot_prompts(session, test_config)
                 
                 # Also check top-level metadata for benchmark info (from API route)
                 if test_run.meta_data and "benchmark" in test_run.meta_data:
@@ -1195,15 +1226,13 @@ class TestRunner:
                 print(f"[EXECUTE_TEST_RUN] TestExecutionError: {e}, is_cancelled: {is_cancelled}")
                 
                 test_run.status = "failed"
-                if not test_run.meta_data:
-                    test_run.meta_data = {}
                 if is_cancelled:
-                    test_run.meta_data["cancelled"] = True
-                    test_run.meta_data["error"] = "Test run was cancelled"
+                    test_run.meta_data = {**(test_run.meta_data or {}), "cancelled": True,
+                                          "error": "Test run was cancelled"}
                     logger.info(f"✅ Test run {test_run_id} successfully cancelled")
                     print(f"[EXECUTE_TEST_RUN] Test run {test_run_id} marked as cancelled")
                 else:
-                    test_run.meta_data["error"] = str(e)
+                    test_run.meta_data = {**(test_run.meta_data or {}), "error": str(e)}
                 safe_commit(session, test_run_id, test_run)
                 
                 # Emit progress event: test failed or cancelled
@@ -1254,9 +1283,9 @@ class TestRunner:
                         )
                 
                 test_run.status = "failed"
-                if not test_run.meta_data:
-                    test_run.meta_data = {}
-                test_run.meta_data["error"] = error_details
+                # Assign a new JSON object so SQLAlchemy persists the failure
+                # detail along with status; in-place dict edits are not tracked.
+                test_run.meta_data = {**(test_run.meta_data or {}), "error": error_details}
                 safe_commit(session, test_run_id, test_run)
                 
                 # Log detailed error

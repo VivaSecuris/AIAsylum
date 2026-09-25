@@ -34,8 +34,10 @@ def isolate_database(tmp_path_factory, monkeypatch):
     guarantee.
     """
     from vivasecuris.aiasylum.database import session as db_session
+    from vivasecuris.aiasylum.api import model_history
 
     db_file = tmp_path_factory.mktemp("testdb") / "test.db"
+    monkeypatch.setattr(model_history, '_default_project_root', lambda: db_file.parent)
     engine = create_engine(
         f"sqlite:///{db_file}", connect_args={"check_same_thread": False}
     )

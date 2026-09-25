@@ -63,6 +63,12 @@ class CancellationManager:
             if is_cancelled:
                 logger.debug(f"Test run {test_run_id} is cancelled")
             return is_cancelled
+
+    def has_active_task(self, test_run_id: int) -> bool:
+        """A cancelled worker still owns its row until cleanup has finished."""
+        with self._lock:
+            task = self._tasks.get(test_run_id)
+            return task is not None and not task.done()
     
     def clear(self, test_run_id: int):
         """Clear cancellation flag for a test run."""

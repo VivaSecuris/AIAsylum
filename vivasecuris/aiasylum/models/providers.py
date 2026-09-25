@@ -167,8 +167,11 @@ class OpenAIModel(BaseModel):
     
     def __init__(self, model_name: str, provider: OpenAIProvider, **kwargs):
         super().__init__(model_name, "openai", **kwargs)
-        self.provider = provider
+        self.provider_instance = provider
         self.client = provider.client
+
+    def _generation_options(self, kwargs):
+        return {"temperature": self.temperature, "max_tokens": self.max_tokens, **kwargs}
     
     async def generate(
         self,
@@ -186,9 +189,7 @@ class OpenAIModel(BaseModel):
         response = await self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            **kwargs
+            **self._generation_options(kwargs)
         )
         
         choice = response.choices[0]
@@ -220,10 +221,8 @@ class OpenAIModel(BaseModel):
         stream = await self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
             stream=True,
-            **kwargs
+            **self._generation_options(kwargs)
         )
         
         async for chunk in stream:
@@ -233,11 +232,19 @@ class OpenAIModel(BaseModel):
 
 class AnthropicModel(BaseModel):
     """Anthropic model implementation."""
+
+    supports_seed = False
     
     def __init__(self, model_name: str, provider: AnthropicProvider, **kwargs):
         super().__init__(model_name, "anthropic", **kwargs)
-        self.provider = provider
+        self.provider_instance = provider
         self.client = provider.client
+
+    def _generation_options(self, kwargs):
+        options = {"temperature": self.temperature, "max_tokens": self.max_tokens, **kwargs}
+        if options.pop("seed", None) is not None:
+            raise ValueError("Anthropic does not support a generation seed; leave Seed empty.")
+        return options
     
     @staticmethod
     def _extract_system_and_filter(
@@ -278,11 +285,9 @@ class AnthropicModel(BaseModel):
 
         response = await self.client.messages.create(
             model=self.model_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
             system=system_content or "",
             messages=filtered_messages,
-            **kwargs
+            **self._generation_options(kwargs)
         )
         
         content = ""
@@ -318,11 +323,9 @@ class AnthropicModel(BaseModel):
 
         async with self.client.messages.stream(
             model=self.model_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
             system=system_content or "",
             messages=filtered_messages,
-            **kwargs
+            **self._generation_options(kwargs)
         ) as stream:
             async for text in stream.text_stream:
                 yield text
@@ -330,11 +333,27 @@ class AnthropicModel(BaseModel):
 
 class GoogleModel(BaseModel):
     """Google model implementation."""
+
+    # This integration uses google-generativeai, whose supported configuration
+    # fields do not include a seed. Never claim a requested seed was applied.
+    supports_seed = False
     
     def __init__(self, model_name: str, provider: GoogleProvider, **kwargs):
         super().__init__(model_name, "google", **kwargs)
-        self.provider = provider
+        self.provider_instance = provider
         self.client = provider.client
+
+    def _generation_options(self, kwargs):
+        options = dict(kwargs)
+        if options.pop("seed", None) is not None:
+            raise ValueError("This Google integration does not support a generation seed; leave Seed empty.")
+        max_tokens = options.pop("max_tokens", self.max_tokens)
+        config = {"temperature": self.temperature, "max_output_tokens": max_tokens, **options}
+        allowed = {"temperature", "max_output_tokens", "top_p", "top_k", "candidate_count", "stop_sequences"}
+        unsupported = set(config) - allowed
+        if unsupported:
+            raise ValueError(f"Unsupported Google generation options: {', '.join(sorted(unsupported))}")
+        return config
 
     @staticmethod
     def _prepare_google_args(
@@ -397,10 +416,7 @@ class GoogleModel(BaseModel):
             model_kwargs["system_instruction"] = system_str
         model = self.client.GenerativeModel(self.model_name, **model_kwargs)
 
-        generation_config = {
-            "temperature": self.temperature,
-            "max_output_tokens": self.max_tokens,
-        }
+        generation_config = self._generation_options(kwargs)
 
         if history:
             chat = model.start_chat(history=history)
@@ -414,12 +430,21 @@ class GoogleModel(BaseModel):
                 generation_config=generation_config,
             )
 
+        candidates = getattr(response, "candidates", None)
+        reason = getattr(candidates[0], "finish_reason", None) if candidates else getattr(response, "finish_reason", None)
+        finish_reason = getattr(reason, "name", None) or (str(reason) if reason is not None else None)
+        raw_usage = getattr(response, "usage_metadata", None)
+        usage = dict(raw_usage) if isinstance(raw_usage, dict) else None
+        if raw_usage is not None and usage is None:
+            usage = {name: int(getattr(raw_usage, name)) for name in (
+                "prompt_token_count", "candidates_token_count", "total_token_count"
+            ) if getattr(raw_usage, name, None) is not None}
         return ModelResponse(
             content=response.text or "",
             model=self.model_name,
             provider="google",
-            finish_reason=getattr(response, "finish_reason", None),
-            usage=getattr(response, "usage_metadata", None),
+            finish_reason=finish_reason,
+            usage=usage,
         )
     
     async def stream_generate(
@@ -438,10 +463,7 @@ class GoogleModel(BaseModel):
             model_kwargs["system_instruction"] = system_str
         model = self.client.GenerativeModel(self.model_name, **model_kwargs)
 
-        generation_config = {
-            "temperature": self.temperature,
-            "max_output_tokens": self.max_tokens,
-        }
+        generation_config = self._generation_options(kwargs)
 
         if history:
             chat = model.start_chat(history=history)
