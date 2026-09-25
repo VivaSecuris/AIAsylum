@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-production"
     api_key_hmac_secret: str = "change-me-in-production"
     api_keys: str = ""  # Comma-separated
+    # Fail-closed auth on every route (see api/security.py). Off by default so a
+    # laptop dev loop is unchanged; the remote session script always sets it.
+    require_auth: bool = False
+    # Secure cookies need HTTPS. Over an SSH tunnel the browser talks plain
+    # http://localhost, so this stays False there; set True behind TLS.
+    session_cookie_secure: bool = False
     
     # CORS
     # Allow both localhost and 127.0.0.1 in dev (browsers treat them as different origins)
@@ -54,6 +61,8 @@ class Settings(BaseSettings):
     
     # Concurrency Control
     max_concurrent_workers: int = 5  # Maximum number of test runs that can execute simultaneously
+    # Optional isolated Python for benchmarks on newer model architectures.
+    benchmark_python: Optional[str] = Field(default=None, validation_alias="AIASYLUM_BENCHMARK_PYTHON")
     
     # Logging
     log_level: str = "INFO"

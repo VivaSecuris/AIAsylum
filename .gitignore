@@ -45,6 +45,7 @@ ENV/
 data/*.db
 data/*.sqlite
 data/*.db.backup.*
+data/model-lineage-origin
 
 # Logs
 *.log
@@ -59,6 +60,10 @@ htmlcov/
 # Frontend
 frontend/node_modules/
 frontend/.next/
+frontend/.next-gpu/
+frontend/.next-check/
+frontend/.next-local/
+frontend/.next-visuals-verify/
 frontend/build/
 frontend/dist/
 frontend/.env.local
@@ -77,5 +82,5 @@ Thumbs.db
 
 # Weight-surgery artifacts (directions, modified models)
 runs/
-models/
+/models/
 *.safetensors

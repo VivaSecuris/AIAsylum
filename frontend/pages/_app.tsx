@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { ToastContainer } from '@/lib/toast'
+import { AuthProvider } from '@/lib/auth'
 import axios from 'axios'
 import '../styles/globals.css'
 
@@ -12,6 +13,8 @@ const queryClient = new QueryClient({
     queries: {
       refetchOnWindowFocus: false,
       retry: (failureCount, error: any) => {
+        // Authentication requires a session change, not another identical request.
+        if (error?.response?.status === 401 || error?.response?.status === 403) return false
         // Retry network errors more aggressively
         if (error?.code === 'ECONNREFUSED' || error?.message?.includes('Network Error') || error?.code === 'ERR_NETWORK') {
           return failureCount < 3 // Retry up to 3 times for network errors
@@ -45,8 +48,10 @@ export default function App({ Component, pageProps }: AppProps) {
       </Head>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <Component {...pageProps} />
-          <ToastContainer />
+          <AuthProvider>
+            <Component {...pageProps} />
+            <ToastContainer />
+          </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </>
