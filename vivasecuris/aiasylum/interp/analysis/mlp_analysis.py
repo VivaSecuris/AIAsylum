@@ -1,4 +1,4 @@
-"""MLP neuron analysis for component localization."""
+"""MLP activation analysis, distinguishing neurons from output residual channels."""
 
 from typing import Dict, Any, List, Optional
 import numpy as np
@@ -9,6 +9,15 @@ from vivasecuris.aiasylum.interp.data.models import RunResult
 
 class MLPAnalyzer:
     """Analyzes MLP neuron activations and contributions."""
+
+    @staticmethod
+    def activation_metadata(result: RunResult, layer_idx: int) -> Dict[str, str]:
+        neurons = layer_idx in (result.pre_mlp_activations or {})
+        return {
+            "activation_space": "mlp_neurons" if neurons else "residual_channels",
+            "unit_label": "neuron" if neurons else "residual channel",
+            "claim": "descriptive",
+        }
 
     @staticmethod
     def extract_mlp_activations(
@@ -27,16 +36,15 @@ class MLPAnalyzer:
             window_len: Window length
             
         Returns:
-            MLP activations array [window_len, num_neurons] or None
+            MLP activations array [window_len, units] or None. Prefer the input
+            to the down projection (neurons); otherwise report output channels.
         """
-        if result.mlp_activations is None:
+        mlp = (result.pre_mlp_activations or {}).get(layer_idx)
+        if mlp is None:
+            mlp = (result.mlp_activations or {}).get(layer_idx)
+        if mlp is None:
             return None
-        
-        if layer_idx not in result.mlp_activations:
-            return None
-        
-        mlp = result.mlp_activations[layer_idx]  # [1, seq_len, num_neurons]
-        mlp_np = mlp[0, start:start + window_len, :].detach().cpu().numpy()
+        mlp_np = mlp[0, start:start + window_len, :].detach().cpu().float().numpy()
         return mlp_np
 
     @staticmethod
@@ -103,6 +111,7 @@ class MLPAnalyzer:
         neuron_scores.sort(key=lambda x: x["contribution_score"], reverse=True)
         
         return {
+            **MLPAnalyzer.activation_metadata(result_a, layer_idx),
             "neurons": neuron_scores,
             "num_neurons": num_neurons,
             "mlp_available": True,

@@ -192,6 +192,39 @@ def test_model_diff_releases_between_loads(model_a, model_b, tmp_path):
     assert calls.index("release") < calls.index("load_b"), "B loaded before A was released"
 
 
+@pytest.mark.parametrize("prediction_error", [False, True])
+def test_model_diff_drops_model_refs_before_release(model_a, model_b, tmp_path, monkeypatch, prediction_error):
+    """Cache clearing must see no live lens/model refs, including lens failures."""
+    import weakref
+    from vivasecuris.aiasylum.interp.core.services import model_comparison_service as mcs
+
+    refs = []
+    releases = []
+    cfg = _config(model_a, tmp_path / "release-lifetime", analysis_mode="model_diff", prompt_a="hi")
+
+    def load_tracked(path):
+        model, tokenizer = _loader(path)()
+        refs.append(weakref.ref(model))
+        return model, tokenizer
+
+    def release():
+        # Unlike checking callback order, this catches a PredictionAnalyzer
+        # retaining B when the allocator is asked to return unused memory.
+        assert refs[-1]() is None
+        releases.append(len(refs))
+
+    if prediction_error:
+        def fail_predictions(self, *args, **kwargs):
+            raise RuntimeError("prediction failure")
+        monkeypatch.setattr(mcs.PredictionAnalyzer, "compute_predictions_analysis", fail_predictions)
+
+    mcs.ModelComparisonService.run_model_diff(
+        cfg, lambda: load_tracked(model_a), lambda: load_tracked(model_b),
+        "a", "b", release=release,
+    )
+    assert releases == [1, 2]
+
+
 def test_model_diff_rejects_mismatched_tokenization(model_a, tmp_path, monkeypatch):
     from vivasecuris.aiasylum.interp.core.services import model_comparison_service as mcs
 

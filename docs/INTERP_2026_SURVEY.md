@@ -82,18 +82,38 @@ Stochastic Parameter Decomposition ([2506.20790](https://arxiv.org/abs/2506.2079
 
 ## Gap map
 
-| Capability | Module today | Target |
-|---|---|---|
-| Refusal subspace | SVD of pooled per-layer means (`weights/direction.py: derive_subspace`) | RFM-AGOP cone with eigenvalue weights and a refusal-vs-k curve |
-| Abliteration resistance | none | stable rank per layer; re-derive after any hardening |
-| Over-refusal | shares the refusal contrast | task-conditioned objective with overlap report |
-| Reasoning models | `strip_thinking` before phrase matching | thinking-aware sweeps; refusal-decision timeline |
-| Probes and monitoring | none | multi-layer raw probes, prompted variant, "knows but complies" flag on test runs |
-| Head-level safety | correlational circuit cards | ACH/SAH classification, training-free detector, ACH ablation |
-| Causal attribution | patching without a forward pass | forward-pass patching; node-level EAP with verification |
-| Lens | `h @ W_Uᵀ` without the final norm | final-norm logit lens; Jacobian lens |
-| Dictionaries | none | Qwen3 SAE loader, feature steering, turn-averaged SAE, circuit-tracer graphs |
-| Null baselines | none | required on every payload labelled causal |
+Status as of 2026-09-24. "Shipped" means implemented, tested and reachable from
+the API or CLI; it does not mean validated on a large model, which is what
+`scripts/validate_interp_2026.py` is for.
+
+| Capability | Before | Now | Status |
+|---|---|---|---|
+| Refusal subspace | SVD of pooled per-layer means | RFM-AGOP cone with eigenvalue weights, plus a refusal-vs-k curve | shipped |
+| Abliteration resistance | none | stable rank per layer, banded, on every direction run | shipped |
+| Over-refusal | shared the refusal contrast | `over_refusal` objective with a cosine against the global refusal direction | shipped |
+| Reasoning models | `strip_thinking` before phrase matching | thinking-aware sweeps and a per-token refusal-decision timeline | shipped |
+| Probes and monitoring | none | per-layer raw-activation probes with shuffled-label nulls, held-out jailbreak families, knows-but-complies audit | shipped |
+| Causal attribution | patching that never re-ran the model | forward-pass patching at layer, head and neuron level, with a random-perturbation null | shipped |
+| Lens | `h @ W_Uᵀ` without the final norm | final-norm logit lens, convention-probed | shipped |
+| Null baselines | none | helper module; required on payloads labelled causal | shipped |
+| Attack after a defence | none | `compare_rederive` re-derives the direction on the edited model | shipped |
+| Broad misalignment | factual control only | open-ended probes with a heuristic judge | shipped |
+| Head-level safety | correlational circuit cards | ACH/SAH classification, training-free detector, ACH ablation | not built |
+| Gradient attribution | none | node-level EAP with verification | not built |
+| Jacobian lens | none | fitted lens, J-space intent readout | not built |
+| Dictionaries | none | Qwen3 SAE loader, feature steering, turn-averaged SAE, circuit-tracer graphs | not built |
+
+## Baselines a detection number is read against
+
+Every probe now reports two ceilings next to its AUROC, and `usable` requires
+clearing both. `null_auroc_p95` is the shuffled-label ceiling. `surface_ceiling`
+is what prompt length alone reaches on the same held-out rows; on the current
+corpus that is 0.99, because the two classes differ sharply in length. The
+rationale and the measurement live in `interp/probes/dataset.py`
+(`surface_baseline_auroc`) and `ProbeSet.beats_surface` in
+`interp/probes/train.py`, with regressions in `tests/test_interp_probes.py`.
+Probe results recorded before 25 September 2026 predate this ceiling and should
+be re-read against it.
 
 ## Caveats encoded in the UI
 
@@ -105,4 +125,12 @@ Stochastic Parameter Decomposition ([2506.20790](https://arxiv.org/abs/2506.2079
 
 ## Roadmap
 
-Phase 0 fixes the engine's credibility gaps (final-norm lens, real patching, relabelled head roles, null-baseline helper, pre-MLP capture). Phase 1 upgrades refusal geometry in `weights/`. Phase 2 adds probes, safety heads and gradient attribution. Phase 3 adds the Jacobian lens. Phase 4 adds the Qwen3 dictionary stack. Phase 5 builds composite tests: an abliteration-hardness scorecard, jailbreak mechanism fingerprinting, knows-but-complies severity, refusal-decision timelines with CoT resampling, a monitor-robustness test, an attack-after-defence loop, and cross-lingual subspace overlap. Registries in `api/routes/weights.py` and `api/routes/interp.py` are the source of truth for what has shipped.
+Phase 0 (**done**) fixed the engine's credibility gaps: the logit lens now applies the final norm, activation patching re-runs the forward pass, the head-role heuristic is labelled descriptive rather than causal, pre-MLP capture works, and a null-baseline helper exists.
+
+Phase 1 (**done**) upgraded refusal geometry in `weights/`: the RFM-AGOP cone, eigenvalue-weighted soft ablation through steering and surgery, the stable-rank diagnostic, the rank curve, refusal-decision timelines, thinking-aware sweeps, the over-refusal objective, and the attack-after-defence compare.
+
+Phase 2 (**partly done**) adds monitoring and circuits. The harmful-intent probe stack is built: per-layer logistic probes on raw pooled activations, a shuffled-label null at every layer, jailbreak families held out by technique, and the knows-but-complies audit. Safety-head classification (ACH/SAH) and gradient attribution (EAP) are not built yet.
+
+Phases 3 to 5 remain: the Jacobian lens, the Qwen3 dictionary stack, and the composite tests (abliteration-hardness scorecard, jailbreak mechanism fingerprinting, CoT resampling, monitor robustness, cross-lingual overlap).
+
+Registries in `api/routes/weights.py` and `api/routes/interp.py` are the source of truth for what has shipped. `scripts/validate_interp_2026.py` runs the whole weights track against one real model and writes a resumable report; `scripts/remote_validate.sh` drives it on a remote GPU host.

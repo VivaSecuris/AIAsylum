@@ -48,8 +48,13 @@ _ATTN_OUT_ATTRS = ("o_proj", "dense")
 # MixtralBlockSparseTop2MLP -- a down_proj-only probe misses every Mixtral expert.
 _MLP_DOWN_ATTRS = ("down_proj", "dense_4h_to_h", "w2")
 
-# Feed-forward submodules that hold a single shared expert alongside the routed ones.
-_SHARED_EXPERT_ATTRS = ("shared_expert", "shared_mlp")
+# Feed-forward submodules that hold a shared expert alongside the routed ones,
+# evaluated for every token. Qwen2-MoE and Hunyuan use the singular; DeepSeek-V2/V3,
+# GLM4-MoE and Ernie4.5-MoE spell the same thing `shared_experts`. Until the plural
+# was probed those four families were silently under-edited behind a manifest that
+# looked complete, which is why residual_write_plan now also audits every
+# down-projection in the block by name (_assert_no_unenumerated_down_projections).
+_SHARED_EXPERT_ATTRS = ("shared_expert", "shared_experts", "shared_mlp")
 
 
 def get_final_norm(model: nn.Module) -> Optional[nn.Module]:
@@ -92,10 +97,10 @@ def final_hidden_is_normed(model: nn.Module) -> bool:
     try:
         head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         if head is not None:
-            ids = torch.tensor([[1]], device=model.device)
+            ids = torch.tensor([[0]], device=model.get_input_embeddings().weight.device)
             with torch.no_grad():
-                out = model(input_ids=ids, output_hidden_states=True, return_dict=True)
-                direct = head(out.hidden_states[-1])
+                out = model(input_ids=ids, output_hidden_states=True, use_cache=False, return_dict=True)
+                direct = apply_logit_transforms(model, head(out.hidden_states[-1]))
             result = bool(torch.allclose(direct.float(), out.logits.float(), atol=1e-4, rtol=1e-4))
     except Exception:  # pragma: no cover - probe is best-effort
         result = False
@@ -104,6 +109,14 @@ def final_hidden_is_normed(model: nn.Module) -> bool:
     except Exception:
         pass
     return result
+
+
+def apply_logit_transforms(model: nn.Module, logits: torch.Tensor) -> torch.Tensor:
+    """Architecture-specific transform after unembedding (Gemma 2 softcap)."""
+    softcap = getattr(getattr(model, "config", None), "final_logit_softcapping", None)
+    if softcap is not None and softcap > 0:
+        return torch.tanh(logits / softcap) * softcap
+    return logits
 
 
 def get_decoder_layers(model: nn.Module, arch: str):
@@ -182,6 +195,58 @@ def _describe_fused_experts(experts: nn.Module) -> str:
     return f"{type(experts).__name__} exposes no recognizable down-projection"
 
 
+def _shared_expert_matrices(shared: nn.Module, layer_idx: int) -> List[WriteMatrix]:
+    """Down-projection(s) of a block's shared expert: one module, or a ModuleList of them."""
+    if isinstance(shared, nn.ModuleList):
+        out: List[WriteMatrix] = []
+        for j, module in enumerate(shared):
+            down = _named_submodule_with_weight(module, _MLP_DOWN_ATTRS)
+            if down is not None:
+                out.append(WriteMatrix(
+                    f"layers.{layer_idx}.mlp_shared_expert.{j}.down.weight", down.weight, KIND_OUT
+                ))
+        return out
+    down = _named_submodule_with_weight(shared, _MLP_DOWN_ATTRS)
+    if down is None:
+        return []
+    return [WriteMatrix(f"layers.{layer_idx}.mlp_shared_expert.down.weight", down.weight, KIND_OUT)]
+
+
+def _assert_no_unenumerated_down_projections(
+    mlp: nn.Module, layer_idx: int, enumerated: List[WriteMatrix], label: str
+) -> None:
+    """Every down-projection inside this feed-forward must be in ``enumerated``.
+
+    The enumeration probes a fixed list of attribute names, and a new family can
+    spell an old thing differently: DeepSeek stores its shared expert as
+    ``shared_experts`` where Qwen2-MoE says ``shared_expert``, and until the plural
+    was probed those models were edited without it. :func:`_assert_full_coverage`
+    could not see that, because the routed experts gave every layer a non-zero
+    count. This walk is the second line. Any submodule named like a down-projection,
+    anywhere in the block, whose 2-D weight is not already in the plan is a residual
+    writer the edit would miss, and that refuses rather than proceeds. Selection is
+    by *name* only, so the router gate (a Linear that reads the residual) is never
+    caught by it.
+    """
+    seen = {m.param.data_ptr() for m in enumerated}
+    missed: List[str] = []
+    for name, module in mlp.named_modules():
+        if name.rsplit(".", 1)[-1] not in _MLP_DOWN_ATTRS:
+            continue
+        weight = getattr(module, "weight", None)
+        if weight is None or getattr(weight, "ndim", 0) != 2:
+            continue
+        if weight.data_ptr() not in seen:
+            missed.append(name)
+    if missed:
+        raise ValueError(
+            f"Layer {layer_idx} of {label or 'this model'} has a down-projection that "
+            f"enumeration did not reach: {', '.join(missed)}. It writes into the residual "
+            f"stream, so editing the rest would leave the direction intact there. Add the "
+            f"layout to arch.py rather than editing partially."
+        )
+
+
 def attn_out_matrices(attn: nn.Module, layer_idx: int) -> List[WriteMatrix]:
     """The attention out-projection, whose output is added to the residual stream."""
     out_proj = _named_submodule_with_weight(attn, _ATTN_OUT_ATTRS)
@@ -227,18 +292,14 @@ def mlp_down_matrices(mlp: nn.Module, layer_idx: int, label: str = "") -> List[W
                 f"layers.{layer_idx}.mlp_experts.{e}.down.weight", expert_down.weight, KIND_OUT
             ))
 
-        # Qwen2-MoE carries a shared expert evaluated for every token; Qwen3-MoE and
-        # Mixtral do not. Its output joins the same sum, so it is edited the same way.
+        # Qwen2-MoE, DeepSeek, GLM4-MoE and Ernie carry a shared expert evaluated for
+        # every token; Qwen3-MoE and Mixtral do not. Its output joins the same sum, so
+        # it is edited the same way. Ernie sets the attribute to None when it has none.
         for attr in _SHARED_EXPERT_ATTRS:
             shared = getattr(mlp, attr, None)
             if shared is None:
                 continue
-            shared_down = _named_submodule_with_weight(shared, _MLP_DOWN_ATTRS)
-            if shared_down is not None:
-                out.append(WriteMatrix(
-                    f"layers.{layer_idx}.mlp_shared_expert.down.weight",
-                    shared_down.weight, KIND_OUT,
-                ))
+            out.extend(_shared_expert_matrices(shared, layer_idx))
             break
 
         return out
@@ -279,6 +340,8 @@ class WritePlan:
     shared_expert_matrices: int = 0
     moe_layers: int = 0
     n_layers: int = 0
+    model_type: Optional[str] = None
+    is_moe: bool = False
 
     @property
     def coverage_verified(self) -> bool:
@@ -347,6 +410,7 @@ def residual_write_plan(
     for layer_idx, attn, mlp in stack:
         attn_mats = attn_out_matrices(attn, layer_idx)
         mlp_mats = mlp_down_matrices(mlp, layer_idx, label=info.label)
+        _assert_no_unenumerated_down_projections(mlp, layer_idx, mlp_mats, info.label)
 
         if any(".mlp_experts." in m.name for m in mlp_mats):
             moe_layers += 1
@@ -375,6 +439,8 @@ def residual_write_plan(
         shared_expert_matrices=shared_expert_matrices,
         moe_layers=moe_layers,
         n_layers=len(per_layer),
+        model_type=info.model_type,
+        is_moe=info.is_moe,
     )
 
     logger.info(
@@ -431,3 +497,249 @@ def residual_write_matrices(
     matrices themselves.
     """
     return residual_write_plan(model, arch, include_embeddings).matrices
+
+
+# --------------------------------------------------------------------------
+# Expert-selective enumeration
+# --------------------------------------------------------------------------
+#
+# The plan above is all-or-nothing by design: removing a direction is only exact
+# when every residual writer is edited. Targeting *specific* experts is a
+# different question -- "what does expert 7 of layer 12 contribute?" -- and the
+# answer is partial on purpose. It gets its own enumeration so the full-coverage
+# contract above is never weakened, and its own manifest flag
+# (coverage_verified=False) so the result is never mistaken for a removal.
+#
+# The router is never edited here either. Scaling an expert's down-projection
+# subtracts exactly g_e(x) * D_e a_e(x) from the block output for every token
+# routed to e and changes nothing else; masking the router instead would change
+# which experts fire for every token, an intervention with unbounded side
+# effects, and its mechanics differ per family (DeepSeek/GLM4 group top-k plus a
+# score-correction bias). Note that with norm_topk_prob the surviving experts
+# are not renormalised: the token's MLP output shrinks rather than being
+# redistributed. That is the intended reading -- "remove this expert's write,
+# keep the routing fixed".
+
+# Router attribute names, in probe order.
+_GATE_ATTRS = ("gate", "router")
+
+
+@dataclass
+class MoeLayerInfo:
+    """One sparse layer: how many experts, how many fire per token, how the gate reports."""
+
+    layer: int
+    n_experts: int
+    top_k: Optional[int]
+    has_shared: bool
+    experts_are_modules: bool
+    gate_kind: str  # "linear_logits" | "router_tuple" | "unknown"
+
+
+def _gate_module(mlp: nn.Module) -> Optional[nn.Module]:
+    for attr in _GATE_ATTRS:
+        mod = getattr(mlp, attr, None)
+        if isinstance(mod, nn.Module):
+            return mod
+    return None
+
+
+def _gate_kind(gate: Optional[nn.Module]) -> str:
+    if gate is None:
+        return "unknown"
+    if isinstance(gate, nn.Linear):
+        return "linear_logits"
+    # DeepSeek-V2/V3 and GLM4-MoE routers are modules of their own that return
+    # (topk_indices, topk_weights) and carry an [n_experts, d_model] weight.
+    weight = getattr(gate, "weight", None)
+    if weight is not None and getattr(weight, "ndim", 0) == 2 and hasattr(gate, "top_k"):
+        return "router_tuple"
+    return "unknown"
+
+
+def _top_k(mlp: nn.Module, gate: Optional[nn.Module], config: Any) -> Optional[int]:
+    for obj, attr in (
+        (mlp, "top_k"), (gate, "top_k"), (mlp, "num_experts_per_tok"),
+        (config, "num_experts_per_tok"), (config, "moe_k"), (config, "moe_topk"),
+    ):
+        val = getattr(obj, attr, None) if obj is not None else None
+        if isinstance(val, int) and val > 0:
+            return val
+    return None
+
+
+def moe_layout(model: nn.Module, arch: Optional[str] = None) -> Dict[int, MoeLayerInfo]:
+    """Per MoE layer, what an expert-level edit or a routing capture needs to know.
+
+    Dense layers are absent from the result, so ``not moe_layout(m)`` reads as
+    "this is not a mixture-of-experts model".
+    """
+    info = describe_architecture(model)
+    family = arch or info.family
+    stack = get_layer_stack(model, family) if family else None
+    if stack is None:
+        raise ValueError(f"Could not enumerate decoder layers for {info.label}.")
+    config = getattr(model, "config", None)
+    layout: Dict[int, MoeLayerInfo] = {}
+    for layer_idx, _attn, mlp in stack:
+        experts = getattr(mlp, "experts", None)
+        if experts is None:
+            continue
+        gate = _gate_module(mlp)
+        as_modules = isinstance(experts, nn.ModuleList)
+        if as_modules:
+            n = len(experts)
+        else:
+            n = int(
+                getattr(mlp, "num_experts", None)
+                or getattr(config, "num_local_experts", None)
+                or getattr(config, "num_experts", None)
+                or 0
+            )
+        has_shared = any(getattr(mlp, a, None) is not None for a in _SHARED_EXPERT_ATTRS)
+        layout[layer_idx] = MoeLayerInfo(
+            layer=layer_idx, n_experts=n, top_k=_top_k(mlp, gate, config),
+            has_shared=has_shared, experts_are_modules=as_modules, gate_kind=_gate_kind(gate),
+        )
+    return layout
+
+
+ExpertSelection = Dict[int, List[int]]
+
+
+def normalize_expert_selection(raw: Any, layout: Dict[int, MoeLayerInfo]) -> ExpertSelection:
+    """``{layer: [experts] | "all"}`` with string or int keys -> validated ``{int: [int]}``.
+
+    Refuses dense layers, layers whose experts are fused tensors, indices out of
+    range or repeated, and empty selections: an edit of nothing would still
+    write a manifest claiming an edit.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("expert_selection must be a non-empty mapping of layer -> experts.")
+    out: ExpertSelection = {}
+    for key, value in raw.items():
+        try:
+            layer = int(key)
+        except (TypeError, ValueError):
+            raise ValueError(f"expert_selection key {key!r} is not a layer index.")
+        info = layout.get(layer)
+        if info is None:
+            moe = sorted(layout)
+            raise ValueError(
+                f"Layer {layer} has no routed experts. MoE layers in this model: "
+                f"{moe if moe else 'none'}."
+            )
+        if not info.experts_are_modules:
+            raise ValueError(
+                f"Layer {layer} stores its experts as fused tensors, which cannot be "
+                f"edited per expert."
+            )
+        if isinstance(value, str):
+            if value.strip().lower() != "all":
+                raise ValueError(
+                    f"expert_selection[{layer}] must be a list of expert indices or "
+                    f"'all', got {value!r}."
+                )
+            experts = list(range(info.n_experts))
+        else:
+            try:
+                experts = [int(e) for e in value]
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"expert_selection[{layer}] must be a list of expert indices or 'all'."
+                )
+            if not experts:
+                raise ValueError(f"expert_selection[{layer}] is empty.")
+            bad = [e for e in experts if e < 0 or e >= info.n_experts]
+            if bad:
+                raise ValueError(
+                    f"Layer {layer} has {info.n_experts} experts "
+                    f"(0..{info.n_experts - 1}); {bad} out of range."
+                )
+            if len(set(experts)) != len(experts):
+                raise ValueError(f"expert_selection[{layer}] repeats an expert: {experts}.")
+        out[layer] = sorted(experts)
+    return dict(sorted(out.items()))
+
+
+@dataclass
+class ExpertPlan:
+    """The selected experts' down-projections, with what was and was not reached."""
+
+    matrices: List[WriteMatrix]
+    selection: ExpertSelection
+    arch: ArchInfo
+    include_shared: bool
+    layers_edited: int = 0
+    experts_edited: int = 0
+    shared_edited: int = 0
+    moe_layers: int = 0
+    layout: Dict[int, MoeLayerInfo] = field(default_factory=dict)
+
+
+def expert_down_matrices(
+    model: nn.Module,
+    selection: Any,
+    include_shared: bool = False,
+    arch: Optional[str] = None,
+) -> ExpertPlan:
+    """Down-projections of the *selected* experts only. Partial by design.
+
+    ``selection`` is anything :func:`normalize_expert_selection` accepts. The
+    shared expert of a selected layer is included only on request, because it
+    fires for every token and editing it is a different claim from editing a
+    routed expert.
+    """
+    info = describe_architecture(model)
+    family = arch or info.family
+    layout = moe_layout(model, family)
+    if not layout:
+        raise ValueError(f"{info.label} has no mixture-of-experts layers.")
+    normalized = normalize_expert_selection(selection, layout)
+    stack = get_layer_stack(model, family)
+    mlps = {layer_idx: mlp for layer_idx, _attn, mlp in stack}
+
+    matrices: List[WriteMatrix] = []
+    seen: set = set()
+    experts_edited = shared_edited = 0
+
+    def add(matrix: WriteMatrix) -> bool:
+        ptr = matrix.param.data_ptr()
+        if ptr in seen:
+            return False
+        seen.add(ptr)
+        matrices.append(matrix)
+        return True
+
+    for layer_idx, experts in normalized.items():
+        mlp = mlps[layer_idx]
+        modules = mlp.experts
+        for e in experts:
+            down = _named_submodule_with_weight(modules[e], _MLP_DOWN_ATTRS)
+            if down is None:
+                raise ValueError(
+                    f"Layer {layer_idx} expert {e} of {info.label} exposes no recognizable "
+                    f"down-projection (looked for {', '.join(_MLP_DOWN_ATTRS)})."
+                )
+            if add(WriteMatrix(
+                f"layers.{layer_idx}.mlp_experts.{e}.down.weight", down.weight, KIND_OUT
+            )):
+                experts_edited += 1
+        if include_shared:
+            for attr in _SHARED_EXPERT_ATTRS:
+                shared = getattr(mlp, attr, None)
+                if shared is None:
+                    continue
+                for wm in _shared_expert_matrices(shared, layer_idx):
+                    if add(wm):
+                        shared_edited += 1
+                break
+
+    if not matrices:
+        raise ValueError(f"expert_selection named no editable matrices in {info.label}.")
+
+    return ExpertPlan(
+        matrices=matrices, selection=normalized, arch=info, include_shared=include_shared,
+        layers_edited=len(normalized), experts_edited=experts_edited,
+        shared_edited=shared_edited, moe_layers=len(layout), layout=layout,
+    )

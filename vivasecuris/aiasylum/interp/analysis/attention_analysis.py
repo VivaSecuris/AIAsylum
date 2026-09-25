@@ -36,7 +36,7 @@ class AttentionAnalyzer:
             return None
         
         attn = result.attention_weights[layer_idx]  # [1, num_heads, seq_len, seq_len]
-        attn_np = attn[0, :, start:start + window_len, start:start + window_len].detach().cpu().numpy()
+        attn_np = attn[0, :, start:start + window_len, start:start + window_len].detach().cpu().float().numpy()
         return attn_np
 
     @staticmethod

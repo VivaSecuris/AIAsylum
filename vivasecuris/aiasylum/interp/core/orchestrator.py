@@ -35,6 +35,8 @@ class AnalysisOrchestrator:
         Returns:
             SinglePromptResult, ComparisonResult, or ProgressionResult depending on config.analysis_mode.
         """
+        if config.enable_scrub:
+            raise ValueError("Causal scrubbing is unavailable; use activation patching for measured interventions")
         if model is None or tokenizer is None:
             logger.info("Loading model: %s", config.model)
             model, tokenizer = ModelLoader.load_model(
@@ -90,6 +92,8 @@ class AnalysisOrchestrator:
         Returns (result, dashboard_html).
         """
         result = cls.run(config, model=model, tokenizer=tokenizer)
+        from .requirements import validate_result
+        validate_result(result, config)
         cls.save_results(result, config.out_dir)
         logger.info("Generating dashboard")
         dashboard_html = cls.build_dashboard(result)

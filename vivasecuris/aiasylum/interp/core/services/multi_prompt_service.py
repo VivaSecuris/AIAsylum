@@ -205,98 +205,62 @@ class MultiPromptService:
             X = np.vstack(hiddens)
 
             layer_payload: Dict[str, Any] = {}
-            used_non_pca = False
-            
-            if config.dim_reduction == "umap":
-                try:
-                    # Build a single UMAP reducer and transform each prompt window.
-                    umap = UMAPAnalyzer._get_umap()
-                    reducer = umap.UMAP(
-                        n_components=3,
-                        n_neighbors=config.umap_n_neighbors,
-                        min_dist=config.umap_min_dist,
-                        metric=config.umap_metric,
-                        random_state=config.umap_random_state,
-                    )
-                    reducer.fit(X)
-                    for label, hidden in zip(prompt_labels, hiddens):
-                        coords = reducer.transform(hidden)
-                        layer_payload[label] = {
-                            "pca": coords.tolist(),  # kept as "pca" for dashboard compatibility
-                            "explained_variance": None,
-                        }
-                    used_non_pca = True
-                except Exception as e:
-                    logger.warning(f"Failed to compute UMAP for layer {layer_idx}; falling back to PCA: {e}")
-            
-            elif config.dim_reduction == "tsne":
-                try:
-                    # Build a single t-SNE reducer and transform each prompt window.
-                    from sklearn.manifold import TSNE
-                    
-                    # Adjust perplexity if needed
-                    perplexity = config.tsne_perplexity
-                    n_samples = X.shape[0]
-                    if perplexity >= n_samples:
-                        perplexity = max(1, n_samples - 1)
-                    
-                    reducer = TSNE(
-                        n_components=3,
-                        perplexity=perplexity,
-                        learning_rate=config.tsne_learning_rate if isinstance(config.tsne_learning_rate, (int, float)) else "auto",
-                        n_iter=config.tsne_n_iter,
-                        metric=config.tsne_metric,
-                        random_state=config.tsne_random_state,
-                    )
-                    embedding = reducer.fit_transform(X)
-                    
-                    # Split embedding back into prompts
-                    prompt_lengths = [h.shape[0] for h in hiddens]
-                    start_idx = 0
-                    for label, length in zip(prompt_labels, prompt_lengths):
-                        coords = embedding[start_idx:start_idx + length]
-                        layer_payload[label] = {
-                            "pca": coords.tolist(),  # kept as "pca" for dashboard compatibility
-                            "explained_variance": None,
-                        }
-                        start_idx += length
-                    used_non_pca = True
-                except Exception as e:
-                    logger.warning(f"Failed to compute t-SNE for layer {layer_idx}; falling back to PCA: {e}")
-
-            if not used_non_pca:
-                # PCA (fit once on concatenated)
-                try:
-                    from sklearn.decomposition import PCA
-
-                    # Clamp to what the data supports: a short query window
-                    # can yield fewer samples than components, and sklearn
-                    # raises rather than degrading. pca.py clamps the same way.
-                    n_components = max(1, min(3, X.shape[0], X.shape[1]))
-                    pca = PCA(n_components=n_components)
-                    pca.fit(X)
-                    for label, hidden in zip(prompt_labels, hiddens):
-                        coords = pca.transform(hidden)
-                        layer_payload[label] = {
-                            "pca": coords.tolist(),
-                            "explained_variance": pca.explained_variance_ratio_.tolist(),
-                        }
-                except ImportError:
-                    # Fallback: numpy SVD on concatenated data
-                    Xc = X - np.mean(X, axis=0)
-                    U, s, Vt = np.linalg.svd(Xc, full_matrices=False)
-                    # Project each hidden with top-3 right singular vectors
-                    V3 = Vt[:3].T  # [d, 3]
-                    explained_variance = (s[:3] ** 2) / (s ** 2).sum()
-                    for label, hidden in zip(prompt_labels, hiddens):
-                        coords = (hidden - np.mean(X, axis=0)) @ V3
-                        layer_payload[label] = {
-                            "pca": coords.tolist(),
-                            "explained_variance": explained_variance.tolist(),
-                        }
+            explained_variance = None
+            try:
+                if config.dim_reduction == "umap":
+                    embedding, _ = UMAPAnalyzer.fit_embedding(X, config)
+                elif config.dim_reduction == "tsne":
+                    embedding, _ = TSNEAnalyzer.fit_embedding(X, config)
+                elif config.dim_reduction == "pca":
+                    # One common basis, padded for a 3D plot even with short windows.
+                    Xc = X - X.mean(axis=0)
+                    _, singular, right = np.linalg.svd(Xc, full_matrices=False)
+                    embedding = Xc @ right[:3].T
+                    embedding = np.pad(embedding, ((0, 0), (0, 3 - embedding.shape[1])))
+                    variance = singular ** 2
+                    explained_variance = (variance[:3] / variance.sum()).tolist() if variance.sum() else [0.0] * min(3, len(variance))
+                else:
+                    raise ValueError(f"Unknown projection: {config.dim_reduction}")
+            except Exception as exc:
+                raise RuntimeError(f"{config.dim_reduction.upper()} projection failed at hidden-state index {layer_idx}: {exc}") from exc
+            offset = 0
+            for label, hidden in zip(prompt_labels, hiddens):
+                layer_payload[label] = {
+                    "pca": embedding[offset:offset + len(hidden)].tolist(),
+                    "explained_variance": explained_variance,
+                }
+                offset += len(hidden)
 
             pca_payload[str(layer_idx)] = layer_payload
         
+        # Keep captures inspectable for every progression step. These are
+        # descriptive measurements, not evidence of a causal effect.
+        component_layers = sorted({min(i, num_layers - 2) for i in pca_layers})
+        attention_payload, mlp_payload, predictions_payload = {}, {}, {}
+        predictor = PredictionAnalyzer(model, tokenizer, topk=config.topk)
+        for i, (label, captured) in enumerate(zip(prompt_labels, run_results)):
+            start = alignment_info[i]["start"]
+            predictions_payload[label] = predictor.compute_predictions_analysis_single(
+                captured, num_layers - 1, start, query_window_len,
+            )
+            if config.enable_attention_capture:
+                attention_payload[label] = {}
+                for block in component_layers:
+                    attention = captured.attention_weights[block][0].float().numpy()
+                    window = attention[:, start:start + query_window_len, start:start + query_window_len]
+                    attention_payload[label][str(block)] = {
+                        "mean_over_heads": window.mean(axis=0).tolist(),
+                        "mean_window_mass_by_head": window.sum(axis=-1).mean(axis=-1).tolist(),
+                    }
+            if config.enable_mlp_capture:
+                mlp_payload[label] = {}
+                for block in component_layers:
+                    activations = captured.mlp_activations[block][0, start:start + query_window_len].float().numpy()
+                    mlp_payload[label][str(block)] = {
+                        "token_norms": np.linalg.norm(activations, axis=-1).tolist(),
+                        "activation_space": "residual_channels",
+                    }
+
         # Compute example impact: which layers are most affected by adding examples
         logger.info("Computing example impact analysis")
         example_impact = {}
@@ -328,13 +292,16 @@ class MultiPromptService:
             "prompt_labels": prompt_labels,
             "analysis_mode": "progression",
             "query_marker": config.query_marker,
-            "device": config.device,
-            "dtype": config.dtype,
+            "device": str(model.device),
+            "dtype": str(model.dtype).removeprefix("torch."),
+            "requested_device": config.device,
             "window": config.window,
             "query_window_len": query_window_len,
             "num_prompts": num_prompts,
             "num_layers": num_layers,
             "dim_reduction": config.dim_reduction,
+            "input_token_counts": [len(captured.token_strs) for captured in run_results],
+            "component_layers": component_layers,
         }
         
         # Create progression result
@@ -352,6 +319,9 @@ class MultiPromptService:
             query_window_len=query_window_len,
             pca_payload=pca_payload,
             example_impact=example_impact,
+            attention_payload=attention_payload or None,
+            mlp_payload=mlp_payload or None,
+            predictions_payload=predictions_payload,
         )
         
         logger.info("Progression analysis completed successfully")
@@ -397,4 +367,12 @@ class MultiPromptService:
             with open(impact_file, "w") as f:
                 json.dump(result.example_impact, f, indent=2)
         
+        for name, payload in (
+            ("attention_payload", result.attention_payload),
+            ("mlp_payload", result.mlp_payload),
+            ("predictions", result.predictions_payload),
+        ):
+            if payload:
+                (out_dir / f"{name}.json").write_text(json.dumps(payload, indent=2))
+
         logger.info(f"Progression results saved to {out_dir}")

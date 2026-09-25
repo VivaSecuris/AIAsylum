@@ -21,11 +21,13 @@ still match and the payload says so rather than quietly implying they do.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
+import torch
 
 from vivasecuris.aiasylum.interp.analysis.pca import PCAAnalyzer
 from vivasecuris.aiasylum.interp.analysis.dim_reduction import DimensionReduction
@@ -67,28 +69,35 @@ class ModelComparisonService:
                 config.enable_attention_capture
                 or config.enable_mlp_capture
                 or config.enable_attn_output_capture
+                or config.enable_pre_mlp_capture
+                or config.enable_qkv_capture
             )
         )
         runner = ModelRunner(model, tokenizer, debug_mode=debug_mode, config=config)
         result = runner.run_once(prompt, max_length=config.max_len)
 
-        head = getattr(model, "lm_head", None)
+        head = model.get_output_embeddings()
         fingerprint = None
         if head is not None and hasattr(head, "weight"):
-            with_no_grad = head.weight.detach().to("cpu", copy=False)
-            # Cheap, stable summary of the unembedding; full equality on a
-            # vocab-sized matrix is not worth the memory.
-            fingerprint = [
-                float(with_no_grad.float().sum().item()),
-                float(with_no_grad.float().abs().sum().item()),
-                list(with_no_grad.shape),
-            ]
+            # Hash bounded chunks rather than retaining/casting the whole
+            # vocabulary matrix in host RAM. Sums alone cannot distinguish a
+            # vocabulary permutation, which changes every decoded prediction.
+            digest = hashlib.sha256()
+            for name, parameter in head.named_parameters():
+                digest.update(f"{name}:{parameter.dtype}:{tuple(parameter.shape)}".encode())
+                rows = parameter.detach().reshape(-1)
+                for start in range(0, rows.numel(), 262144):
+                    chunk = rows[start:start + 262144].cpu().contiguous().view(torch.uint8)
+                    digest.update(chunk.numpy().tobytes())
+            fingerprint = digest.hexdigest()
 
         facts = {
             "n_layers": len(result.hidden_states),
             "d_model": int(result.hidden_states[0].shape[-1]),
             "tokens": list(result.token_strs),
             "lm_head_fingerprint": fingerprint,
+            "device": str(model.device),
+            "dtype": str(model.dtype).removeprefix("torch."),
         }
         return result, facts
 
@@ -132,17 +141,22 @@ class ModelComparisonService:
         say(f"loading model B ({model_b_id})")
         model_b, tokenizer_b = load_b()
         predictions_payload: Optional[Dict[str, Any]] = None
+        analyzer: Optional[PredictionAnalyzer] = None
         try:
             say("capturing activations for model B")
             result_b, facts_b = ModelComparisonService._capture(model_b, tokenizer_b, prompt, config)
 
             # PredictionAnalyzer needs a live model for the unembedding, so the
             # logit lens runs here rather than after B is released.
-            shared_unembedding = facts_a["lm_head_fingerprint"] == facts_b["lm_head_fingerprint"]
+            shared_unembedding = (
+                facts_a["lm_head_fingerprint"] is not None
+                and facts_a["lm_head_fingerprint"] == facts_b["lm_head_fingerprint"]
+            )
             window_len_early = min(
                 len(facts_a["tokens"]), config.window or len(facts_a["tokens"])
             )
-            if facts_a["tokens"] == facts_b["tokens"]:
+            matching_shapes = all(facts_a[key] == facts_b[key] for key in ("n_layers", "d_model"))
+            if facts_a["tokens"] == facts_b["tokens"] and matching_shapes:
                 try:
                     say("comparing next-token predictions")
                     dn_probe = compute_delta_norm(result_a, result_b, 0, 0, window_len_early)
@@ -154,13 +168,19 @@ class ModelComparisonService:
                         predictions_payload["shared_unembedding"] = shared_unembedding
                         if not shared_unembedding:
                             predictions_payload["caveat"] = (
-                                "The two models decode through different unembeddings, so "
-                                "probabilities are not on a common scale. Read the overlap "
-                                "of the top-k sets rather than the individual values."
+                                "Both residual streams are projected through model B's final "
+                                "normalization and unembedding. These are shared readout lens "
+                                "values, not model A's own next-token probabilities."
                             )
                 except Exception as exc:
-                    logger.warning("Prediction comparison failed: %s", exc)
+                    # Log text only: a buffered exception object keeps its
+                    # traceback (and the lens/model in that frame) alive.
+                    logger.warning("Prediction comparison failed: %s", str(exc))
         finally:
+            # The lens owns the model, output head and normalization parameters.
+            # Drop it before clearing the provider/accelerator caches, otherwise
+            # those allocations only become unused after the last cache clear.
+            del analyzer
             del model_b
             if release:
                 say("releasing model B")
@@ -202,19 +222,13 @@ class ModelComparisonService:
         say("computing trajectory embedding")
         pca_payload: Dict[str, Any] = {}
         for layer_idx in PCAAnalyzer.select_pca_layers(config.pca_layers, num_layers, spike_layer):
-            for method in (config.dim_reduction, "pca"):
-                try:
-                    pca_payload[str(layer_idx)] = DimensionReduction.compute_for_layer(
-                        result_a, result_b, layer_idx, start_a, start_b,
-                        window_len, method, config,
-                    )
-                    break
-                except Exception as exc:
-                    logger.warning(
-                        "%s failed for layer %d%s: %s",
-                        method.upper(), layer_idx,
-                        "; falling back to PCA" if method != "pca" else "", exc,
-                    )
+            try:
+                pca_payload[str(layer_idx)] = DimensionReduction.compute_for_layer(
+                    result_a, result_b, layer_idx, start_a, start_b,
+                    window_len, config.dim_reduction, config,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"{config.dim_reduction.upper()} projection failed at hidden-state index {layer_idx}: {exc}") from exc
 
         meta = {
             "model": f"{model_a_id} vs {model_b_id}",
@@ -223,8 +237,11 @@ class ModelComparisonService:
             "model_b": model_b_id,
             "prompt_a": prompt,
             "prompt_b": prompt,
-            "device": config.device,
-            "dtype": config.dtype,
+            "device": facts_b["device"],
+            "dtype": facts_b["dtype"],
+            "device_a": facts_a["device"],
+            "dtype_a": facts_a["dtype"],
+            "requested_device": config.device,
             "align": "identity",
             "marker": None,
             "window": config.window,
@@ -234,6 +251,7 @@ class ModelComparisonService:
             "spike_layer": spike_layer,
             "num_layers": num_layers,
             "dim_reduction": config.dim_reduction,
+            "input_token_counts": [len(facts_a["tokens"]), len(facts_b["tokens"])],
             "shared_unembedding": shared_unembedding,
         }
 

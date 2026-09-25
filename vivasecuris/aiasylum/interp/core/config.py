@@ -140,6 +140,11 @@ class Config:
     # Debug
     debug_mode: bool = False
 
+    def __post_init__(self):
+        from .requirements import capture_options
+        for name, value in capture_options(vars(self)).items():
+            setattr(self, name, value)
+
     @classmethod
     def from_cli_args(
         cls,
@@ -239,15 +244,17 @@ class Config:
             out_dir=out_dir,
             device=getattr(request, "device", "cpu"),
             dtype=getattr(request, "dtype", "float32"),
-            max_len=2048,
-            seed=0,
+            max_len=getattr(request, "max_len", 2048),
+            seed=getattr(request, "seed", 0),
             dim_reduction=getattr(request, "dim_reduction", "pca"),
             pca_layers=getattr(request, "pca_layers", "auto"),
             topk=getattr(request, "topk", 10),
             enable_component_analysis=getattr(request, "enable_component_analysis", True),
-            enable_attention_capture=True,
-            enable_mlp_capture=True,
-            enable_attn_output_capture=True,
+            enable_attention_capture=getattr(request, "enable_attention_capture", True),
+            enable_mlp_capture=getattr(request, "enable_mlp_capture", True),
+            enable_attn_output_capture=getattr(request, "enable_attn_output_capture", True),
+            enable_pre_mlp_capture=getattr(request, "enable_pre_mlp_capture", False),
+            enable_qkv_capture=getattr(request, "enable_qkv_capture", False),
             cot_analysis_mode=getattr(request, "cot_analysis_mode", "none"),
         )
 

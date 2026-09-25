@@ -184,6 +184,13 @@ def compute_per_neuron_mlp_outputs(
     if down is None:
         return None
     pre = pre_mlp[0, start : start + window_len, :].float()       # [w, inter]
+    output_bytes = pre.shape[0] * pre.shape[1] * down.shape[0] * 4
+    if output_bytes > 256 * 1024**2:
+        raise ValueError(
+            f"Full per-neuron reconstruction needs {output_bytes / 1024**3:.1f} GiB "
+            "for this layer. Reduce the analysis window or use neuron patching, "
+            "which computes only selected contributions."
+        )
     # out[n, t, :] = pre[t, n] * down[:, n]
     return torch.einsum("tn,dn->ntd", pre, down)
 
@@ -268,6 +275,7 @@ def _forward(model, input_ids: torch.Tensor, hooks: Sequence[Tuple[Any, str, Cal
             out = model(
                 input_ids=input_ids.to(model.device),
                 output_hidden_states=True,
+                use_cache=False,
                 return_dict=True,
             )
         return out.logits[0, -1].float().cpu(), out.hidden_states[-1][0, -1].float().cpu()
@@ -425,27 +433,36 @@ def run_patching_experiments(
     n_hidden = len(result_a.hidden_states)
     sublayers = {idx: (attn, mlp) for idx, attn, mlp in stack}
 
-    # Positions (window-relative).
-    last_pos = window_len - 1 if window_len > 0 else 0
-    if config.patch_positions:
-        positions = [p for p in config.patch_positions if 0 <= p < window_len] or [last_pos]
-        patch_mode: str = "multi_position"
-    else:
-        positions = [last_pos]
-        patch_mode = "last_token"
-
-    component: str = config.patch_components if isinstance(config.patch_components, str) else "layer"
+    # Reject invalid selections; filtering them would run a different experiment.
+    if window_len < 1:
+        raise ValueError("Activation patching requires a nonempty aligned token window")
+    positions = config.patch_positions if config.patch_positions is not None else [window_len - 1]
+    if not positions or any(p < 0 or p >= window_len for p in positions):
+        raise ValueError(f"Patch positions must be between 0 and {window_len - 1} in the actual aligned window")
+    patch_mode = "multi_position" if config.patch_positions is not None else "last_token"
+    component = config.patch_components or "layer"
     if component not in ("layer", "head", "neuron"):
-        component = "layer"
-
-    if config.patch_layers:
-        layers = [int(l) for l in config.patch_layers if 0 <= int(l) < n_hidden]
-    elif component == "layer":
-        layers = list(range(n_hidden))
+        raise ValueError(f"Unknown patch component: {component}")
+    units = (config.patch_heads if component == "head" else config.patch_neurons) or []
+    if units:
+        layers = sorted({layer for layer, _ in units})
+        if config.patch_layers is not None and set(config.patch_layers) != set(layers):
+            raise ValueError("Selected patch layers must match the blocks in the head/neuron selection")
+    elif config.patch_layers is not None:
+        layers = list(config.patch_layers)
     else:
-        layers = [spike_layer]
-    if not layers:
-        layers = [spike_layer]
+        layers = list(range(n_hidden)) if component == "layer" else [min(spike_layer, n_blocks - 1)]
+    limit = n_hidden if component == "layer" else n_blocks
+    if not layers or any(layer < 0 or layer >= limit for layer in layers):
+        raise ValueError(f"Patch {component} layer indices must be between 0 and {limit - 1}")
+    for layer, unit in units:
+        if component == "head":
+            count = getattr(model.config, "num_attention_heads", 0)
+        else:
+            captured = (result_a.pre_mlp_activations or {}).get(layer)
+            count = captured.shape[-1] if captured is not None else 0
+        if unit < 0 or unit >= count:
+            raise ValueError(f"Patch {component} index {unit} is outside block {layer}'s range 0–{count - 1}")
 
     pairs = [
         _Pair("A_to_B", result_a, result_b, start_a, start_b, tokenizer, config.topk),
@@ -494,8 +511,7 @@ def run_patching_experiments(
                 per_src = compute_per_head_outputs(pair.src, model, layer, pair.start_src, window_len)
                 per_tgt = compute_per_head_outputs(pair.tgt, model, layer, pair.start_tgt, window_len)
                 if per_src is None or per_tgt is None:
-                    notes.append(f"layer {layer}: per-head outputs unavailable (need attention + Q/K/V capture)")
-                    continue
+                    raise ValueError(f"Block {layer}: per-head outputs unavailable (need attention + Q/K/V capture)")
                 n_heads = int(per_src.shape[0])
                 wanted = [h for (ly, h) in (config.patch_heads or []) if ly == layer] or list(range(n_heads))
                 attn_module = sublayers[layer][0]
@@ -522,24 +538,26 @@ def run_patching_experiments(
             for layer in layers:
                 if layer not in sublayers:
                     continue
-                per_src = compute_per_neuron_mlp_outputs(pair.src, model, layer, pair.start_src, window_len)
-                per_tgt = compute_per_neuron_mlp_outputs(pair.tgt, model, layer, pair.start_tgt, window_len)
-                if per_src is None or per_tgt is None:
-                    notes.append(f"layer {layer}: per-neuron outputs unavailable (need pre-MLP capture)")
-                    continue
-                n_neurons = int(per_src.shape[0])
+                pre_src = (pair.src.pre_mlp_activations or {}).get(layer)
+                pre_tgt = (pair.tgt.pre_mlp_activations or {}).get(layer)
+                down = _get_mlp_down(model, layer)
+                if pre_src is None or pre_tgt is None or down is None:
+                    raise ValueError(f"Block {layer}: per-neuron outputs unavailable (need pre-MLP capture)")
+                pre_src = pre_src[0, pair.start_src:pair.start_src + window_len]
+                pre_tgt = pre_tgt[0, pair.start_tgt:pair.start_tgt + window_len]
+                n_neurons = int(pre_src.shape[-1])
                 wanted = [n for (ly, n) in (config.patch_neurons or []) if ly == layer]
                 if not wanted:
                     # Rank by how much the neuron's contribution differs at the last position.
-                    diff = (per_src[:, positions[-1]] - per_tgt[:, positions[-1]]).norm(dim=-1)
+                    diff = (pre_src[positions[-1]] - pre_tgt[positions[-1]]).abs() * down.norm(dim=0)
                     wanted = torch.topk(diff, k=min(DEFAULT_NEURON_BUDGET, n_neurons)).indices.tolist()
                 mlp_module = sublayers[layer][1]
                 for n in wanted:
-                    if n >= n_neurons:
+                    if n < 0 or n >= n_neurons:
                         continue
                     results = []
                     for pos in positions:
-                        delta = per_src[n, pos] - per_tgt[n, pos]
+                        delta = (pre_src[pos, n] - pre_tgt[pos, n]) * down[:, n]
                         hooks = [(mlp_module, "post", _add_delta_post_hook([(pair.start_tgt + pos, delta)]))]
                         logits, final = run(pair, hooks)
                         results.append(pair.result(layer, pos, logits, final))

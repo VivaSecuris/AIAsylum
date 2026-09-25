@@ -55,25 +55,28 @@ def compute_per_head_outputs(
         return None
 
     attn = result.attention_weights[layer_idx]  # [1, n_heads, seq, seq]
+    if attn is None:
+        return None
     v = qkv[layer_idx]["v"]  # [1, seq, n_heads, head_dim] or [1, n_heads, seq, head_dim]
     device = attn.device
     attn = attn.float()
     v = v.float().to(device)
     w_o = w_o.to(device)
 
-    # Slice to window
-    attn_w = attn[0, :, start : start + window_len, start : start + window_len]  # [n_heads, w, w]
+    # Restrict query positions only: each query may attend to the entire prefix,
+    # including keys outside the displayed window.
+    attn_w = attn[0, :, start : start + window_len, :]  # [n_heads, w, seq]
     n_heads = attn_w.shape[0]
-    # V may be stored [1, seq, n_kv, head_dim] or [1, n_kv, seq, head_dim].
-    if v.shape[1] == attn.shape[-1] and v.shape[2] != attn.shape[-1]:
-        v_w = v[0, start : start + window_len, :, :]          # [w, n_kv, head_dim]
-    else:
-        v_w = v[0, :, start : start + window_len, :].transpose(0, 1)  # [w, n_kv, head_dim]
+    # QKVHooks has one canonical layout. Inferring it from dimension sizes is
+    # ambiguous whenever sequence length happens to equal the KV-head count.
+    v_w = v[0]  # [seq, n_kv, head_dim]
     n_kv = v_w.shape[1]
     head_dim = v_w.shape[2]
     d_model = w_o.shape[0]
     # Grouped-query attention: query heads share key/value heads in blocks.
-    group = max(1, n_heads // max(1, n_kv))
+    if n_kv < 1 or n_heads % n_kv:
+        raise ValueError("Attention heads must be divisible by key/value heads")
+    group = n_heads // n_kv
 
     # Per head: O_h = attn_h @ V_h -> [window_len, head_dim]
     head_outputs = []
@@ -96,18 +99,19 @@ def compute_qk_pattern(
     """
     Compute attention pattern from Q and K: softmax(Q @ K.T / sqrt(head_dim)).
 
-    q: [seq, n_heads, head_dim] or [n_heads, seq, head_dim]
-    k: [seq, n_kv_heads, head_dim] or [n_heads, seq, head_dim]
-    Returns [n_heads, seq, seq] or similar depending on GQA.
+    q: [seq, n_heads, head_dim]; k: [seq, n_kv_heads, head_dim].
+    Returns [n_heads, seq, seq]. These projection-hook tensors precede
+    rotary position embeddings and Q/K normalization: this is a diagnostic
+    projection pattern, not a reconstruction of the model's actual attention.
     """
-    if q.dim() == 3 and q.shape[1] != k.shape[1]:
-        # GQA: k has fewer heads; expand or use same for all q heads
-        pass
-    # Assume q, k same shape [seq, n_heads, head_dim]
-    if q.dim() == 3:
-        scores = torch.matmul(q, k.transpose(-2, -1))
-    else:
-        scores = torch.matmul(q, k.transpose(-2, -1))
+    if q.ndim != 3 or k.ndim != 3 or q.shape[-1] != head_dim or k.shape[-1] != head_dim:
+        raise ValueError("Q and K must have shape [tokens, heads, head_dim]")
+    n_heads, n_kv = q.shape[1], k.shape[1]
+    if n_kv < 1 or n_heads % n_kv:
+        raise ValueError("Query heads must be divisible by key/value heads")
+    q = q.transpose(0, 1)
+    k = k.transpose(0, 1).repeat_interleave(n_heads // n_kv, dim=0)
+    scores = torch.matmul(q, k.transpose(-2, -1))
     if scale:
         scores = scores / (head_dim ** 0.5)
     return F.softmax(scores.float(), dim=-1)
@@ -138,8 +142,9 @@ def run_ov_qk_analysis(
         head_dim = q.shape[-1]
         qk_pattern = compute_qk_pattern(q, k, head_dim)
         out["qk_available"] = True
-        if result.attention_weights is not None and layer_idx < len(result.attention_weights):
-            attn = result.attention_weights[layer_idx][0, :, start : start + window_len, start : start + window_len].float()
-            diff = (qk_pattern - attn).abs().max().item()
-            out["qk_vs_actual_max_diff"] = diff
+        out["qk_pattern_shape"] = list(qk_pattern.shape)
+        out["qk_caveat"] = (
+            "Projected Q/K similarity before positional encoding, Q/K normalization, "
+            "causal masking, and model-specific score transforms; not actual attention."
+        )
     return out

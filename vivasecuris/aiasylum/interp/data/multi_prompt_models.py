@@ -45,3 +45,6 @@ class ProgressionResult:
     pca_payload: Optional[Dict[str, Any]] = None
     predictions_payload: Optional[Dict[str, Any]] = None
     example_impact: Optional[Dict[str, Any]] = None  # Which layers/neurons are most affected by examples
+
+    attention_payload: Optional[Dict[str, Any]] = None
+    mlp_payload: Optional[Dict[str, Any]] = None

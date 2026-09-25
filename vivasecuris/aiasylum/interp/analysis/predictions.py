@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Dict, Any, List, Tuple
 import numpy as np
 
-from vivasecuris.aiasylum.interp.core.arch import final_hidden_is_normed, get_final_norm
+from vivasecuris.aiasylum.interp.core.arch import apply_logit_transforms, final_hidden_is_normed, get_final_norm
 from vivasecuris.aiasylum.interp.data.models import RunResult
 
 
@@ -33,6 +33,8 @@ class PredictionAnalyzer:
         """
         self.model = model
         self.tokenizer = tokenizer
+        if topk < 1:
+            raise ValueError("topk must be at least 1")
         self.topk = topk
         self.apply_final_norm = apply_final_norm
         self.final_norm = get_final_norm(model) if apply_final_norm else None
@@ -41,13 +43,11 @@ class PredictionAnalyzer:
         self.final_is_normed = final_hidden_is_normed(model) if apply_final_norm else False
         
         # Get unembedding matrix (output projection)
-        if hasattr(model, "lm_head"):
-            self.unembedding = model.lm_head.weight  # [vocab_size, hidden_dim]
-        elif hasattr(model, "embed_out"):
-            self.unembedding = model.embed_out.weight
-        else:
-            # Fallback: try to find output embedding
+        self.output_head = model.get_output_embeddings()
+        if self.output_head is None or not hasattr(self.output_head, "weight"):
             raise ValueError("Could not find unembedding matrix in model")
+        self.unembedding = self.output_head.weight
+        self.topk = min(self.topk, self.unembedding.shape[0])
 
     def get_predictions_at_position(
         self,
@@ -81,10 +81,14 @@ class PredictionAnalyzer:
         """
         W = self.unembedding
         with torch.no_grad():
-            h = hidden_state.to(device=W.device, dtype=W.dtype)
+            h = hidden_state
             if self.final_norm is not None and not (is_final and self.final_is_normed):
+                norm_weight = next(self.final_norm.parameters())
+                h = h.to(device=norm_weight.device, dtype=norm_weight.dtype)
                 h = self.final_norm(h)
-            logits = h @ W.T  # [vocab_size]
+            h = h.to(device=W.device, dtype=W.dtype)
+            # Calling the real head preserves output bias on models that have it.
+            logits = apply_logit_transforms(self.model, self.output_head(h))
         return logits.float().cpu()
 
     def compute_predictions_single(

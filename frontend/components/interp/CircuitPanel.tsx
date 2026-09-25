@@ -4,6 +4,7 @@ import { useInterpArtifact } from '@/lib/hooks'
 
 interface Props {
   runId: number
+  artifactNames: string[]
 }
 
 /**
@@ -15,14 +16,15 @@ interface Props {
  * validated against held-out data -- unlike the direction pipeline, which gates
  * on held-out AUC. "Safety neurons" are named from a single contrast pair, and
  * the project's own methodology notes say a single-direction result is
- * consistent with mere correlation. The minimal circuit below is the causal
- * one, and the two must not be read as equally strong.
+ * consistent with mere correlation. The component search below is also an
+ * approximation; only real forward-pass patching tests an intervention.
  */
-export function CircuitPanel({ runId }: Props) {
-  const { data: circuit, isLoading } = useInterpArtifact(runId, 'circuit_payload.json')
-  const { data: minimal } = useInterpArtifact(runId, 'minimal_circuit_payload.json')
+export function CircuitPanel({ runId, artifactNames }: Props) {
+  const { data: circuit, isLoading, error: circuitError } = useInterpArtifact(runId, 'circuit_payload.json', artifactNames.includes('circuit_payload.json'))
+  const { data: minimal, isLoading: loadingMinimal, error: minimalError } = useInterpArtifact(runId, 'minimal_circuit_payload.json', artifactNames.includes('minimal_circuit_payload.json'))
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading circuit data…</p>
+  if (isLoading || loadingMinimal) return <p className="text-sm text-muted-foreground">Loading circuit data…</p>
+  if (circuitError || minimalError) return <p role="alert" className="text-sm text-destructive">Could not load circuit data. Reload the analysis to retry.</p>
 
   if (!circuit && !minimal) {
     return (
@@ -45,8 +47,8 @@ export function CircuitPanel({ runId }: Props) {
               <p className="text-muted-foreground">
                 These components are ranked by how much they differ between the two runs, using
                 fixed thresholds that were not validated on held-out data. That is a lead worth
-                following, not evidence that these components implement the behaviour. The
-                minimal circuit, if present below, is the causal result.
+                following, not evidence that these components implement the behaviour. Use
+                activation patching to test an intervention with a new forward pass.
               </p>
             </div>
           </div>
@@ -58,6 +60,12 @@ export function CircuitPanel({ runId }: Props) {
       )}
 
       {minimal?.circuit && <MinimalCircuit payload={minimal} />}
+      {minimal?.available === false && (
+        <div className="rounded-lg border border-amber-500/50 p-4 text-sm">
+          <p className="font-medium">Circuit search unavailable for this run</p>
+          <p className="mt-1 text-muted-foreground">{minimal.reason ?? 'The required component captures were not available.'}</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -69,6 +77,8 @@ function CircuitCard({ title, card }: { title: string; card: any }) {
   const neurons = card.involved_neurons ?? []
   const maxHead = Math.max(...heads.map((h: any) => h.contribution ?? 0), 1e-9)
   const maxNeuron = Math.max(...neurons.map((n: any) => n.contribution ?? 0), 1e-9)
+  const mlpLabel = card.activation_space === 'mlp_neurons' ? 'MLP neurons'
+    : card.activation_space === 'residual_channels' ? 'MLP output channels' : 'MLP components'
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
@@ -95,7 +105,7 @@ function CircuitCard({ title, card }: { title: string; card: any }) {
           color="bg-blue-500"
         />
         <Bars
-          label="MLP neurons"
+          label={mlpLabel}
           empty={card.neuron_available ? 'None above threshold.' : 'MLP capture was off.'}
           rows={neurons.slice(0, 20).map((n: any) => ({
             key: `#${n.neuron}`,
@@ -113,16 +123,18 @@ function SafetyNeurons({ clusters }: { clusters: any }) {
   if (!clusters?.mlp_available) return null
   const neurons = (clusters.safety_neurons ?? []).slice(0, 20)
   const max = Math.max(...neurons.map((n: any) => n.activation_contrast ?? 0), 1e-9)
+  const unit = clusters.activation_space === 'mlp_neurons' ? 'neurons'
+    : clusters.activation_space === 'residual_channels' ? 'residual channels' : 'MLP components'
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
-      <h3 className="text-sm font-semibold">High-contrast neurons</h3>
+      <h3 className="text-sm font-semibold">High-contrast {unit}</h3>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
-        Neurons whose mean activation differs most between the two runs —{' '}
+        Components whose mean activation differs most between the two runs —{' '}
         {clusters.num_safety_neurons} of {clusters.total_neurons} (
-        {Number(clusters.safety_neuron_percentage ?? 0).toFixed(1)}%). The engine calls these
-        &quot;safety neurons&quot;; from a single prompt pair, high contrast is the most that
-        can honestly be claimed.
+        {Number(clusters.safety_neuron_percentage ?? 0).toFixed(1)}%). A single prompt pair
+        establishes activation contrast, not a component’s role in safety behaviour.
+        {clusters.activation_space === 'residual_channels' && ' These are dimensions of the MLP output in residual space, not internal MLP neurons.'}
       </p>
       <Bars
         label=""
@@ -151,11 +163,12 @@ function MinimalCircuit({ payload }: { payload: any }) {
   const history = payload.metric_history ?? []
   return (
     <div className="rounded-lg border border-emerald-500/50 bg-card p-6 shadow-sm">
-      <h3 className="text-sm font-semibold">Minimal sufficient circuit</h3>
+      <h3 className="text-sm font-semibold">Circuit search (approximate)</h3>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
-        Found by scrubbing components away and keeping only those the behaviour needs. This is
-        a causal claim, unlike the contribution rankings above. Only attention heads are
-        searched: the pre-MLP capture hook is unimplemented, so neurons are never candidates.
+        A greedy search for components that reconstruct the selected output under a residual
+        approximation. It does not re-run the full model and does not establish a minimal causal
+        circuit. Candidates depend on available attention and pre-MLP captures. Validate these
+        leads with activation patching and additional prompt pairs.
       </p>
 
       <div className="flex flex-wrap gap-2">
@@ -192,7 +205,7 @@ function MinimalCircuit({ payload }: { payload: any }) {
           <span className="font-mono">
             {Number(history[history.length - 1]).toFixed(4)}
           </span>{' '}
-          over {history.length} steps. Lower is a closer match to the unscrubbed run.
+          across {history.length} recorded measurements. Lower is a closer match under this reconstruction metric.
         </p>
       )}
     </div>

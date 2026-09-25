@@ -1,0 +1,12 @@
+{
+  "description": "Dense BF16 models, one CUDA GPU at a time. Memory thresholds are planning estimates for the short smoke prompts, not benchmarked guarantees.",
+  "default_models": ["qwen3-0.6b", "qwen3-1.7b", "qwen3-8b"],
+  "models": [
+    {"key": "qwen3-0.6b", "repo_id": "Qwen/Qwen3-0.6B", "revision": "main", "parameters_b": 0.6, "min_vram_gib": 5, "min_ram_gib": 4, "download_gib": 2},
+    {"key": "qwen3-1.7b", "repo_id": "Qwen/Qwen3-1.7B", "revision": "main", "parameters_b": 1.7, "min_vram_gib": 8, "min_ram_gib": 8, "download_gib": 4},
+    {"key": "qwen3-4b", "repo_id": "Qwen/Qwen3-4B", "revision": "main", "parameters_b": 4, "min_vram_gib": 14, "min_ram_gib": 16, "download_gib": 9},
+    {"key": "qwen3-8b", "repo_id": "Qwen/Qwen3-8B", "revision": "main", "parameters_b": 8, "min_vram_gib": 24, "min_ram_gib": 24, "download_gib": 17},
+    {"key": "qwen3-14b", "repo_id": "Qwen/Qwen3-14B", "revision": "main", "parameters_b": 14, "min_vram_gib": 42, "min_ram_gib": 40, "download_gib": 29},
+    {"key": "qwen3-32b", "repo_id": "Qwen/Qwen3-32B", "revision": "main", "parameters_b": 32, "min_vram_gib": 76, "min_ram_gib": 80, "download_gib": 64}
+  ]
+}

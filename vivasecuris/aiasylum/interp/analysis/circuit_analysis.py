@@ -88,7 +88,8 @@ class CircuitAnalyzer:
         if involved_heads:
             summary_parts.append(f"{len(involved_heads)} attention heads")
         if involved_neurons:
-            summary_parts.append(f"{len(involved_neurons)} MLP neurons")
+            unit_label = neuron_contributions.get("unit_label", "component")
+            summary_parts.append(f"{len(involved_neurons)} MLP {unit_label}s")
         
         circuit_summary = (
             f"Circuit at Layer {layer_idx}, Token {token_idx} involves "
@@ -98,6 +99,7 @@ class CircuitAnalyzer:
         )
         
         return {
+            **MLPAnalyzer.activation_metadata(result_a, layer_idx),
             "layer": layer_idx,
             "token": token_idx,
             "involved_heads": involved_heads,
@@ -168,6 +170,8 @@ class CircuitAnalyzer:
         safety_neurons.sort(key=lambda x: x["activation_contrast"], reverse=True)
         
         return {
+            **MLPAnalyzer.activation_metadata(result_a, layer_idx),
+            "caveat": "Activation contrast in one prompt pair does not identify a safety function.",
             "safety_neurons": safety_neurons,
             "num_safety_neurons": len(safety_neurons),
             "total_neurons": num_neurons,

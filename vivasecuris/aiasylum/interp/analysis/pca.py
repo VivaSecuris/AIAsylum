@@ -47,7 +47,7 @@ def compute_pca3_single(
         explained = pca.explained_variance_ratio_
     return {
         "trajectory": trajectory.tolist(),
-        "explained_variance_ratio": explained.tolist(),
+        "explained_variance_ratio": np.nan_to_num(explained).tolist(),
     }
 
 
@@ -117,7 +117,7 @@ class PCAAnalyzer:
         return {
             "trajectory_a": trajectory_a.tolist(),
             "trajectory_b": trajectory_b.tolist(),
-            "explained_variance_ratio": explained_variance_ratio.tolist(),
+            "explained_variance_ratio": np.nan_to_num(explained_variance_ratio).tolist(),
         }
 
     @staticmethod

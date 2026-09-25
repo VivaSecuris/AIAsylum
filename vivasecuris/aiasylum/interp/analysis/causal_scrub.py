@@ -1,4 +1,8 @@
-"""Causal scrubbing and minimal sufficient circuit discovery."""
+"""Cached component reconstruction diagnostics, without downstream reruns.
+
+These proxies are descriptive, not causal scrubbing or sufficient-circuit
+proofs. For interventions measured in real model forwards use patching.
+"""
 
 from __future__ import annotations
 
@@ -128,6 +132,9 @@ def run_scrub_experiment(
     logit_kl = float(F.kl_div(scrubbed_probs.log(), full_probs, reduction="sum").item())
     return {
         "scrub_available": True,
+        "claim": "descriptive",
+        "method": "cached_component_reconstruction",
+        "caveat": "Downstream layers are not rerun; this is not a causal intervention.",
         "components_scrubbed": len(components_to_scrub),
         "logit_l2": logit_l2,
         "logit_kl": logit_kl,
@@ -278,6 +285,12 @@ def find_minimal_circuit_greedy(
         metric_history.append(current_diff)
 
     return {
+        "claim": "descriptive",
+        "method": "greedy_cached_component_reconstruction",
+        "caveat": (
+            "Search over a limited candidate set using cached residual sums; "
+            "downstream layers are not rerun and sufficiency or global minimality is not established."
+        ),
         "circuit": chosen,
         "metric": metric,
         "metric_history": metric_history,

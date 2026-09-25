@@ -63,9 +63,12 @@ class ComparisonService:
         Returns:
             ComparisonResult with all analysis data
         """
+        if config.enable_scrub:
+            raise ValueError("Causal scrubbing is unavailable: cached component reconstruction does not rerun downstream layers. Use activation patching for measured interventions.")
         logger.info("Starting comparison")
         
         # Set deterministic seed
+        warnings = []
         ModelLoader.set_deterministic(config.seed)
         
         # Initialize runner with debug mode if component analysis is enabled
@@ -132,22 +135,11 @@ class ComparisonService:
                     config,
                 )
             except Exception as e:
-                logger.warning(
-                    f"Failed to compute {config.dim_reduction.upper()} for layer {layer_idx}; "
-                    f"falling back to PCA: {e}"
-                )
-                dr_data = DimensionReduction.compute_for_layer(
-                    result_a,
-                    result_b,
-                    layer_idx,
-                    start_a,
-                    start_b,
-                    window_len,
-                    "pca",
-                    config,
-                )
+                raise RuntimeError(f"{config.dim_reduction.upper()} projection failed at hidden-state index {layer_idx}: {e}") from e
             pca_payload[str(layer_idx)] = dr_data
         
+        component_layers = sorted({min(i, num_layers - 2) for i in pca_layers})
+
         # Phase 2: Component localization analysis
         attention_payload = {}
         mlp_payload = {}
@@ -159,7 +151,7 @@ class ComparisonService:
             logger.info("Computing Phase 2 component localization analysis")
             
             # Compute attention and MLP analysis for selected layers
-            for layer_idx in pca_layers:
+            for layer_idx in component_layers:
                 try:
                     # Attention analysis (only if attention weights are available)
                     if result_a.attention_weights is not None and config.enable_attention_capture:
@@ -175,14 +167,14 @@ class ComparisonService:
                         attribution_payload[str(layer_idx)] = head_roles
                     
                     # MLP analysis (only if MLP activations are available)
-                    if result_a.mlp_activations is not None and config.enable_mlp_capture:
+                    if config.enable_mlp_capture or config.enable_pre_mlp_capture:
                         neuron_contributions = MLPAnalyzer.compute_neuron_contribution_scores(
                             result_a, result_b, layer_idx, start_a, start_b, window_len
                         )
                         mlp_payload[str(layer_idx)] = neuron_contributions
                         
                 except Exception as e:
-                    logger.warning(f"Failed to compute component analysis for layer {layer_idx}: {e}")
+                    raise RuntimeError(f"Component analysis failed for block {layer_idx}: {e}") from e
         
             # Temporal localization (once for all layers)
             try:
@@ -199,19 +191,20 @@ class ComparisonService:
                 }
             except Exception as e:
                 logger.warning(f"Failed to compute temporal analysis: {e}")
+                warnings.append(f"Supplementary analysis unavailable: Failed to compute temporal analysis: {e}")
             
             # Circuit analysis for spike layer and first divergence token
             try:
                 first_div_token = temporal_payload.get("first_divergence_token", 0)
                 # Build circuit card for spike layer at last token
                 circuit_card_last = CircuitAnalyzer.build_circuit_card(
-                    result_a, result_b, spike_layer, window_len - 1,
+                    result_a, result_b, min(spike_layer, num_layers - 2), window_len - 1,
                     start_a, start_b, window_len
                 )
                 # Build circuit card for spike layer at first divergence
                 if first_div_token > 0:
                     circuit_card_first = CircuitAnalyzer.build_circuit_card(
-                        result_a, result_b, spike_layer, first_div_token,
+                        result_a, result_b, min(spike_layer, num_layers - 2), first_div_token,
                         start_a, start_b, window_len
                     )
                 else:
@@ -219,9 +212,9 @@ class ComparisonService:
                 
                 # Safety neuron identification (only if MLP available)
                 safety_neurons = None
-                if result_a.mlp_activations is not None and config.enable_mlp_capture:
+                if config.enable_mlp_capture or config.enable_pre_mlp_capture:
                     safety_neurons = CircuitAnalyzer.identify_safety_neuron_clusters(
-                        result_a, result_b, spike_layer, start_a, start_b, window_len
+                        result_a, result_b, min(spike_layer, num_layers - 2), start_a, start_b, window_len
                     )
                 
                 circuit_payload = {
@@ -231,6 +224,7 @@ class ComparisonService:
                 }
             except Exception as e:
                 logger.warning(f"Failed to compute circuit analysis: {e}")
+                warnings.append(f"Supplementary analysis unavailable: Failed to compute circuit analysis: {e}")
         
         # OV/QK analysis when QKV capture is enabled
         ov_qk_payload = None
@@ -242,20 +236,24 @@ class ComparisonService:
             try:
                 logger.info("Running OV/QK analysis for selected layers")
                 ov_qk_payload = {}
-                for layer_idx in pca_layers:
+                for layer_idx in component_layers:
                     try:
                         ov_qk_payload[str(layer_idx)] = run_ov_qk_analysis(
                             result_a, model, layer_idx, start_a, window_len
                         )
                     except Exception as e:
-                        logger.warning(f"OV/QK analysis failed for layer {layer_idx}: {e}")
+                        raise RuntimeError(f"OV/QK analysis failed for block {layer_idx}: {e}") from e
             except Exception as e:
-                logger.warning(f"Failed to run OV/QK analysis: {e}")
+                raise RuntimeError(f"OV/QK analysis failed: {e}") from e
         
         # Causal scrubbing and minimal circuit (when enabled)
         scrub_payload = None
         minimal_circuit_payload = None
-        lm_head_weight = _get_lm_head_weight(model)
+        need_unembedding = (
+            config.enable_scrub or config.enable_minimal_circuit
+            or (result_a.attn_outputs is not None and config.enable_component_analysis)
+        )
+        lm_head_weight = _get_lm_head_weight(model) if need_unembedding else None
         if (config.enable_scrub or config.enable_minimal_circuit) and lm_head_weight is not None:
             last_pos = window_len - 1 if window_len > 0 else 0
             pos_a = start_a + last_pos
@@ -274,6 +272,7 @@ class ComparisonService:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to run scrub experiment: {e}")
+                    scrub_payload = {"scrub_available": False, "claim": "descriptive", "reason": str(e)}
             if config.enable_minimal_circuit:
                 try:
                     minimal_circuit_payload = find_minimal_circuit_greedy(
@@ -284,7 +283,7 @@ class ComparisonService:
                         window_len,
                         model=model,
                         lm_head_weight=lm_head_weight,
-                        layer_range=(max(0, spike_layer - 2), min(num_layers, spike_layer + 3)),
+                        layer_range=(max(0, spike_layer - 2), min(num_layers - 1, spike_layer + 3)),
                         top_k_heads=4,
                         top_k_neurons=4,
                         metric="logit_l2",
@@ -292,6 +291,7 @@ class ComparisonService:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to run minimal circuit: {e}")
+                    minimal_circuit_payload = {"available": False, "claim": "descriptive", "reason": str(e)}
         
         # Compute predictions analysis (for spike layer)
         logger.info("Computing predictions analysis")
@@ -302,7 +302,7 @@ class ComparisonService:
                 result_a, result_b, spike_layer, start_a, start_b, window_len
             )
         except Exception as e:
-            logger.warning(f"Failed to compute predictions: {e}")
+            raise RuntimeError(f"Predictions analysis failed: {e}") from e
 
         # Phase 3: Activation patching experiments (counterfactuals)
         patching_results = None
@@ -323,13 +323,12 @@ class ComparisonService:
                     window_len=window_len,
                 )
             except Exception as e:
-                logger.warning(f"Failed to run activation patching experiments: {e}")
+                raise RuntimeError(f"Activation patching failed: {e}") from e
 
         # Logit attribution (component-wise decomposition at last token)
         logit_attribution_payload = None
         if result_a.attn_outputs is not None and config.enable_component_analysis:
             try:
-                lm_head_weight = _get_lm_head_weight(model)
                 if lm_head_weight is not None and window_len > 0:
                     last_pos = start_a + window_len - 1
                     if last_pos < result_a.hidden_states[0].shape[1]:
@@ -344,6 +343,7 @@ class ComparisonService:
                             logit_attribution_payload = payload
             except Exception as e:
                 logger.warning(f"Failed to compute logit attribution: {e}")
+                warnings.append(f"Supplementary analysis unavailable: Failed to compute logit attribution: {e}")
 
         # Get resolved model ID (the one actually used)
         resolved_model_id = ModelLoader.resolve_model_id(config.model)
@@ -360,8 +360,9 @@ class ComparisonService:
             "original_model": config.model,  # Store original for reference
             "prompt_a": config.prompt_a,
             "prompt_b": config.prompt_b,
-            "device": config.device,
-            "dtype": config.dtype,
+            "device": str(model.device),
+            "dtype": str(model.dtype).removeprefix("torch."),
+            "requested_device": config.device,
             "align": config.align,
             "marker": config.marker if config.align == "marker" else None,
             "window": config.window,
@@ -371,6 +372,9 @@ class ComparisonService:
             "spike_layer": spike_layer,
             "num_layers": num_layers,
             "dim_reduction": config.dim_reduction,
+            "warnings": warnings,
+            "input_token_counts": [len(result_a.token_strs), len(result_b.token_strs)],
+            "component_layers": component_layers,
         }
         
         # Create comparison result

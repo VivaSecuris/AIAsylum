@@ -1,13 +1,16 @@
 """Enhanced dashboard builder for generating interactive HTML dashboards with Phase 1 features."""
 
 import json
+from html import escape
 from typing import Dict, Any
 import numpy as np
 
 from vivasecuris.aiasylum.interp.data.models import ComparisonResult
 from vivasecuris.aiasylum.interp.analysis.dim_reduction import DimensionReduction
 from vivasecuris.aiasylum.interp.visualization.assets import plotly_script_tag
-from vivasecuris.aiasylum.interp.visualization.base import DashboardBuilderBase, serialize_payload_for_js
+from vivasecuris.aiasylum.interp.visualization.base import (
+    DashboardBuilderBase, dashboard_plot_css, dashboard_plot_script, serialize_payload_for_js,
+)
 
 
 class DashboardBuilder(DashboardBuilderBase):
@@ -104,11 +107,37 @@ class DashboardBuilder(DashboardBuilderBase):
         dr_name = DimensionReduction.get_method_display_name(dr_method)
         axis_labels = DimensionReduction.get_axis_labels(dr_method)
         
+        # A model comparison reuses the same capture/plot schema as prompt
+        # comparison, but its two traces are different weights on one prompt.
+        meta = data.get("meta", {})
+        model_diff = meta.get("analysis_mode") == "model_diff"
+        label_a = "Model A" if model_diff else "Prompt A"
+        label_b = "Model B" if model_diff else "Prompt B"
+        view_label = "Model View" if model_diff else "Prompt View"
+        comparison_subject = "this model pair on the same prompt" if model_diff else "this prompt pair"
+        contrast_subject = "between these models on the same prompt" if model_diff else "between these prompts"
+        if model_diff:
+            model_metadata = "".join(
+                '<div class="metadata-item"><div class="metadata-label">'
+                + label + '</div><div class="metadata-value">'
+                + escape(str(meta.get(key, "Not recorded"))) + '</div></div>'
+                for key, label in (("model_a", "Model A (original)"), ("model_b", "Model B (modified)"))
+            )
+        else:
+            model_metadata = (
+                '<div class="metadata-item"><div class="metadata-label">Model</div>'
+                '<div class="metadata-value">' + escape(str(meta.get("model", "Not recorded"))) + '</div></div>'
+            )
+
         # Context blurb
-        spike_layer = data.get("meta", {}).get("spike_layer", "?")
+        spike_layer = meta.get("spike_layer", "?")
         first_div_token = data.get("first_divergence_token", "?")
+        comparison_context = (
+            "Comparing model A (original) vs model B (modified) on the same prompt"
+            if model_diff else "Comparing prompts A vs B"
+        )
         context_blurb = (
-            f"Comparing prompts A vs B; spike layer: {spike_layer}; "
+            f"{comparison_context}; spike layer: {spike_layer}; "
             f"first divergence at token: {first_div_token}"
         )
         
@@ -353,6 +382,7 @@ class DashboardBuilder(DashboardBuilderBase):
             gap: 20px;
             margin: 20px 0;
         }}
+        {dashboard_plot_css()}
     </style>
 </head>
 <body>
@@ -395,11 +425,11 @@ class DashboardBuilder(DashboardBuilderBase):
                 </select>
             </div>
             <div class="control-group">
-                <label for="prompt-selector">Prompt View</label>
+                <label for="prompt-selector">{view_label}</label>
                 <select id="prompt-selector">
                     <option value="comparison">Differential (A vs B)</option>
-                    <option value="prompt_a">Prompt A Only</option>
-                    <option value="prompt_b">Prompt B Only</option>
+                    <option value="prompt_a">{label_a} Only</option>
+                    <option value="prompt_b">{label_b} Only</option>
                 </select>
             </div>
         </div>
@@ -408,10 +438,7 @@ class DashboardBuilder(DashboardBuilderBase):
         <div class="info-box">
             <h3>Run overview</h3>
             <div class="metadata">
-                <div class="metadata-item">
-                    <div class="metadata-label">Model</div>
-                    <div class="metadata-value">{data['meta']['model']}</div>
-                </div>
+                {model_metadata}
                 <div class="metadata-item">
                     <div class="metadata-label">Spike Layer</div>
                     <div class="metadata-value">Layer {data['meta']['spike_layer']}</div>
@@ -454,13 +481,13 @@ class DashboardBuilder(DashboardBuilderBase):
             <h2>🔤 Token Alignment</h2>
             <div class="token-overlay">
                 <div style="margin-bottom: 10px;">
-                    <strong>Prompt A:</strong>
+                    <strong>{label_a}:</strong>
                     <div class="token-strip" id="tokens-a">
                         <!-- Populated by JavaScript -->
                     </div>
                 </div>
                 <div>
-                    <strong>Prompt B:</strong>
+                    <strong>{label_b}:</strong>
                     <div class="token-strip" id="tokens-b">
                         <!-- Populated by JavaScript -->
                     </div>
@@ -478,7 +505,7 @@ class DashboardBuilder(DashboardBuilderBase):
                     Brighter colors indicate higher similarity (closer to 1.0). Click a cell to highlight that layer/token across all visualizations. Values close to 1.0 indicate similar activations; lower values indicate differences.
                 </details>
             </div>
-            <div class="plot-container" id="cosine-heatmap"></div>
+            <div class="plot-container plot-target" id="cosine-heatmap"></div>
         </div>
         
         <div class="section">
@@ -489,12 +516,12 @@ class DashboardBuilder(DashboardBuilderBase):
                     Brighter colors indicate larger differences in activation magnitudes. Higher values indicate larger differences. Click a cell to see detailed information.
                 </details>
             </div>
-            <div class="plot-container" id="delta-norm-heatmap"></div>
+            <div class="plot-container plot-target" id="delta-norm-heatmap"></div>
         </div>
         
         <div class="section">
             <h2>📉 Divergence Curves</h2>
-            <div class="plot-container" id="divergence-curves"></div>
+            <div class="plot-container plot-target plot-medium" id="divergence-curves"></div>
         </div>
         
         <!-- 2D Small Multiples -->
@@ -508,13 +535,13 @@ class DashboardBuilder(DashboardBuilderBase):
             </div>
             <div class="small-multiples">
                 <div class="small-multiple">
-                    <div id="projection-12"></div>
+                    <div class="plot-target plot-compact" id="projection-12"></div>
                 </div>
                 <div class="small-multiple">
-                    <div id="projection-13"></div>
+                    <div class="plot-target plot-compact" id="projection-13"></div>
                 </div>
                 <div class="small-multiple">
-                    <div id="projection-23"></div>
+                    <div class="plot-target plot-compact" id="projection-23"></div>
                 </div>
             </div>
         </div>
@@ -525,18 +552,18 @@ class DashboardBuilder(DashboardBuilderBase):
             <div class="help-callout">
                 <details>
                     <summary>How to read 3D trajectories</summary>
-                    These show how token representations evolve through layers in reduced 3D space. Blue line = Prompt A, Red line = Prompt B. Each point represents a token position. Use the controls above to change layers or methods.
+                    These show how token representations evolve through layers in reduced 3D space. Blue line = {label_a}, Red line = {label_b}. Each point represents a token position. Use the controls above to change layers or methods.
                 </details>
             </div>
-            <div class="plot-container" id="pca-trajectories"></div>
+            <div class="plot-container plot-target plot-tall" id="pca-trajectories"></div>
         </div>
         
         <!-- Similarity Distributions -->
         <div class="section">
             <h2>📊 Similarity Distributions</h2>
             <div class="distribution-container">
-                <div class="plot-container" id="cosine-distribution"></div>
-                <div class="plot-container" id="delta-distribution"></div>
+                <div class="plot-container plot-target plot-compact" id="cosine-distribution"></div>
+                <div class="plot-container plot-target plot-compact" id="delta-distribution"></div>
             </div>
         </div>
         
@@ -546,10 +573,10 @@ class DashboardBuilder(DashboardBuilderBase):
             <div class="help-callout">
                 <details>
                     <summary>What these experiments show</summary>
-                    These experiments replace the target prompt's activation at the spike layer with the source prompt's activation (A → B and B → A) at the last token in the aligned window. Compare cosine similarity, delta norm, and top‑k predictions before vs after patching.
+                    These experiments intervene at the selected layers and positions shown in each result, using source activations from A → B or B → A. Each intervention reruns the model; similarity and prediction changes are measured at the target sequence's final token.
                 </details>
             </div>
-            <div class="plot-container" id="patching-summary"></div>
+            <div class="plot-container plot-target plot-medium" id="patching-summary"></div>
             <div class="info-box" id="patching-details"></div>
         </div>
         
@@ -560,27 +587,27 @@ class DashboardBuilder(DashboardBuilderBase):
             <!-- Temporal Localization -->
             <div id="temporal-section" style="display: none;">
                 <h3>⏱️ Temporal Localization</h3>
-                <div class="plot-container" id="temporal-timeline"></div>
+                <div class="plot-container plot-target plot-compact" id="temporal-timeline"></div>
                 <div class="info-box" id="temporal-info"></div>
             </div>
             
             <!-- Attention Head Analysis -->
             <div id="attention-section" style="display: none;">
                 <h3>👁️ Attention Head Analysis</h3>
-                <div class="plot-container" id="attention-heads"></div>
+                <div class="plot-container plot-target plot-medium" id="attention-heads"></div>
                 <div class="info-box" id="attention-info"></div>
             </div>
             
-            <!-- MLP Neuron Analysis -->
+            <!-- MLP activation analysis -->
             <div id="mlp-section" style="display: none;">
-                <h3>🧠 MLP Neuron Analysis</h3>
-                <div class="plot-container" id="mlp-neurons"></div>
+                <h3>🧠 MLP Activation Analysis</h3>
+                <div class="plot-container plot-target plot-medium" id="mlp-neurons"></div>
                 <div class="info-box" id="mlp-info"></div>
             </div>
             
             <!-- Circuit Cards -->
             <div id="circuit-section" style="display: none;">
-                <h3>🔗 Circuit Analysis</h3>
+                <h3>🔗 Component Contrast</h3>
                 <div class="info-box" id="circuit-cards"></div>
             </div>
             
@@ -592,14 +619,14 @@ class DashboardBuilder(DashboardBuilderBase):
             
             <!-- Minimal Sufficient Circuit -->
             <div id="minimal-circuit-section" style="display: none;">
-                <h3>🔬 Minimal Sufficient Circuit</h3>
+                <h3>🔬 Component Reconstruction Search</h3>
                 <div class="info-box" id="minimal-circuit-info"></div>
             </div>
             
             <!-- Attribution Analysis -->
             <div id="attribution-section" style="display: none;">
                 <h3>📊 Attribution Analysis</h3>
-                <div class="plot-container" id="attribution-plot"></div>
+                <div class="plot-container plot-target plot-medium" id="attribution-plot"></div>
                 <div class="info-box" id="attribution-info"></div>
             </div>
             
@@ -631,6 +658,7 @@ class DashboardBuilder(DashboardBuilderBase):
     </div>
     
     <script>
+        {dashboard_plot_script()}
         const data = {data_json};
         const drMethod = '{dr_method}';
         const drName = '{dr_name}';
@@ -825,7 +853,7 @@ class DashboardBuilder(DashboardBuilderBase):
                 cosLayout.shapes = shapes;
             }}
             
-            Plotly.newPlot('cosine-heatmap', [cosTrace], cosLayout);
+            renderDashboardPlot('cosine-heatmap', [cosTrace], cosLayout);
             
             // Delta Norm Heatmap
             const dnTrace = {{
@@ -844,7 +872,7 @@ class DashboardBuilder(DashboardBuilderBase):
                 shapes: cosLayout.shapes || []
             }};
             
-            Plotly.newPlot('delta-norm-heatmap', [dnTrace], dnLayout);
+            renderDashboardPlot('delta-norm-heatmap', [dnTrace], dnLayout);
             
             // Add click handlers for linked views
             document.getElementById('cosine-heatmap').on('plotly_click', (eventData) => {{
@@ -882,10 +910,10 @@ class DashboardBuilder(DashboardBuilderBase):
                 z: layerData.trajectory_a.map(t => t[2]),
                 type: 'scatter3d',
                 mode: 'lines+markers',
-                name: 'Prompt A',
+                name: '{label_a}',
                 line: {{color: 'blue', width: 4}},
                 marker: {{size: 4}},
-                hovertemplate: 'Prompt A<br>Token: %{{pointNumber}}<br>X: %{{x}}<br>Y: %{{y}}<br>Z: %{{z}}<extra></extra>'
+                hovertemplate: '{label_a}<br>Token: %{{pointNumber}}<br>X: %{{x}}<br>Y: %{{y}}<br>Z: %{{z}}<extra></extra>'
             }};
             
             const traceB = {{
@@ -894,17 +922,17 @@ class DashboardBuilder(DashboardBuilderBase):
                 z: layerData.trajectory_b.map(t => t[2]),
                 type: 'scatter3d',
                 mode: 'lines+markers',
-                name: 'Prompt B',
+                name: '{label_b}',
                 line: {{color: 'red', width: 4}},
                 marker: {{size: 4}},
-                hovertemplate: 'Prompt B<br>Token: %{{pointNumber}}<br>X: %{{x}}<br>Y: %{{y}}<br>Z: %{{z}}<extra></extra>'
+                hovertemplate: '{label_b}<br>Token: %{{pointNumber}}<br>X: %{{x}}<br>Y: %{{y}}<br>Z: %{{z}}<extra></extra>'
             }};
             
             const xLabel = axisLabels[0];
             const yLabel = axisLabels[1];
             const zLabel = axisLabels[2];
             
-            Plotly.newPlot('pca-trajectories', [traceA, traceB], {{
+            renderDashboardPlot('pca-trajectories', [traceA, traceB], {{
                 title: `3D ${{drName}} Trajectories (Layer ${{layerToShow}})`,
                 scene: {{
                     xaxis: {{ title: xLabel }},
@@ -925,13 +953,13 @@ class DashboardBuilder(DashboardBuilderBase):
             const zLabel = axisLabels[2];
             
             // Dim1 vs Dim2
-            Plotly.newPlot('projection-12', [
+            renderDashboardPlot('projection-12', [
                 {{
                     x: layerData.trajectory_a.map(t => t[0]),
                     y: layerData.trajectory_a.map(t => t[1]),
                     type: 'scatter',
                     mode: 'lines+markers',
-                    name: 'Prompt A',
+                    name: '{label_a}',
                     line: {{color: 'blue'}}
                 }},
                 {{
@@ -939,7 +967,7 @@ class DashboardBuilder(DashboardBuilderBase):
                     y: layerData.trajectory_b.map(t => t[1]),
                     type: 'scatter',
                     mode: 'lines+markers',
-                    name: 'Prompt B',
+                    name: '{label_b}',
                     line: {{color: 'red'}}
                 }}
             ], {{
@@ -950,13 +978,13 @@ class DashboardBuilder(DashboardBuilderBase):
             }});
             
             // Dim1 vs Dim3
-            Plotly.newPlot('projection-13', [
+            renderDashboardPlot('projection-13', [
                 {{
                     x: layerData.trajectory_a.map(t => t[0]),
                     y: layerData.trajectory_a.map(t => t[2]),
                     type: 'scatter',
                     mode: 'lines+markers',
-                    name: 'Prompt A',
+                    name: '{label_a}',
                     line: {{color: 'blue'}}
                 }},
                 {{
@@ -964,7 +992,7 @@ class DashboardBuilder(DashboardBuilderBase):
                     y: layerData.trajectory_b.map(t => t[2]),
                     type: 'scatter',
                     mode: 'lines+markers',
-                    name: 'Prompt B',
+                    name: '{label_b}',
                     line: {{color: 'red'}}
                 }}
             ], {{
@@ -975,13 +1003,13 @@ class DashboardBuilder(DashboardBuilderBase):
             }});
             
             // Dim2 vs Dim3
-            Plotly.newPlot('projection-23', [
+            renderDashboardPlot('projection-23', [
                 {{
                     x: layerData.trajectory_a.map(t => t[1]),
                     y: layerData.trajectory_a.map(t => t[2]),
                     type: 'scatter',
                     mode: 'lines+markers',
-                    name: 'Prompt A',
+                    name: '{label_a}',
                     line: {{color: 'blue'}}
                 }},
                 {{
@@ -989,7 +1017,7 @@ class DashboardBuilder(DashboardBuilderBase):
                     y: layerData.trajectory_b.map(t => t[2]),
                     type: 'scatter',
                     mode: 'lines+markers',
-                    name: 'Prompt B',
+                    name: '{label_b}',
                     line: {{color: 'red'}}
                 }}
             ], {{
@@ -1008,7 +1036,7 @@ class DashboardBuilder(DashboardBuilderBase):
                 layer.forEach(val => cosineValues.push(val));
             }});
             
-            Plotly.newPlot('cosine-distribution', [{{
+            renderDashboardPlot('cosine-distribution', [{{
                 x: cosineValues,
                 type: 'histogram',
                 name: 'Cosine Similarity',
@@ -1026,7 +1054,7 @@ class DashboardBuilder(DashboardBuilderBase):
                 layer.forEach(val => deltaValues.push(val));
             }});
             
-            Plotly.newPlot('delta-distribution', [{{
+            renderDashboardPlot('delta-distribution', [{{
                 x: deltaValues,
                 type: 'histogram',
                 name: 'Delta Norm',
@@ -1056,7 +1084,7 @@ class DashboardBuilder(DashboardBuilderBase):
             
             const lastDiv = data.dn_mat.map(row => row[row.length - 1]);
             
-            Plotly.newPlot('divergence-curves', [
+            renderDashboardPlot('divergence-curves', [
                 {{
                     x: layers,
                     y: meanDiv,
@@ -1225,7 +1253,7 @@ class DashboardBuilder(DashboardBuilderBase):
             const cosImprovement = rows.map(r => r.cos_after - r.cos_before);
             const deltaReduction = rows.map(r => r.delta_before - r.delta_after);
 
-            Plotly.newPlot('patching-summary', [
+            renderDashboardPlot('patching-summary', [
                 {{
                     x: ids,
                     y: cosImprovement,
@@ -1242,7 +1270,7 @@ class DashboardBuilder(DashboardBuilderBase):
                 }},
             ], {{
                 barmode: 'group',
-                title: 'Patching Effect on Similarity Metrics (Last Token)',
+                title: 'Final-token effect of selected interventions',
                 xaxis: {{ title: 'Experiment (direction @ layer:token)' }},
                 yaxis: {{ title: 'Change in Metric' }},
                 height: 400,
@@ -1274,7 +1302,7 @@ class DashboardBuilder(DashboardBuilderBase):
             // Show timeline
             const timeline = temporal.divergence_timeline;
             if (timeline) {{
-                Plotly.newPlot('temporal-timeline', [{{
+                renderDashboardPlot('temporal-timeline', [{{
                     x: timeline.tokens,
                     y: timeline.divergence,
                     type: 'scatter',
@@ -1321,7 +1349,7 @@ class DashboardBuilder(DashboardBuilderBase):
             const headIndices = topHeads.map(h => h.head);
             const contributions = topHeads.map(h => h.contribution_score);
             
-            Plotly.newPlot('attention-heads', [{{
+            renderDashboardPlot('attention-heads', [{{
                 x: headIndices,
                 y: contributions,
                 type: 'bar',
@@ -1347,6 +1375,16 @@ class DashboardBuilder(DashboardBuilderBase):
             infoDiv.innerHTML = infoHTML;
         }}
         
+        function mlpComponentLabels(payload) {{
+            if (payload.activation_space === 'mlp_neurons' || payload.unit_label === 'neuron') {{
+                return {{ singular: 'neuron', plural: 'neurons', space: 'MLP neurons (down-projection inputs)' }};
+            }}
+            if (payload.activation_space === 'residual_channels' || payload.unit_label === 'residual channel') {{
+                return {{ singular: 'residual channel', plural: 'residual channels', space: 'MLP output residual channels' }};
+            }}
+            return {{ singular: 'component', plural: 'components', space: 'MLP components (capture space unspecified)' }};
+        }}
+
         function initMLPVisualization() {{
             const mlp = data.mlp_payload;
             if (!mlp || Object.keys(mlp).length === 0) return;
@@ -1359,32 +1397,35 @@ class DashboardBuilder(DashboardBuilderBase):
             
             if (!layerData || !layerData.neurons) return;
             
-            // Plot top contributing neurons
+            const labels = mlpComponentLabels(layerData);
+            // Legacy payload field names are retained; labels identify the measured space.
             const topNeurons = layerData.top_neurons || layerData.neurons.slice(0, 50);
             const neuronIndices = topNeurons.map(n => n.neuron);
             const contributions = topNeurons.map(n => n.contribution_score);
             
-            Plotly.newPlot('mlp-neurons', [{{
+            renderDashboardPlot('mlp-neurons', [{{
                 x: neuronIndices,
                 y: contributions,
                 type: 'bar',
-                name: 'Contribution Score',
+                name: 'Mean absolute activation difference',
                 marker: {{color: 'rgba(76, 175, 80, 0.7)'}},
-                hovertemplate: 'Neuron %{{x}}<br>Contribution: %{{y}}<extra></extra>'
+                hovertemplate: labels.singular + ' %{{x}}<br>Activation difference: %{{y}}<extra></extra>'
             }}], {{
-                title: `Top Contributing MLP Neurons (Layer ${{layerKey}})`,
-                xaxis: {{ title: 'Neuron Index' }},
-                yaxis: {{ title: 'Contribution Score' }},
+                title: `MLP ${{labels.plural}} with largest activation difference (Layer ${{layerKey}})`,
+                xaxis: {{ title: labels.singular + ' index' }},
+                yaxis: {{ title: 'Mean absolute activation difference' }},
                 height: 400
             }});
             
             // Show MLP info
             const infoDiv = document.getElementById('mlp-info');
             let infoHTML = `<h4>MLP Analysis (Layer ${{layerKey}})</h4>`;
-            infoHTML += `<p><strong>Total Neurons:</strong> ${{layerData.num_neurons || 'N/A'}}</p>`;
-            infoHTML += `<p><strong>Top Contributing Neurons:</strong></p><ul>`;
+            infoHTML += `<p><strong>Capture space:</strong> ${{labels.space}}</p>`;
+            infoHTML += `<p><strong>Total ${{labels.plural}}:</strong> ${{layerData.num_neurons ?? 'N/A'}}</p>`;
+            infoHTML += `<p>Activation differences describe {comparison_subject}; they do not establish a causal function.</p>`;
+            infoHTML += `<p><strong>Largest activation differences:</strong></p><ul>`;
             topNeurons.slice(0, 10).forEach(neuron => {{
-                infoHTML += `<li>Neuron ${{neuron.neuron}}: Contribution = ${{neuron.contribution_score.toFixed(4)}}</li>`;
+                infoHTML += `<li>${{labels.singular}} ${{neuron.neuron}}: Difference = ${{neuron.contribution_score.toFixed(4)}}</li>`;
             }});
             infoHTML += '</ul>';
             infoDiv.innerHTML = infoHTML;
@@ -1397,44 +1438,47 @@ class DashboardBuilder(DashboardBuilderBase):
             document.getElementById('circuit-section').style.display = 'block';
             
             const cardsDiv = document.getElementById('circuit-cards');
-            let html = '<h4>Circuit Cards</h4>';
+            let html = '<h4>Component Contrast Cards</h4><p>These cards apply thresholds to activation differences. They do not establish a causal circuit or a safety function.</p>';
             
             // Spike layer last token circuit
             if (circuit.spike_layer_last_token) {{
                 const card = circuit.spike_layer_last_token;
+                const labels = mlpComponentLabels(card);
                 html += `<div class="circuit-card" style="margin: 15px 0; padding: 15px; border: 2px solid #2196F3; border-radius: 6px;">`;
                 html += `<h5>Spike Layer (Last Token)</h5>`;
                 html += `<p><strong>Location:</strong> Layer ${{card.layer}}, Token ${{card.token}}</p>`;
-                html += `<p><strong>Summary:</strong> ${{card.circuit_summary}}</p>`;
+                html += `<p><strong>Capture space:</strong> ${{labels.space}}. Components listed below exceed the configured difference thresholds.</p>`;
                 if (card.involved_heads && card.involved_heads.length > 0) {{
                     html += `<p><strong>Involved Heads:</strong> ${{card.involved_heads.length}}</p>`;
                     html += `<ul>`;
                     card.involved_heads.slice(0, 5).forEach(head => {{
-                        html += `<li>Head ${{head.head}}: ${{head.contribution_pct.toFixed(1)}}% contribution</li>`;
+                        html += `<li>Head ${{head.head}}: ${{head.contribution_pct.toFixed(1)}}% share of displayed scores</li>`;
                     }});
                     html += `</ul>`;
                 }}
                 if (card.involved_neurons && card.involved_neurons.length > 0) {{
-                    html += `<p><strong>Involved Neurons:</strong> ${{card.involved_neurons.length}}</p>`;
+                    html += `<p><strong>MLP ${{labels.plural}} above threshold:</strong> ${{card.involved_neurons.length}}</p>`;
                     html += `<ul>`;
                     card.involved_neurons.slice(0, 5).forEach(neuron => {{
-                        html += `<li>Neuron ${{neuron.neuron}}: ${{neuron.contribution_pct.toFixed(1)}}% contribution</li>`;
+                        html += `<li>${{labels.singular}} ${{neuron.neuron}}: ${{neuron.contribution_pct.toFixed(1)}}% share of displayed scores</li>`;
                     }});
                     html += `</ul>`;
                 }}
                 html += `</div>`;
             }}
             
-            // Safety neuron clusters
+            // Historical "safety_neuron" payload keys contain only activation contrast.
             if (circuit.safety_neuron_clusters && circuit.safety_neuron_clusters.safety_neurons) {{
                 const safety = circuit.safety_neuron_clusters;
+                const labels = mlpComponentLabels(safety);
                 html += `<div class="circuit-card" style="margin: 15px 0; padding: 15px; border: 2px solid #4CAF50; border-radius: 6px;">`;
-                html += `<h5>Safety Neuron Clusters</h5>`;
-                html += `<p><strong>Safety Neurons Identified:</strong> ${{safety.num_safety_neurons}} (${{safety.safety_neuron_percentage.toFixed(1)}}% of total)</p>`;
+                html += `<h5>High-contrast MLP ${{labels.plural}}</h5>`;
+                html += `<p><strong>Above activation-contrast threshold:</strong> ${{safety.num_safety_neurons}} (${{safety.safety_neuron_percentage.toFixed(1)}}% of total)</p>`;
+                html += `<p>This threshold heuristic measures differences {contrast_subject}. A high percentage does not identify safety-related components or indicate harmful content.</p>`;
                 if (safety.safety_neurons && safety.safety_neurons.length > 0) {{
-                    html += `<p><strong>Top Safety Neurons:</strong></p><ul>`;
+                    html += `<p><strong>Largest activation contrasts:</strong></p><ul>`;
                     safety.safety_neurons.slice(0, 10).forEach(neuron => {{
-                        html += `<li>Neuron ${{neuron.neuron}}: Contrast = ${{neuron.activation_contrast.toFixed(4)}}</li>`;
+                        html += `<li>${{labels.singular}} ${{neuron.neuron}}: Contrast = ${{neuron.activation_contrast.toFixed(4)}}</li>`;
                     }});
                     html += `</ul>`;
                 }}
@@ -1461,7 +1505,7 @@ class DashboardBuilder(DashboardBuilderBase):
                     const nHeads = Array.isArray(norms) ? norms.length : 0;
                     html += `OV available, ${{nHeads}} heads; `;
                 }}
-                if (layer.qk_available) html += 'QK pattern available; ';
+                if (layer.qk_available) html += 'Projected Q/K similarity available (before position encoding, normalization and causal masking); ';
                 if (layer.qk_vs_actual_max_diff != null) html += `QK vs actual max diff = ${{Number(layer.qk_vs_actual_max_diff).toFixed(6)}}`;
                 html += '</li>';
             }});
@@ -1476,7 +1520,7 @@ class DashboardBuilder(DashboardBuilderBase):
             const infoEl = document.getElementById('minimal-circuit-info');
             if (!sectionEl || !infoEl) return;
             sectionEl.style.display = 'block';
-            let html = '<h4>Greedy Minimal Circuit</h4>';
+            let html = '<h4>Greedy Component Reconstruction</h4><p>Descriptive proxy over cached components. Downstream layers are not rerun; this does not establish a sufficient or globally minimal circuit.</p>';
             const finalVal = mc.final_metric != null ? Number(mc.final_metric).toFixed(4) : 'N/A';
             html += `<p><strong>Metric:</strong> ${{mc.metric || 'logit_l2'}}; <strong>Final value:</strong> ${{finalVal}}</p>`;
             html += '<p><strong>Components:</strong></p><ul>';
@@ -1508,7 +1552,7 @@ class DashboardBuilder(DashboardBuilderBase):
             const interfering = layerData.head_roles.filter(h => h.role === 'interfering');
             const irrelevant = layerData.head_roles.filter(h => h.role === 'irrelevant');
             
-            Plotly.newPlot('attribution-plot', [{{
+            renderDashboardPlot('attribution-plot', [{{
                 x: ['Facilitating', 'Interfering', 'Irrelevant'],
                 y: [facilitating.length, interfering.length, irrelevant.length],
                 type: 'bar',

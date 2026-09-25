@@ -47,6 +47,7 @@ class SinglePromptService:
         if not prompt.strip():
             raise ValueError("Single-prompt analysis requires config.prompt to be set")
 
+        warnings = []
         ModelLoader.set_deterministic(config.seed)
         debug_mode = (
             config.debug_mode
@@ -56,6 +57,8 @@ class SinglePromptService:
                     config.enable_attention_capture
                     or config.enable_mlp_capture
                     or config.enable_attn_output_capture
+                    or config.enable_pre_mlp_capture
+                    or config.enable_qkv_capture
                 )
             )
         )
@@ -105,16 +108,7 @@ class SinglePromptService:
                 )
                 pca_payload[str(layer_idx)] = dr_data
             except Exception as e:
-                logger.warning(
-                    f"Failed {config.dim_reduction} for layer {layer_idx}: {e}; falling back to PCA"
-                )
-                try:
-                    dr_data = DimensionReduction.compute_single_for_layer(
-                        run_result, layer_idx, start, window_len, "pca", config
-                    )
-                    pca_payload[str(layer_idx)] = dr_data
-                except Exception as e2:
-                    logger.warning(f"Fallback PCA failed for layer {layer_idx}: {e2}")
+                raise RuntimeError(f"{config.dim_reduction.upper()} projection failed at hidden-state index {layer_idx}: {e}") from e
 
         # Predictions (use last layer)
         predictions_payload = None
@@ -124,7 +118,9 @@ class SinglePromptService:
                 run_result, num_layers - 1, start, window_len
             )
         except Exception as e:
-            logger.warning(f"Failed predictions analysis: {e}")
+            raise RuntimeError(f"Predictions analysis failed: {e}") from e
+
+        component_layers = sorted({min(i, num_layers - 2) for i in pca_layers})
 
         # Optional: attention / MLP summarization (simple serialization for dashboard)
         attention_payload = None
@@ -132,7 +128,7 @@ class SinglePromptService:
         if config.enable_component_analysis and run_result.attention_weights:
             attention_payload = {}
             for layer_idx, attn in enumerate(run_result.attention_weights):
-                if attn is not None and layer_idx in pca_layers:
+                if attn is not None and layer_idx in component_layers:
                     # [1, n_heads, seq, seq] -> window slice then mean over heads -> [window_len, window_len]
                     a = attn[0].float().cpu().numpy()
                     a_window = np.mean(
@@ -145,7 +141,7 @@ class SinglePromptService:
         if config.enable_component_analysis and run_result.mlp_activations:
             mlp_payload = {}
             for layer_idx, mlp_t in run_result.mlp_activations.items():
-                if layer_idx in pca_layers and mlp_t is not None:
+                if layer_idx in component_layers and mlp_t is not None:
                     m = mlp_t[0, start : start + window_len, :].float().cpu().numpy()
                     norms = np.linalg.norm(m, axis=1).tolist()
                     mlp_payload[str(layer_idx)] = {"token_norms": norms}
@@ -173,6 +169,7 @@ class SinglePromptService:
                             logit_attribution_payload = payload
             except Exception as e:
                 logger.warning(f"Failed logit attribution: {e}")
+                warnings.append(f"Supplementary analysis unavailable: Failed logit attribution: {e}")
 
         resolved_model_id = ModelLoader.resolve_model_id(config.model)
         if resolved_model_id != config.model:
@@ -183,13 +180,17 @@ class SinglePromptService:
             "original_model": config.model,
             "prompt_preview": prompt[:200] + ("..." if len(prompt) > 200 else ""),
             "analysis_mode": "single",
-            "device": config.device,
-            "dtype": config.dtype,
+            "device": str(model.device),
+            "dtype": str(model.dtype).removeprefix("torch."),
+            "requested_device": config.device,
             "window": config.window,
             "start": start,
             "window_len": window_len,
             "num_layers": num_layers,
             "dim_reduction": config.dim_reduction,
+            "warnings": warnings,
+            "input_token_counts": [seq_len],
+            "component_layers": component_layers,
         }
 
         return SinglePromptResult(

@@ -37,15 +37,15 @@ export function AdvancedOptions({ analyses, mode, values, onChange }: Props) {
 
       <div className="mt-4 space-y-5">
         <Group
-          title="Capture"
-          caption="What gets recorded during the forward pass. Required by the analyses below."
+          title="Captures and exploratory analyses"
+          caption="Record activations and look for patterns. These measurements do not establish a causal mechanism."
           items={descriptive}
           values={values}
           onChange={onChange}
         />
         <Group
           title="Causal"
-          caption="These intervene and re-measure, so they support a stronger claim than a contribution ranking — and cost far more."
+          caption="These intervene and run the model again to measure an effect on the selected prompt pair. They require additional forward passes."
           items={causal}
           values={values}
           onChange={onChange}

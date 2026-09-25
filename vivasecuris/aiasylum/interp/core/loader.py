@@ -85,7 +85,15 @@ def resolve_device(device: str = "auto"):
     import torch
 
     if device != "auto":
-        return torch.device(device)
+        resolved = torch.device(device)
+        if resolved.type == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("CUDA was requested but is unavailable in this PyTorch runtime")
+            if resolved.index is not None and resolved.index >= torch.cuda.device_count():
+                raise ValueError(f"CUDA device {resolved.index} does not exist in this runtime")
+        if resolved.type == "mps" and not torch.backends.mps.is_available():
+            raise ValueError("MPS was requested but is unavailable in this PyTorch runtime")
+        return resolved
     if torch.cuda.is_available():
         return torch.device("cuda")
     if torch.backends.mps.is_available():
@@ -178,8 +186,13 @@ def load(
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_id, token=token)
+        # torch_dtype also works on our oldest supported transformers (4.45).
+        # Dispatch CUDA weights directly while reading shards so large models
+        # do not first require a second complete copy in host RAM.
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, dtype=torch_dtype, device_map=None, token=token
+            model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+            device_map={"": str(torch_device)} if torch_device.type == "cuda" else None,
+            token=token,
         )
     except (OSError, ValueError) as exc:
         text = str(exc).lower()
@@ -204,7 +217,8 @@ def load(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = model.to(torch_device)
+    if torch_device.type != "cuda":
+        model = model.to(torch_device)
     model.eval()
 
     logger.info(

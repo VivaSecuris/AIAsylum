@@ -359,7 +359,7 @@ class QKVHooks:
                     # [1, seq, n_heads*head_dim]
                     if self.qkv_outputs.get(li) is None:
                         self.qkv_outputs[li] = {}
-                    self.qkv_outputs[li]["q"] = t.reshape(1, t.shape[1], n_heads, head_dim)
+                    self.qkv_outputs[li]["q"] = t.reshape(t.shape[0], t.shape[1], n_heads, head_dim)
                 return hook
 
             def make_k_hook(li: int):
@@ -367,7 +367,7 @@ class QKVHooks:
                     t = _extract_output_tensor(out).detach().cpu().float()
                     if self.qkv_outputs.get(li) is None:
                         self.qkv_outputs[li] = {}
-                    self.qkv_outputs[li]["k"] = t.reshape(1, t.shape[1], n_kv_heads, head_dim)
+                    self.qkv_outputs[li]["k"] = t.reshape(t.shape[0], t.shape[1], n_kv_heads, head_dim)
                 return hook
 
             def make_v_hook(li: int):
@@ -375,7 +375,7 @@ class QKVHooks:
                     t = _extract_output_tensor(out).detach().cpu().float()
                     if self.qkv_outputs.get(li) is None:
                         self.qkv_outputs[li] = {}
-                    self.qkv_outputs[li]["v"] = t.reshape(1, t.shape[1], n_kv_heads, head_dim)
+                    self.qkv_outputs[li]["v"] = t.reshape(t.shape[0], t.shape[1], n_kv_heads, head_dim)
                 return hook
 
             self._handles.append(q_proj.register_forward_hook(make_q_hook(layer_idx)))
@@ -386,23 +386,20 @@ class QKVHooks:
         n_heads = _get_config_value(self._config, "num_attention_heads", 16)
         head_dim = _get_config_value(self._config, "hidden_size", 6144) // n_heads
         for layer_idx, attn_module, _ in self._layer_stack:
-            query = getattr(attn_module, "query", None)
-            key = getattr(attn_module, "key", None)
-            value = getattr(attn_module, "value", None)
-            if not (query and key and value):
+            # NeoX interleaves Q/K/V *within each head* in one fused linear.
+            # Looking for separate query/key/value modules silently captured nothing.
+            fused = getattr(attn_module, "query_key_value", None)
+            if fused is None:
                 continue
 
-            def make_hook(li: int, which: str):
+            def make_hook(li: int):
                 def hook(_m: nn.Module, _in: Any, out: Any) -> None:
                     t = _extract_output_tensor(out).detach().cpu().float()
-                    if self.qkv_outputs.get(li) is None:
-                        self.qkv_outputs[li] = {}
-                    self.qkv_outputs[li][which] = t.reshape(1, t.shape[1], n_heads, head_dim)
+                    t = t.reshape(t.shape[0], t.shape[1], n_heads, 3 * head_dim)
+                    self.qkv_outputs[li] = dict(zip(("q", "k", "v"), t.split(head_dim, dim=-1)))
                 return hook
 
-            self._handles.append(query.register_forward_hook(make_hook(layer_idx, "q")))
-            self._handles.append(key.register_forward_hook(make_hook(layer_idx, "k")))
-            self._handles.append(value.register_forward_hook(make_hook(layer_idx, "v")))
+            self._handles.append(fused.register_forward_hook(make_hook(layer_idx)))
 
     def remove(self) -> None:
         for h in self._handles:
@@ -415,4 +412,6 @@ class QKVHooks:
     def get_qkv_copy(self) -> Optional[Dict[int, Dict[str, torch.Tensor]]]:
         if not self.qkv_outputs:
             return None
-        return {k: {kk: vv.clone() for kk, vv in v.items()} for k, v in self.qkv_outputs.items()}
+        # Captures are detached CPU tensors and register() replaces the mapping;
+        # copying tensor storage here only doubles the host-memory peak.
+        return {k: dict(v) for k, v in self.qkv_outputs.items()}

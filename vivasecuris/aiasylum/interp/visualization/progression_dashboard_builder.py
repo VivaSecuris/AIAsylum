@@ -1,11 +1,14 @@
 """Dashboard builder for multi-prompt progression analysis (one-shot, multi-shot)."""
 
 from typing import Dict, Any
+from html import escape
 import numpy as np
 
 from vivasecuris.aiasylum.interp.data.multi_prompt_models import ProgressionResult
 from vivasecuris.aiasylum.interp.visualization.assets import plotly_script_tag
-from vivasecuris.aiasylum.interp.visualization.base import DashboardBuilderBase, serialize_payload_for_js
+from vivasecuris.aiasylum.interp.visualization.base import (
+    DashboardBuilderBase, dashboard_plot_css, dashboard_plot_script, serialize_payload_for_js,
+)
 
 
 class ProgressionDashboardBuilder(DashboardBuilderBase):
@@ -39,6 +42,9 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
             "query_starts": result.query_starts,
             "pca_payload": result.pca_payload or {},
             "example_impact": result.example_impact or {},
+            "attention_payload": result.attention_payload or {},
+            "mlp_payload": result.mlp_payload or {},
+            "predictions_payload": result.predictions_payload or {},
         }
         
         # Generate HTML
@@ -122,6 +128,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
             font-family: monospace;
             font-size: 0.9em;
         }}
+        {dashboard_plot_css()}
     </style>
 </head>
 <body>
@@ -130,7 +137,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
         
         <div class="info-box">
             <strong>Analysis Mode:</strong> {data['meta'].get('analysis_mode', 'progression')}<br>
-            <strong>Model:</strong> {data['meta'].get('model', 'unknown')}<br>
+            <strong>Model:</strong> {escape(str(data['meta'].get('model', 'unknown')))}<br>
             <strong>Number of Prompts:</strong> {data['meta'].get('num_prompts', 0)}<br>
             <strong>Query Window Length:</strong> {data['meta'].get('query_window_len', 0)} tokens
         </div>
@@ -148,12 +155,12 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
             
             <div class="plot-container">
                 <h3>Progression Delta Norm (Step-by-Step Changes)</h3>
-                <div id="progression-delta-heatmap"></div>
+                <div class="plot-target" id="progression-delta-heatmap"></div>
             </div>
             
             <div class="plot-container">
                 <h3>Progression Cosine Similarity (Step-by-Step Changes)</h3>
-                <div id="progression-cos-heatmap"></div>
+                <div class="plot-target" id="progression-cos-heatmap"></div>
             </div>
         </div>
         
@@ -163,12 +170,12 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
             
             <div class="plot-container">
                 <h3>Cumulative Delta Norm (vs Zero-Shot)</h3>
-                <div id="cumulative-delta-heatmap"></div>
+                <div class="plot-target" id="cumulative-delta-heatmap"></div>
             </div>
             
             <div class="plot-container">
                 <h3>Cumulative Cosine Similarity (vs Zero-Shot)</h3>
-                <div id="cumulative-cos-heatmap"></div>
+                <div class="plot-target" id="cumulative-cos-heatmap"></div>
             </div>
         </div>
         
@@ -176,7 +183,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
             <h2>Layer Impact Analysis</h2>
             <p>Which layers are most affected by adding examples</p>
             <div class="plot-container">
-                <div id="layer-impact-plot"></div>
+                <div class="plot-target plot-medium" id="layer-impact-plot"></div>
             </div>
         </div>
         
@@ -187,12 +194,26 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 <label>Select Layer: 
                     <select id="pca-layer-select"></select>
                 </label>
-                <div id="pca-3d-plot"></div>
+                <div class="plot-target plot-tall" id="pca-3d-plot"></div>
             </div>
+        </div>
+        <div class="section" id="component-section">
+            <h2>Captured components by prompt</h2>
+            <p>Select a transformer block and prompt to inspect attention. MLP output norms show every prompt side by side. These are descriptive patterns, not causal explanations. Attention is restricted to the displayed query window; its rows need not sum to one because keys outside that window are omitted.</p>
+            <label>Transformer block: <select id="component-layer-select"></select></label>
+            <label>Prompt: <select id="component-prompt-select"></select></label>
+            <div class="plot-container" id="attention-container"><h3>Attention averaged over heads</h3><div class="plot-target" id="attention-progression-plot"></div></div>
+            <div class="plot-container" id="mlp-container"><h3>MLP output magnitude</h3><div class="plot-target" id="mlp-progression-plot"></div></div>
+        </div>
+        <div class="section" id="predictions-section">
+            <h2>Next-token predictions</h2>
+            <p>Predictions after the last analyzed token, using the final hidden state and the model's own output head.</p>
+            <div class="plot-container"><div class="plot-target" id="prediction-progression-plot"></div></div>
         </div>
     </div>
     
     <script>
+        {dashboard_plot_script()}
         const data = {data_json};
         const drMethod = (data.meta && data.meta.dim_reduction) ? data.meta.dim_reduction : 'pca';
         const drName = (drMethod === 'umap') ? 'UMAP' : (drMethod === 'tsne') ? 't-SNE' : 'PCA';
@@ -230,7 +251,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 }});
             }}
             
-            Plotly.newPlot('progression-delta-heatmap', progressionTraces, {{
+            renderDashboardPlot('progression-delta-heatmap', progressionTraces, {{
                 title: 'Progression Delta Norm by Layer and Token Position',
                 xaxis: {{ title: 'Token Position' }},
                 yaxis: {{ title: 'Layer' }},
@@ -269,7 +290,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 }});
             }}
             
-            Plotly.newPlot('progression-cos-heatmap', progressionCosTraces, {{
+            renderDashboardPlot('progression-cos-heatmap', progressionCosTraces, {{
                 title: 'Progression Cosine Similarity by Layer and Token Position',
                 xaxis: {{ title: 'Token Position' }},
                 yaxis: {{ title: 'Layer' }},
@@ -312,7 +333,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 }});
             }}
             
-            Plotly.newPlot('cumulative-delta-heatmap', cumulativeTraces, {{
+            renderDashboardPlot('cumulative-delta-heatmap', cumulativeTraces, {{
                 title: 'Cumulative Delta Norm vs Zero-Shot by Layer and Token Position',
                 xaxis: {{ title: 'Token Position' }},
                 yaxis: {{ title: 'Layer' }},
@@ -351,7 +372,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 }});
             }}
             
-            Plotly.newPlot('cumulative-cos-heatmap', cumulativeCosTraces, {{
+            renderDashboardPlot('cumulative-cos-heatmap', cumulativeCosTraces, {{
                 title: 'Cumulative Cosine Similarity vs Zero-Shot by Layer and Token Position',
                 xaxis: {{ title: 'Token Position' }},
                 yaxis: {{ title: 'Layer' }},
@@ -385,7 +406,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 marker: {{size: 8}}
             }};
             
-            Plotly.newPlot('layer-impact-plot', [trace], {{
+            renderDashboardPlot('layer-impact-plot', [trace], {{
                 title: 'Average Layer Impact from Adding Examples',
                 xaxis: {{ title: 'Layer' }},
                 yaxis: {{ title: 'Average Delta Norm' }},
@@ -419,7 +440,7 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
                 }});
             }}
             
-            Plotly.newPlot('pca-3d-plot', traces, {{
+            renderDashboardPlot('pca-3d-plot', traces, {{
                 title: `3D ${{drName}} Trajectories - Layer ${{layerIdx}}`,
                 scene: {{
                     xaxis: {{ title: (drName === 'PCA') ? 'PC1' : 'Dim1' }},
@@ -452,11 +473,60 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
             }});
         }}
         
+        function setupComponents() {{
+            const attention = data.attention_payload;
+            const mlp = data.mlp_payload;
+            const labels = data.prompt_labels;
+            const hasAttention = Object.keys(attention).length > 0;
+            const hasMLP = Object.keys(mlp).length > 0;
+            document.getElementById('component-section').hidden = !hasAttention && !hasMLP;
+            document.getElementById('attention-container').hidden = !hasAttention;
+            document.getElementById('mlp-container').hidden = !hasMLP;
+            if (!hasAttention && !hasMLP) return;
+            const layerSelect = document.getElementById('component-layer-select');
+            const promptSelect = document.getElementById('component-prompt-select');
+            const blocks = Object.keys((hasAttention ? attention : mlp)[labels[0]] || {{}});
+            for (const block of blocks) layerSelect.add(new Option(`Block ${{block}}`, block));
+            for (const label of labels) promptSelect.add(new Option(label, label));
+            function draw() {{
+                const block = layerSelect.value;
+                const label = promptSelect.value;
+                const tokens = data.aligned_tokens[labels.indexOf(label)];
+                if (hasAttention) renderDashboardPlot('attention-progression-plot', [{{
+                    z: attention[label][block].mean_over_heads, x: tokens, y: tokens,
+                    type: 'heatmap', colorscale: 'Blues', zmin: 0, zmax: 1,
+                }}], {{title: `${{label}} · block ${{block}}`, xaxis: {{title: 'Key token'}}, yaxis: {{title: 'Query token'}}}});
+                if (hasMLP) renderDashboardPlot('mlp-progression-plot', labels.map((step) => ({{
+                    y: mlp[step][block].token_norms, name: step, type: 'scatter', mode: 'lines+markers',
+                }})), {{title: `MLP output · block ${{block}}`, xaxis: {{title: 'Aligned token position'}}, yaxis: {{title: 'L2 norm of residual channels'}}}});
+            }}
+            layerSelect.addEventListener('change', draw);
+            promptSelect.addEventListener('change', draw);
+            draw();
+        }}
+
+        function drawPredictions() {{
+            const predictions = data.predictions_payload;
+            const labels = Object.keys(predictions);
+            document.getElementById('predictions-section').hidden = !labels.length;
+            if (!labels.length) return;
+            const traces = labels.map((label) => {{
+                const rows = predictions[label].predictions;
+                const last = rows[rows.length - 1];
+                return {{name: label, x: last.top_tokens, y: last.probs, type: 'bar'}};
+            }});
+            renderDashboardPlot('prediction-progression-plot', traces, {{
+                barmode: 'group', yaxis: {{title: 'Probability'}}, xaxis: {{title: 'Predicted token'}},
+            }});
+        }}
+
         // Initialize all plots
         generateProgressionHeatmaps();
         generateCumulativeHeatmaps();
         generateLayerImpactPlot();
         setupPCASelector();
+        setupComponents();
+        drawPredictions();
     </script>
 </body>
 </html>"""
@@ -472,8 +542,8 @@ class ProgressionDashboardBuilder(DashboardBuilderBase):
         )):
             html_parts.append(f"""
                 <div class="prompt-item">
-                    <div class="prompt-label">{label}</div>
-                    <div class="prompt-text">{prompt[:200]}{'...' if len(prompt) > 200 else ''}</div>
+                    <div class="prompt-label">{escape(label)}</div>
+                    <div class="prompt-text">{escape(prompt[:200])}{'...' if len(prompt) > 200 else ''}</div>
                     <div style="font-size: 0.85em; color: #999; margin-top: 5px;">
                         {len(tokens)} tokens analyzed
                     </div>

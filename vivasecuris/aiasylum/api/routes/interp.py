@@ -22,17 +22,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 from vivasecuris.aiasylum.api.cancellation import CancellationManager
 from vivasecuris.aiasylum.api.model_jobs import hold, model_slot
 from vivasecuris.aiasylum.api.progress_events import ProgressEventManager
+from vivasecuris.aiasylum.api.interp_preflight import MODEL_PRESETS, check_request, hardware_info
 from vivasecuris.aiasylum.constants import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -103,15 +106,15 @@ ANALYSES = {
     },
     "enable_mlp_capture": {
         "label": "MLP capture",
-        "description": "Per-neuron activations. Required for neuron-level cards and safety-neuron clusters.",
-        "cost": "O(layers x seq x d_ffn) memory.",
+        "description": "MLP output channels in the residual stream. Shows descriptive activation patterns; enable pre-MLP capture to inspect internal neurons.",
+        "cost": "O(layers x seq x hidden_size) memory.",
         "claim": "descriptive",
         "modes": ["single", "comparison", "progression"],
         "available": True,
     },
     "enable_qkv_capture": {
         "label": "Q/K/V capture",
-        "description": "Per-layer queries, keys and values, for OV/QK circuit analysis.",
+        "description": "Per-layer queries, keys and values, for OV/QK circuit analysis. Includes the required attention capture.",
         "cost": "Heavier than attention capture; adds three tensors per layer.",
         "claim": "descriptive",
         # Only the two-prompt comparison service reads this.
@@ -153,21 +156,22 @@ ANALYSES = {
         "available": False,
         "unavailable_reason": (
             "The scrub runs with an empty component list, so it measures "
-            "reconstruction error rather than an ablation effect. Use the "
-            "minimal circuit search for a causal result."
+            "reconstruction error rather than an ablation effect. Use activation "
+            "patching to test causal effects; circuit search is a descriptive approximation."
         ),
     },
     "enable_minimal_circuit": {
-        "label": "Minimal circuit search",
+        "label": "Circuit search (approximate)",
         "description": (
-            "Greedy search for the smallest set of components that still reproduces "
-            "the behaviour. The strongest claim available here."
+            "Ranks a small set of components using residual reconstruction and a projected "
+            "logit score. This is an approximation, not a full-model causal intervention. "
+            "Use activation patching to test causal effects."
         ),
         "cost": (
-            "Slowest analysis in the engine: a greedy sweep over components. "
-            "Searches attention heads, and neurons too when pre-MLP capture is on."
+            "A greedy sweep over components using a residual approximation. "
+            "Includes required Q/K/V, attention and MLP captures. Searches heads, and neurons too when pre-MLP capture is on."
         ),
-        "claim": "causal",
+        "claim": "descriptive",
         "modes": ["comparison"],
         "available": True,
     },
@@ -203,6 +207,7 @@ class InterpRunRequest(BaseModel):
     mode: str = Field(..., description="single | comparison | progression | model_diff")
     model_a: str
     model_b: Optional[str] = None
+    lineage_parent: Optional[str] = Field(None, max_length=1024)
     prompt_a: Optional[str] = None
     prompt_b: Optional[str] = None
     prompts: Optional[List[str]] = None
@@ -223,6 +228,11 @@ class InterpRunRequest(BaseModel):
     enable_patching: bool = False
     enable_scrub: bool = False
     enable_minimal_circuit: bool = False
+    patch_components: str = "layer"
+    patch_layers: Optional[List[StrictInt]] = None
+    patch_positions: Optional[List[StrictInt]] = None
+    patch_heads: Optional[List[tuple[StrictInt, StrictInt]]] = None
+    patch_neurons: Optional[List[tuple[StrictInt, StrictInt]]] = None
 
 
 class InterpRunResponse(BaseModel):
@@ -275,6 +285,7 @@ def _validate(request: InterpRunRequest) -> None:
     missing = [
         field for field in spec["needs"]
         if not getattr(request, field, None)
+        or (isinstance(getattr(request, field, None), str) and not getattr(request, field).strip())
         or (field == "prompts" and len(request.prompts or []) < 2)
     ]
     if missing:
@@ -295,6 +306,40 @@ def _validate(request: InterpRunRequest) -> None:
         )
     if request.max_len < 8:
         raise HTTPException(status_code=400, detail="max_len must be at least 8")
+    if request.prompts is not None and any(not p.strip() for p in request.prompts):
+        raise HTTPException(status_code=400, detail="Every progression prompt must contain text")
+    if not re.fullmatch(r"auto|cpu|mps|cuda(?::\d+)?", request.device):
+        raise HTTPException(status_code=400, detail="device must be auto, cpu, mps, cuda, or cuda:N")
+    if request.dtype not in {"float32", "fp32", "float16", "fp16", "bfloat16", "bf16"}:
+        raise HTTPException(status_code=400, detail="dtype must be float32, float16, or bfloat16")
+    if not 1 <= request.window <= MAX_LEN_CEILING:
+        raise HTTPException(status_code=400, detail=f"window must be between 1 and {MAX_LEN_CEILING}")
+    if not 1 <= request.topk <= 100:
+        raise HTTPException(status_code=400, detail="topk must be between 1 and 100")
+    if request.dim_reduction not in {"pca", "tsne", "umap"}:
+        raise HTTPException(status_code=400, detail="dim_reduction must be pca, tsne, or umap")
+
+    if request.patch_components not in {"layer", "head", "neuron"}:
+        raise HTTPException(status_code=400, detail="patch_components must be layer, head, or neuron")
+    for name in ("patch_layers", "patch_positions", "patch_heads", "patch_neurons"):
+        values = getattr(request, name)
+        if values is not None:
+            flattened = [n for pair in values for n in pair] if name in {"patch_heads", "patch_neurons"} else values
+            if not values or len(values) > 64 or any(n < 0 for n in flattened):
+                raise HTTPException(status_code=400, detail=f"{name} requires 1–64 nonnegative indices")
+            if len(set(tuple(v) if isinstance(v, (list, tuple)) else v for v in values)) != len(values):
+                raise HTTPException(status_code=400, detail=f"{name} must not contain duplicate indices")
+    if request.patch_positions and any(n >= min(request.window, request.max_len) for n in request.patch_positions):
+        raise HTTPException(status_code=400, detail="Patch positions must fit the analysis window; actual token bounds are checked at execution")
+    if request.patch_heads and request.patch_components != "head":
+        raise HTTPException(status_code=400, detail="patch_heads requires head patching")
+    if request.patch_neurons and request.patch_components != "neuron":
+        raise HTTPException(status_code=400, detail="patch_neurons requires neuron patching")
+    selected_units = request.patch_heads or request.patch_neurons
+    if selected_units and request.patch_layers and set(request.patch_layers) != {layer for layer, _ in selected_units}:
+        raise HTTPException(status_code=400, detail="Patch layers must match the blocks in the explicit head/neuron selection")
+    if not request.enable_patching and (request.patch_components != "layer" or any(getattr(request, n) for n in ("patch_layers", "patch_positions", "patch_heads", "patch_neurons"))):
+        raise HTTPException(status_code=400, detail="Patch settings require activation patching to be enabled")
 
     # Refuse a flag rather than accepting it and quietly dropping it. Only the
     # two-prompt comparison service reads the causal analyses; model_diff,
@@ -342,7 +387,9 @@ def _build_config(row: InterpRun, out_dir: Path):
     from vivasecuris.aiasylum.interp.core.config import Config
 
     opts = (row.meta_data or {}).get("options", {})
-    captures = bool(opts.get("enable_attention_capture") or opts.get("enable_mlp_capture"))
+    from vivasecuris.aiasylum.interp.core.requirements import capture_options
+    opts = capture_options(opts)
+    captures = bool(opts.get("enable_component_analysis"))
 
     return Config(
         model=row.model_a,
@@ -365,6 +412,11 @@ def _build_config(row: InterpRun, out_dir: Path):
         enable_qkv_capture=bool(opts.get("enable_qkv_capture", False)),
         enable_pre_mlp_capture=bool(opts.get("enable_pre_mlp_capture", False)),
         enable_patching=bool(opts.get("enable_patching", False)),
+        patch_components=opts.get("patch_components", "layer"),
+        patch_layers=opts.get("patch_layers"),
+        patch_positions=opts.get("patch_positions"),
+        patch_heads=opts.get("patch_heads"),
+        patch_neurons=opts.get("patch_neurons"),
         enable_scrub=bool(opts.get("enable_scrub", False)),
         enable_minimal_circuit=bool(opts.get("enable_minimal_circuit", False)),
         seed=0,
@@ -372,11 +424,84 @@ def _build_config(row: InterpRun, out_dir: Path):
 
 
 def _execute(run_id: int, row_snapshot: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
+    """Release accelerator storage before the worker gives up its model slot."""
+    import gc
+    import traceback
+    from vivasecuris.aiasylum.models.transformers_local import clear_cache
+
+    try:
+        summary = _execute_analysis(run_id, row_snapshot, out_dir)
+    except BaseException as exc:
+        # Failed model calls retain their locals through exception tracebacks.
+        # Preserve the stack for reporting, but release those tensor references
+        # before emptying the allocator, including chained loading/OOM errors.
+        pending, seen = [exc], set()
+        while pending:
+            error = pending.pop()
+            if id(error) in seen:
+                continue
+            seen.add(id(error))
+            traceback.clear_frames(error.__traceback__)
+            pending.extend(item for item in (error.__cause__, error.__context__) if item is not None)
+        raise
+    finally:
+        # The inner frame has exited, so model and analyzer locals are gone.
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available() and torch.cuda.is_initialized():
+                # A small cuBLAS workspace can pin a much larger allocator
+                # segment. Release it on the worker thread while the model
+                # slot is held, then return unused segments to the driver.
+                clear_workspaces = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+                if callable(clear_workspaces):
+                    clear_workspaces()
+        except Exception as exc:
+            # This private hook is optional across supported PyTorch versions;
+            # allocator cleanup must still run if it is absent or fails.
+            logger.warning("Could not release CUDA BLAS workspaces: %s", str(exc))
+        clear_cache()
+
+    # Driver usage includes CUDA context/library allocations. Record PyTorch's
+    # own live/reserved bytes separately so idle memory is diagnosable without
+    # treating every byte reported by nvidia-smi as a retained model.
+    try:
+        import torch
+        if torch.cuda.is_available():
+            memory = []
+            for index in range(torch.cuda.device_count()):
+                free, total = torch.cuda.mem_get_info(index)
+                memory.append({
+                    "device": f"cuda:{index}",
+                    "allocated_bytes": torch.cuda.memory_allocated(index),
+                    "reserved_bytes": torch.cuda.memory_reserved(index),
+                    "driver_free_bytes": free,
+                    "total_bytes": total,
+                })
+            summary["cuda_memory_after_cleanup"] = memory
+    except Exception as exc:
+        logger.warning("Could not record post-analysis CUDA memory: %s", str(exc))
+    return summary
+
+
+def _execute_analysis(run_id: int, row_snapshot: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
     """The synchronous, GPU-bound body. Always called in a worker thread."""
     from vivasecuris.aiasylum.interp.core.orchestrator import AnalysisOrchestrator
 
     mode = row_snapshot["mode"]
     config = row_snapshot["config"]
+    row_snapshot["progress"]("Checking model configuration and available memory")
+    # Cached model providers can retain several GiB from an earlier job. Free
+    # that cache while holding the model slot, then check current free memory.
+    from vivasecuris.aiasylum.models.transformers_local import clear_cache
+    clear_cache()
+    checked = check_request({
+        **vars(config), "mode": mode, "model_a": row_snapshot["model_a"],
+        "model_b": row_snapshot.get("model_b"),
+    })
+    if not checked["ready"]:
+        raise ValueError("Model preflight failed: " + " ".join(checked["errors"]))
+    row_snapshot["progress"](f"Loading {row_snapshot['model_a']} on {checked['device']}; first use may download weights")
 
     if mode == "model_diff":
         from vivasecuris.aiasylum.interp.core.services.model_comparison_service import (
@@ -399,19 +524,27 @@ def _execute(run_id: int, row_snapshot: Dict[str, Any], out_dir: Path) -> Dict[s
             release=clear_cache,
             progress=row_snapshot["progress"],
         )
+        from vivasecuris.aiasylum.interp.core.requirements import validate_result
+        validate_result(result, config, mode="model_diff")
         ModelComparisonService.save_results(result, out_dir)
         html = AnalysisOrchestrator.build_dashboard(result)
         (out_dir / "dashboard.html").write_text(html)
     else:
         result, html = AnalysisOrchestrator.run_and_save(config)
 
+    from vivasecuris.aiasylum.interp.core.requirements import validate_result
+    validate_result(result, config, mode=mode)
     meta = dict(getattr(result, "meta", {}) or {})
     return {
         "spike_layer": meta.get("spike_layer"),
         "num_layers": meta.get("num_layers"),
-        "window_len": meta.get("window_len"),
+        "window_len": meta.get("window_len", meta.get("query_window_len")),
+        "validated_outputs": meta.get("validated_outputs", []),
+        "input_token_counts": meta.get("input_token_counts", []),
+        "warnings": meta.get("warnings", []),
         "shared_unembedding": meta.get("shared_unembedding"),
         "dashboard_bytes": len(html),
+        "preflight": checked,
     }
 
 
@@ -456,7 +589,25 @@ async def _run_interp_background(run_id: int) -> None:
                 "progress": report,
             }
 
-            summary = await asyncio.to_thread(_execute, run_id, snapshot, out_dir)
+            # Cancelling to_thread does not stop its worker. Keep the GPU slot
+            # until it exits; otherwise the next run loads a second model.
+            worker = asyncio.create_task(asyncio.to_thread(_execute, run_id, snapshot, out_dir))
+            cancelled = False
+            while True:
+                try:
+                    summary = await asyncio.shield(worker)
+                    break
+                except asyncio.CancelledError:
+                    if worker.cancelled():
+                        raise
+                    cancelled = True
+                    report("Stop requested; waiting for the current model operation to release GPU memory")
+                except Exception:
+                    if cancelled:
+                        raise asyncio.CancelledError
+                    raise
+            if cancelled:
+                raise asyncio.CancelledError
 
             row = session.query(InterpRun).filter(InterpRun.id == run_id).first()
             row.status = STATUS_COMPLETED
@@ -518,7 +669,17 @@ async def list_modes():
             ),
         },
         "warnings": _preflight(),
+        "hardware": hardware_info(),
+        "model_presets": MODEL_PRESETS,
     }
+
+
+@router.post("/preflight")
+async def preflight_interp(request: InterpRunRequest):
+    """Inspect config and hardware without downloading model weights."""
+    _validate(request)
+    from vivasecuris.aiasylum.interp.core.requirements import capture_options
+    return await asyncio.to_thread(check_request, capture_options(request.model_dump()))
 
 
 @router.post("/runs", response_model=InterpRunResponse)
@@ -537,6 +698,8 @@ async def create_interp_run(request: InterpRunRequest):
             prompt_b=request.prompt_b,
             prompts=request.prompts,
             meta_data={
+                "lineage_parent": request.lineage_parent,
+                "lineage_id": uuid4().hex,
                 "options": {
                     "device": request.device,
                     "dtype": request.dtype,
@@ -549,6 +712,11 @@ async def create_interp_run(request: InterpRunRequest):
                     "enable_qkv_capture": request.enable_qkv_capture,
                     "enable_pre_mlp_capture": request.enable_pre_mlp_capture,
                     "enable_patching": request.enable_patching,
+                    "patch_components": request.patch_components,
+                    "patch_layers": request.patch_layers,
+                    "patch_positions": request.patch_positions,
+                    "patch_heads": request.patch_heads,
+                    "patch_neurons": request.patch_neurons,
                     "enable_scrub": request.enable_scrub,
                     "enable_minimal_circuit": request.enable_minimal_circuit,
                 },
@@ -603,7 +771,13 @@ async def delete_interp_run(run_id: int):
         if row is None:
             raise HTTPException(status_code=404, detail="Interp run not found")
 
+        if row.status == STATUS_RUNNING:
+            raise HTTPException(status_code=409, detail="Stop this run and wait for it to finish before deleting its artifacts.")
+        if row.status == STATUS_PENDING:
+            interp_cancellation.cancel(run_id)
         out_dir = row.out_dir
+        from vivasecuris.aiasylum.api.model_history import archive_run
+        archive_run(row)
         session.delete(row)
         session.commit()
 
@@ -627,6 +801,13 @@ async def stop_interp_run(run_id: int):
             raise HTTPException(status_code=404, detail="Interp run not found")
         if row.status not in (STATUS_PENDING, STATUS_RUNNING):
             return {"stopped": False, "status": row.status, "reason": "not running"}
+        if row.status == STATUS_PENDING:
+            # A task cancelled while waiting for hold() never enters the body
+            # that normally records failure and unregisters it.
+            _fail(session, run_id, "Cancelled before starting", cancelled=True)
+            interp_cancellation.cancel(run_id)
+            interp_cancellation.unregister_task(run_id)
+            return {"stopped": True, "run_id": run_id}
     finally:
         session.close()
 

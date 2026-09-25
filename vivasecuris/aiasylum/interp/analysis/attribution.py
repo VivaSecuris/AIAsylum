@@ -48,7 +48,7 @@ class AttributionAnalyzer:
             }
         
         attn = result.attention_weights[layer_idx]  # [1, num_heads, seq_len, seq_len]
-        attn_np = attn[0, :, start + token_idx, start:start + window_len].detach().cpu().numpy()
+        attn_np = attn[0, :, start + token_idx, start:start + window_len].detach().cpu().float().numpy()
         
         num_heads = attn_np.shape[0]
         head_attributions = []

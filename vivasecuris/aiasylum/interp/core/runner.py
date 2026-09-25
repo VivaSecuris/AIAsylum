@@ -54,30 +54,43 @@ class ModelRunner:
         Returns:
             RunResult with captured activations
         """
-        # Tokenize
+        if max_length < 1:
+            raise ValueError("max_length must be at least 1")
+        context_limit = getattr(self.model.config, "max_position_embeddings", None)
+        if isinstance(context_limit, int) and context_limit > 0:
+            max_length = min(max_length, context_limit)
+
+        # Preserve the tokenizer's attention mask (including padding). Input
+        # embeddings may live on a different device on a dispatched model.
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
             truncation=True,
             max_length=max_length,
         )
-        input_ids = inputs["input_ids"].to(self.model.device)
+        embedding = self.model.get_input_embeddings()
+        input_device = embedding.weight.device
+        inputs = {key: value.to(input_device) for key, value in inputs.items()
+                  if key in ("input_ids", "attention_mask")}
+        input_ids = inputs["input_ids"]
+        if input_ids.shape[-1] == 0:
+            raise ValueError("The prompt produced no tokens; enter a non-empty prompt")
         
         # Get token strings
         token_strs = [
-            self.tokenizer.decode([token_id]) for token_id in input_ids[0]
+            self.tokenizer.decode([token_id]) for token_id in input_ids[0].tolist()
         ]
-        
-        # Register hooks if needed
-        if self.debug_mode:
-            self._register_debug_hooks()
+
+        capture_attention = self.debug_mode and getattr(
+            self.config, "enable_attention_capture", True
+        )
 
         # SDPA and flash kernels never materialise attention weights, so
         # `output_attentions=True` returns None under them. Switch to eager for
         # the capture pass and back afterwards, so generation elsewhere keeps
         # the fast kernel.
         restore_impl = None
-        if self.debug_mode:
+        if capture_attention:
             impl = getattr(getattr(self.model, "config", None), "_attn_implementation", None)
             if impl not in (None, "eager") and hasattr(self.model, "set_attn_implementation"):
                 try:
@@ -88,36 +101,36 @@ class ModelRunner:
 
         # Forward pass
         try:
+            if self.debug_mode:
+                self._register_debug_hooks()
             with torch.no_grad():
                 outputs = self.model(
-                    input_ids=input_ids,
+                    **inputs,
                     output_hidden_states=True,
-                    output_attentions=self.debug_mode,
+                    output_attentions=capture_attention,
+                    use_cache=False,
                     return_dict=True,
                 )
+
+            mlp_activations = None
+            attn_outputs = None
+            pre_mlp_activations = None
+            qkv_outputs = None
+            if self._activation_hooks is not None and self._activation_hooks.supported:
+                attn_outputs = self._activation_hooks.get_attn_outputs_tuple()
+                mlp_activations = self._activation_hooks.get_mlp_activations_copy()
+                pre_mlp_activations = self._activation_hooks.get_pre_mlp_copy()
+            if self._qkv_hooks is not None and self._qkv_hooks.supported:
+                qkv_outputs = self._qkv_hooks.get_qkv_copy()
         finally:
+            # Failed/OOM passes must never leave hooks attached to a cached model.
+            self._remove_hooks()
             if restore_impl is not None:
                 try:
                     self.model.set_attn_implementation(restore_impl)
                 except Exception:  # pragma: no cover
                     pass
         
-        # Extract optional debug info from hooks before removing them
-        mlp_activations = None
-        attn_outputs = None
-        pre_mlp_activations = None
-        qkv_outputs = None
-        if self._activation_hooks is not None and self._activation_hooks.supported:
-            attn_outputs = self._activation_hooks.get_attn_outputs_tuple()
-            mlp_activations = self._activation_hooks.get_mlp_activations_copy()
-            pre_mlp_activations = self._activation_hooks.get_pre_mlp_copy()
-        if self._qkv_hooks is not None and self._qkv_hooks.supported:
-            qkv_outputs = self._qkv_hooks.get_qkv_copy()
-
-        # Remove hooks
-        if self.debug_mode:
-            self._remove_hooks()
-
         # Extract hidden states (tuple of L+1 tensors)
         hidden_states = tuple(
             hs.cpu().float() for hs in outputs.hidden_states
@@ -128,13 +141,35 @@ class ModelRunner:
 
         # Extract optional debug info
         attention_weights = None
-        if self.debug_mode and hasattr(outputs, "attentions"):
-            attention_weights = outputs.attentions
+        if capture_attention and getattr(outputs, "attentions", None) is not None:
+            attention_weights = tuple(
+                attn.detach().cpu() if attn is not None else None
+                for attn in outputs.attentions
+            )
+        if capture_attention and (
+            not attention_weights or any(attn is None for attn in attention_weights)
+        ):
+            raise ValueError(
+                "This model did not return attention weights. Load it with eager attention "
+                "or disable attention capture; residual and MLP analyses remain available."
+            )
 
         if attn_outputs is None and mlp_activations is None and self.debug_mode and self.mlp_activations:
             # Legacy path when hook registry not used (e.g. unsupported arch)
             mlp_activations = self.mlp_activations.copy()
             self.mlp_activations.clear()
+
+        if self.debug_mode and self.config is not None:
+            blocks = len(hidden_states) - 1
+            for flag, captured in (
+                ("enable_mlp_capture", mlp_activations),
+                ("enable_pre_mlp_capture", pre_mlp_activations),
+                ("enable_qkv_capture", qkv_outputs),
+            ):
+                if getattr(self.config, flag, False) and (
+                    not captured or any(layer not in captured for layer in range(blocks))
+                ):
+                    raise ValueError(f"{flag} could not capture every transformer block for this architecture")
 
         return RunResult(
             input_ids=input_ids.cpu(),

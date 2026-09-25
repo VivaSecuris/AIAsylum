@@ -249,7 +249,8 @@ def test_causal_analyses_are_advertised_with_their_claim(client):
     """Circuit cards are correlational; the minimal circuit is not. The UI
     cannot present them as equally trustworthy if it cannot tell them apart."""
     analyses = {a["name"]: a for a in client.get("/api/v1/interp/modes").json()["analyses"]}
-    assert analyses["enable_minimal_circuit"]["claim"] == "causal"
+    assert analyses["enable_minimal_circuit"]["claim"] == "descriptive"
+    assert "approximation" in analyses["enable_minimal_circuit"]["description"]
     assert analyses["enable_scrub"]["claim"] == "causal"
     assert analyses["enable_attention_capture"]["claim"] == "descriptive"
     assert all(a["cost"] for a in analyses.values())

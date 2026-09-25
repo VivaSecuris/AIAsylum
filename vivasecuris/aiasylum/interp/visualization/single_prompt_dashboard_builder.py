@@ -7,7 +7,9 @@ import numpy as np
 from vivasecuris.aiasylum.interp.data.models import SinglePromptResult
 from vivasecuris.aiasylum.interp.analysis.dim_reduction import DimensionReduction
 from vivasecuris.aiasylum.interp.visualization.assets import plotly_script_tag
-from vivasecuris.aiasylum.interp.visualization.base import DashboardBuilderBase, serialize_payload_for_js
+from vivasecuris.aiasylum.interp.visualization.base import (
+    DashboardBuilderBase, dashboard_plot_css, dashboard_plot_script, serialize_payload_for_js,
+)
 
 
 class SinglePromptDashboardBuilder(DashboardBuilderBase):
@@ -70,6 +72,7 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
         table {{ border-collapse: collapse; width: 100%; margin: 15px 0; font-size: 0.9em; }}
         th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
         th {{ background: #f5f5f5; }}
+        {dashboard_plot_css()}
     </style>
 </head>
 <body>
@@ -90,21 +93,21 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
         <div class="token-strip" id="token-strip"></div>
 
         <h2>Activation magnitude (L2 norm by layer and token)</h2>
-        <div class="plot-container" id="activation-norm-heatmap"></div>
+        <div class="plot-container plot-target" id="activation-norm-heatmap"></div>
 
         <h2>3D trajectory ({dr_name})</h2>
         <p>Select layer:</p>
         <select id="pca-layer-select"></select>
-        <div class="plot-container" id="pca-3d"></div>
+        <div class="plot-container plot-target plot-tall" id="pca-3d"></div>
 
         <h2>Predictions</h2>
-        <div class="plot-container" id="token-to-token-plot"></div>
+        <div class="plot-container plot-target plot-medium" id="token-to-token-plot"></div>
         <div id="predictions-table"></div>
 
         <div id="attention-section" style="display:none;">
             <h2>Attention (mean over heads)</h2>
             <select id="attn-layer-select"></select>
-            <div class="plot-container" id="attention-heatmap"></div>
+            <div class="plot-container plot-target" id="attention-heatmap"></div>
         </div>
         <div id="logit-attribution-section" style="display:none;">
             <h2>Logit attribution (last token)</h2>
@@ -112,6 +115,7 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
         </div>
     </div>
     <script>
+        {dashboard_plot_script()}
         const data = {data_json};
 
         // Tokens
@@ -122,7 +126,7 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
             const z = data.activation_norm_mat;
             const y = z.map((_, i) => 'Layer ' + i);
             const x = z[0].map((_, i) => i);
-            Plotly.newPlot('activation-norm-heatmap', [{{
+            renderDashboardPlot('activation-norm-heatmap', [{{
                 z: z, x: x, y: y, type: 'heatmap',
                 colorscale: 'Viridis', colorbar: {{ title: 'L2 norm' }}
             }}], {{ margin: {{ t: 20, r: 80 }}, xaxis: {{ title: 'Token position' }}, yaxis: {{ title: 'Layer' }} }}, {{ responsive: true }});
@@ -146,7 +150,7 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
             const y = tr.map(r => r[1]);
             const z = tr.map(r => r[2] || 0);
             const text = data.tokens.map((t, i) => `${{i}}: ${{t}}`);
-            Plotly.newPlot('pca-3d', [{{
+            renderDashboardPlot('pca-3d', [{{
                 x: x, y: y, z: z, type: 'scatter3d', mode: 'lines+markers',
                 line: {{ color: 'rgb(33, 150, 243)', width: 4 }},
                 marker: {{ size: 4, text: text, hoverinfo: 'text' }}
@@ -165,7 +169,7 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
         const pred = data.predictions_payload;
         if (pred && pred.token_to_token_diff && pred.token_to_token_diff.length > 0) {{
             const diff = pred.token_to_token_diff;
-            Plotly.newPlot('token-to-token-plot', [{{
+            renderDashboardPlot('token-to-token-plot', [{{
                 x: diff.map((_, i) => i + 1),
                 y: diff,
                 type: 'scatter',
@@ -198,7 +202,7 @@ class SinglePromptDashboardBuilder(DashboardBuilderBase):
             function plotAttn(layerKey) {{
                 const ap = data.attention_payload[layerKey];
                 if (!ap || !ap.mean_over_heads) return;
-                Plotly.newPlot('attention-heatmap', [{{
+                renderDashboardPlot('attention-heatmap', [{{
                     z: ap.mean_over_heads, type: 'heatmap',
                     colorscale: 'Blues', xaxis: 'x', yaxis: 'y'
                 }}], {{ margin: {{ t: 20 }}, xaxis: {{ title: 'Key' }}, yaxis: {{ title: 'Query' }} }}, {{ responsive: true }});
