@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Benchmark comparisons', href: '/benchmarks', icon: BarChart3 },
   { name: 'Create Test', href: '/create-test', icon: PlayCircle },
   { name: 'Test Runs', href: '/test-runs', icon: List },
   { name: 'Suite', href: '/suite', icon: Layers },

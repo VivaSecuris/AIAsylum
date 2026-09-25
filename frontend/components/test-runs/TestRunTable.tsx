@@ -5,14 +5,20 @@ import { DataTable } from '@/components/common/DataTable'
 import { StatusBadge } from './StatusBadge'
 import { formatDateTime } from '@/lib/utils'
 import { MoreVertical, Eye, Trash2, Download } from 'lucide-react'
+import { testRunModelRef } from '@/lib/test-run-display'
 
 interface TestRunTableProps {
   testRuns: TestRun[]
+  allTestRuns?: TestRun[]
   onDelete?: (id: number) => void
 }
 
-export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
+export function TestRunTable({ testRuns, allTestRuns = testRuns, onDelete }: TestRunTableProps) {
   const [expandedRow, setExpandedRow] = useState<number | null>(null)
+  const activeCampaignIds = new Set(allTestRuns
+    .filter((run) => ['pending', 'running', 'paused'].includes(run.status))
+    .map((run) => run.meta_data?.benchmark_campaign?.id)
+    .filter((id): id is string => typeof id === 'string'))
 
   const columns = [
     {
@@ -34,7 +40,7 @@ export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
     {
       key: 'doctor',
       header: 'Doctor Model',
-      render: (run: TestRun) => (
+      render: (run: TestRun) => run.test_type === 'benchmark' ? <span title="Objective benchmark; no doctor model">—</span> : (
         <div className="text-sm">
           <div className="font-medium">{run.doctor_model}</div>
           <div className="text-xs text-muted-foreground">{run.doctor_provider}</div>
@@ -46,7 +52,7 @@ export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
       header: 'Patient Model',
       render: (run: TestRun) => (
         <div className="text-sm">
-          <div className="font-medium">{run.patient_model}</div>
+          <div className="font-medium break-words">{testRunModelRef(run)}</div>
           <div className="text-xs text-muted-foreground">{run.patient_provider}</div>
         </div>
       ),
@@ -79,7 +85,7 @@ export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
           >
             <Eye className="h-4 w-4" />
           </Link>
-          <button
+          {!activeCampaignIds.has(run.meta_data?.benchmark_campaign?.id) && <button
             onClick={(e) => {
               e.stopPropagation()
               onDelete?.(run.id)
@@ -88,7 +94,7 @@ export function TestRunTable({ testRuns, onDelete }: TestRunTableProps) {
             title="Delete"
           >
             <Trash2 className="h-4 w-4" />
-          </button>
+          </button>}
         </div>
       ),
     },

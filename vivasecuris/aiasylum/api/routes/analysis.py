@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from vivasecuris.aiasylum.analysis import AnalysisService
 from vivasecuris.aiasylum.database import Assessment, get_session, TestRun
-from vivasecuris.aiasylum.constants import TEST_TYPE_ANALYSIS, STATUS_PENDING, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
+from vivasecuris.aiasylum.constants import TEST_TYPE_ANALYSIS, TEST_TYPE_BENCHMARK, STATUS_PENDING, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -224,7 +224,10 @@ async def analyze_unanalyzed(
         enable_manipulation_analysis=False,
     ),
 ):
-    """Start analysis for all completed test runs that have no assessments (runs in background).
+    """Start analysis for completed behavioral tests that have no assessments.
+
+    Benchmarks already have objective scores and are excluded from this bulk
+    default. An explicit analysis of an individual benchmark remains available.
 
     Defaults match the suite auto-analysis config: COT detection on, factuality and
     manipulation analysis off, no custom evaluator.
@@ -237,6 +240,7 @@ async def analyze_unanalyzed(
             .filter(
                 TestRun.status == STATUS_COMPLETED,
                 TestRun.test_type != TEST_TYPE_ANALYSIS,
+                TestRun.test_type != TEST_TYPE_BENCHMARK,
                 ~TestRun.id.in_(session.query(Assessment.test_run_id).distinct()),
             )
             .order_by(TestRun.id)

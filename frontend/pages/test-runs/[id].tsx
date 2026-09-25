@@ -1,6 +1,6 @@
 import { useRouter } from 'next/router'
 import Link from 'next/link'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
@@ -9,11 +9,13 @@ import { ConversationViewer } from '@/components/conversation/ConversationViewer
 import { DataTable } from '@/components/common/DataTable'
 import { AnalysisConfigDialog, AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
 import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis, useStartTestRun, usePauseTestRun, useResumeTestRun, useStopTestRun, useDeleteTestRun, useTestRunProgress } from '@/lib/hooks'
+import { useBenchmarkCampaign } from '@/lib/benchmark-campaigns'
 import { formatDate, formatDateTime } from '@/lib/utils'
 import { TestResult, Assessment } from '@/lib/api'
 import { Play, Download, GitCompare, Trash2, Square, Pause, RotateCw } from 'lucide-react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { toast } from '@/lib/toast'
+import { BenchmarkEvidence, BenchmarkSummary } from '@/components/benchmarks/BenchmarkEvidence'
 
 export default function TestRunDetailPage() {
   const router = useRouter()
@@ -22,6 +24,9 @@ export default function TestRunDetailPage() {
 
   const queryClient = useQueryClient()
   const { data: testRun, isLoading: loadingRun, error: runError } = useTestRun(testRunId)
+  const benchmarkCampaignId = typeof testRun?.meta_data?.benchmark_campaign?.id === 'string'
+    ? testRun.meta_data.benchmark_campaign.id : undefined
+  const { data: benchmarkCampaign } = useBenchmarkCampaign(benchmarkCampaignId)
   // For analysis runs, conversation/results/assessments belong to the source run, not the analysis run itself
   const dataRunId: number = (testRun?.test_type === 'analysis' && testRun?.meta_data?.source_test_run_id)
     ? testRun.meta_data.source_test_run_id
@@ -38,6 +43,13 @@ export default function TestRunDetailPage() {
   
   // State declarations (must be before useEffect hooks that use them)
   const [activeTab, setActiveTab] = useState('overview')
+  const initializedRunTab = useRef<number | null>(null)
+  useEffect(() => {
+    if (testRun && initializedRunTab.current !== testRun.id) {
+      initializedRunTab.current = testRun.id
+      setActiveTab(testRun.test_type === 'benchmark' ? 'results' : 'overview')
+    }
+  }, [testRun?.id, testRun?.test_type])
   const [showAnalysisDialog, setShowAnalysisDialog] = useState(false)
   const [analysisProgress, setAnalysisProgress] = useState<{step?: string; message?: string} | null>(null)
   
@@ -65,10 +77,10 @@ export default function TestRunDetailPage() {
   
   // Auto-switch to Live tab when test starts running
   useEffect(() => {
-    if (testRun?.status === 'running' && activeTab === 'overview') {
+    if (testRun?.status === 'running' && testRun.test_type !== 'benchmark' && activeTab === 'overview') {
       setActiveTab('live')
     }
-  }, [testRun?.status, activeTab])
+  }, [testRun?.status, testRun?.test_type, activeTab])
 
   // When Analysis tab is hidden (test not completed and not an analysis run), switch to overview if we're on Analysis
   const showAnalysisTab = testRun?.status === 'completed' || testRun?.test_type === 'analysis'
@@ -148,7 +160,7 @@ export default function TestRunDetailPage() {
   // Poll for assessments when analysis might be running
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null
-    if (runAnalysis.isPending || analysisProgress || (assessments.length === 0 && testRun?.status === 'completed')) {
+    if (runAnalysis.isPending || analysisProgress || (assessments.length === 0 && testRun?.status === 'completed' && testRun.test_type !== 'benchmark')) {
       // Poll more aggressively when analysis is pending or in progress
       interval = setInterval(() => {
         queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
@@ -158,7 +170,7 @@ export default function TestRunDetailPage() {
     return () => {
       if (interval) clearInterval(interval)
     }
-  }, [runAnalysis.isPending, analysisProgress, testRunId, dataRunId, queryClient, assessments.length, testRun?.status])
+  }, [runAnalysis.isPending, analysisProgress, testRunId, dataRunId, queryClient, assessments.length, testRun?.status, testRun?.test_type])
 
   const handleRunAnalysis = async (config: AnalysisConfig) => {
     if (!testRunId) {
@@ -381,15 +393,21 @@ export default function TestRunDetailPage() {
 
   // Check if this is an analysis test run
   const isAnalysisRun = testRun.test_type === 'analysis'
+  const isBenchmarkRun = testRun.test_type === 'benchmark'
   const sourceTestRunId = testRun.meta_data?.source_test_run_id
+  const isBenchmarkCampaignRun = Boolean(testRun.meta_data?.benchmark_campaign)
+  const campaignDeletionBlocked = isBenchmarkCampaignRun && (
+    !benchmarkCampaign || benchmarkCampaign.runs.some((run) => ['pending', 'running', 'paused'].includes(run.status))
+  )
 
   return (
     <Layout>
       <div className="space-y-6">
+        {benchmarkCampaignId && <Link href={{ pathname: '/benchmarks', query: { campaign: benchmarkCampaignId } }} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">← Back to benchmark comparison</Link>}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">
-              {isAnalysisRun ? 'Analysis' : 'Test Run'} #{testRun.id}
+              {isAnalysisRun ? 'Analysis' : isBenchmarkRun ? 'Benchmark' : 'Test Run'} #{testRun.id}
             </h1>
             {isAnalysisRun && sourceTestRunId && (
               <p className="text-sm text-muted-foreground mt-1">
@@ -411,7 +429,7 @@ export default function TestRunDetailPage() {
             </div>
           </div>
           <div className="flex gap-2">
-            {(testRun.status === 'pending' || (testRun.status === 'failed' && !testRun.meta_data?.cancelled)) && (
+            {!isBenchmarkCampaignRun && (testRun.status === 'pending' || (testRun.status === 'failed' && !testRun.meta_data?.cancelled)) && (
               <button
                 onClick={handleStartRun}
                 disabled={startTestRun.isPending}
@@ -423,45 +441,45 @@ export default function TestRunDetailPage() {
             )}
             {testRun.status === 'running' && (
               <>
-                <button
+                {!isBenchmarkCampaignRun && <button
                   onClick={handlePauseRun}
                   disabled={pauseTestRun.isPending}
                   className="flex items-center gap-2 rounded-lg border border-blue-500 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900 disabled:opacity-50"
                 >
                   <Pause className="h-4 w-4" />
                   {pauseTestRun.isPending ? 'Pausing...' : 'Pause'}
-                </button>
-                <button
+                </button>}
+                {!isBenchmarkCampaignRun && <button
                   onClick={handleStopRun}
                   disabled={stopTestRun.isPending}
                   className="flex items-center gap-2 rounded-lg border border-orange-500 bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-900 disabled:opacity-50"
                 >
                   <Square className="h-4 w-4" />
                   {stopTestRun.isPending ? 'Stopping...' : 'Stop Run'}
-                </button>
+                </button>}
               </>
             )}
             {testRun.status === 'paused' && (
               <>
-                <button
+                {!isBenchmarkCampaignRun && <button
                   onClick={handleResumeRun}
                   disabled={resumeTestRun.isPending}
                   className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                   <RotateCw className="h-4 w-4" />
                   {resumeTestRun.isPending ? 'Resuming...' : 'Resume'}
-                </button>
-                <button
+                </button>}
+                {!isBenchmarkCampaignRun && <button
                   onClick={handleStopRun}
                   disabled={stopTestRun.isPending}
                   className="flex items-center gap-2 rounded-lg border border-orange-500 bg-orange-50 px-4 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-900 disabled:opacity-50"
                 >
                   <Square className="h-4 w-4" />
                   {stopTestRun.isPending ? 'Stopping...' : 'Stop Run'}
-                </button>
+                </button>}
               </>
             )}
-            {testRun.status === 'failed' && testRun.meta_data?.cancelled && (
+            {!campaignDeletionBlocked && testRun.status === 'failed' && testRun.meta_data?.cancelled && (
               <button
                 onClick={handleDelete}
                 disabled={deleteTestRun.isPending}
@@ -496,7 +514,7 @@ export default function TestRunDetailPage() {
               <Download className="h-4 w-4" />
               Export
             </button>
-            {testRun.status !== 'running' && !(testRun.status === 'failed' && testRun.meta_data?.cancelled) && (
+            {!campaignDeletionBlocked && testRun.status !== 'running' && !(testRun.status === 'failed' && testRun.meta_data?.cancelled) && (
               <button
                 onClick={handleDelete}
                 disabled={deleteTestRun.isPending}
@@ -508,6 +526,8 @@ export default function TestRunDetailPage() {
             )}
           </div>
         </div>
+
+        {isBenchmarkRun && <BenchmarkSummary run={testRun} results={results} />}
 
         <Tabs.Root value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <Tabs.List className="flex gap-2 border-b">
@@ -758,7 +778,7 @@ export default function TestRunDetailPage() {
               </div>
             )}
             
-            <div className="grid grid-cols-2 gap-4">
+            {isBenchmarkRun ? <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">This benchmark evaluates one model against saved dataset answers. Open Results for accuracy and question-level evidence, or use the comparison link above to compare models.</div> : <div className="grid grid-cols-2 gap-4">
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">{isAnalysisRun ? 'Evaluator Model' : 'Doctor Model'}</h3>
                 <p className="text-sm text-muted-foreground">{testRun.doctor_provider}</p>
@@ -792,7 +812,7 @@ export default function TestRunDetailPage() {
                 <h3 className="font-semibold mb-2">Status</h3>
                 <StatusBadge status={testRun.status} />
               </div>
-            </div>
+            </div>}
           </Tabs.Content>
 
           {/* Live Monitoring Tab */}
@@ -971,7 +991,7 @@ export default function TestRunDetailPage() {
               <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
                 Error loading results: {resultsError instanceof Error ? resultsError.message : 'Unknown error'}
               </div>
-            ) : (
+            ) : isBenchmarkRun ? <BenchmarkEvidence results={results} status={testRun.status} /> : (
               <div className="space-y-4">
                 <DataTable
                   data={results}

@@ -1,6 +1,12 @@
 """Benchmark test implementation."""
 
 from typing import Any, Dict, List, Optional
+import asyncio
+import logging
+import gc
+import platform
+import traceback
+from importlib.metadata import version, PackageNotFoundError
 
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult
@@ -9,8 +15,11 @@ from vivasecuris.aiasylum.benchmarks.datasets import (
     load_benchmark_dataset_all,
     parse_index_selection,
     filter_prompts_by_selection,
+    selection_provenance,
 )
-from vivasecuris.aiasylum.benchmarks.base import BenchmarkResult
+from vivasecuris.aiasylum.benchmarks.simple import SCORING_VERSION, exact_response_matches, final_answer_text, choice_answer, numeric_answer
+
+logger = logging.getLogger(__name__)
 
 
 class BenchmarkTest(TestCase):
@@ -24,6 +33,9 @@ class BenchmarkTest(TestCase):
         test_mode: str = "one_shot",  # "one_shot" or "multi_shot"
         selected_indices: Optional[List[int]] = None,  # Specific indices to use
         selected_subject: Optional[str] = None,  # Filter by subject
+        seed: int = 0,
+        max_new_tokens: int = 512,
+        dataset_revision: Optional[str] = None,
     ):
         """
         Initialize benchmark test.
@@ -42,8 +54,88 @@ class BenchmarkTest(TestCase):
         self.test_mode = test_mode
         self.selected_indices = selected_indices
         self.selected_subject = selected_subject
+        self.seed = seed
+        self.max_new_tokens = max_new_tokens
+        self.dataset_revision = dataset_revision
     
-    async def run(
+    async def run(self, patient_model, doctor_model=None, context=None) -> TestResult:
+        """Hold the shared GPU slot through generation and final cache cleanup."""
+        if self.test_mode not in {"one_shot", "multi_shot"}:
+            raise ValueError("Unknown benchmark test_mode")
+        context = dict(context or {})
+        self.seed = int(context.get("seed", self.seed))
+        self.max_new_tokens = int(context.get("max_new_tokens", self.max_new_tokens))
+        self.dataset_revision = context.get("dataset_revision", self.dataset_revision)
+        if not 0 <= self.seed <= 2**32 - 1 or not 1 <= self.max_new_tokens <= 8192:
+            raise ValueError("Benchmark seed or max_new_tokens is outside the allowed range")
+        context.update(temperature=0.0, seed=self.seed, enable_patient_cot=False)
+        if not getattr(patient_model, "supports_seed", True):
+            # The sampling seed still selects the same questions. Providers
+            # without generation-seed support must not receive or claim one.
+            context.pop("seed", None)
+        # Some hosted providers take generation options only from instance attributes.
+        old_temperature = getattr(patient_model, "temperature", 0.7)
+        old_max_tokens = getattr(patient_model, "max_tokens", 4096)
+        patient_model.temperature = 0.0
+        patient_model.max_tokens = self.max_new_tokens
+        try:
+            if getattr(patient_model, "provider", None) in {"transformers", "local"}:
+                from vivasecuris.aiasylum.api import model_jobs
+                async with model_jobs.hold(f"benchmark run {context.get('test_run_id', self.name)}"):
+                    self._clear_model_cache()
+                    try:
+                        return await self._run(patient_model, doctor_model, context)
+                    except BaseException as error:
+                        # A failed generation's finished thread frame can retain the
+                        # full model through the exception chain even after cache.clear.
+                        seen = set()
+                        pending = [error]
+                        while pending:
+                            current = pending.pop()
+                            if id(current) in seen:
+                                continue
+                            seen.add(id(current))
+                            traceback.clear_frames(current.__traceback__)
+                            pending.extend(exc for exc in (current.__cause__, current.__context__) if exc is not None)
+                        raise
+                    finally:
+                        self._clear_model_cache()
+            return await self._run(patient_model, doctor_model, context)
+        finally:
+            patient_model.temperature = old_temperature
+            patient_model.max_tokens = old_max_tokens
+
+    @staticmethod
+    def _clear_model_cache():
+        from vivasecuris.aiasylum.models.transformers_local import clear_cache
+        clear_cache()
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_initialized():
+                clear_workspaces = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+                if clear_workspaces is not None:
+                    clear_workspaces()
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("Optional CUDA cache cleanup unavailable", exc_info=True)
+
+    async def _respond(self, patient, prompt, context):
+        if self.test_mode == "one_shot":
+            patient.reset()
+        # Cancelling asyncio.to_thread cannot stop CUDA. Keep the GPU slot until
+        # the current generation really ends, then propagate cancellation.
+        task = asyncio.create_task(patient.respond(prompt, context=context))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await task
+            except Exception:
+                pass
+            raise
+
+    async def _run(
         self,
         patient_model,
         doctor_model=None,
@@ -51,7 +143,7 @@ class BenchmarkTest(TestCase):
     ) -> TestResult:
         """Run benchmark test."""
         # Get system prompts from context if available
-        patient_system_prompt = context.get("patient_system_prompt") if context else None
+        patient_system_prompt = (context or {}).get("patient_system_prompt") or "Answer the question accurately. Follow the requested answer format."
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         
         patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
@@ -70,33 +162,24 @@ class BenchmarkTest(TestCase):
             # If specific indices or subject are provided, use manual selection
             if self.selected_indices is not None or self.selected_subject:
                 # Load all prompts without randomization
-                all_prompts = await load_benchmark_dataset_all(self.benchmark_name)
+                all_prompts = await load_benchmark_dataset_all(self.benchmark_name, revision=self.dataset_revision)
                 # Filter by selection criteria
                 dataset = filter_prompts_by_selection(
                     all_prompts,
                     indices=self.selected_indices,
                     subject=self.selected_subject,
                 )
-                # Still shuffle manually selected items to randomize order
-                if len(dataset) > 1:
-                    import random
-                    import time
-                    import os
-                    shuffle_seed = int(time.time() * 1000000) + os.getpid()
-                    if test_run_id:
-                        shuffle_seed += test_run_id * 1000
-                    random.seed(shuffle_seed)
-                    random.shuffle(dataset)
-                    print(f"[BenchmarkTest] Shuffled {len(dataset)} manually selected samples (seed: {shuffle_seed})")
-                print(f"[BenchmarkTest] Loaded {len(dataset)} manually selected samples from {len(all_prompts)} total")
+                if self.num_samples is not None:
+                    dataset = dataset[:self.num_samples]
+                provenance = selection_provenance(dataset, seed=self.seed,
+                    requested_count=self.num_samples, source=getattr(all_prompts, "provenance", {}))
             else:
-                # Use standard loading with randomization
-                dataset = await load_benchmark_dataset(self.benchmark_name, self.num_samples, test_run_id=test_run_id)
-                print(f"[BenchmarkTest] Loaded {len(dataset)} samples for benchmark '{self.benchmark_name}' (test_run_id: {test_run_id})")
-                if len(dataset) > 0:
-                    print(f"[BenchmarkTest] First question: {dataset[0].get('question', '')[:100]}...")
-                    if len(dataset) > 1:
-                        print(f"[BenchmarkTest] Second question: {dataset[1].get('question', '')[:100]}...")
+                dataset = await load_benchmark_dataset(
+                    self.benchmark_name, self.num_samples, test_run_id=test_run_id,
+                    seed=self.seed, revision=self.dataset_revision,
+                )
+                provenance = getattr(dataset, "provenance", selection_provenance(
+                    dataset, seed=self.seed, requested_count=self.num_samples))
         except Exception as e:
             import traceback
             error_msg = f"Error loading benchmark dataset {self.benchmark_name}: {e}\n{traceback.format_exc()}"
@@ -132,6 +215,11 @@ class BenchmarkTest(TestCase):
                 error_msg = f"No dataset loaded for benchmark {self.benchmark_name}"
             raise ValueError(error_msg)
         
+        if self.benchmark_name.lower() == "realtoxicityprompts":
+            raise ValueError("RealToxicityPrompts requires a toxicity evaluator; accuracy scoring is unavailable")
+        if any(not row.get("question") or row.get("answer") is None for row in dataset):
+            raise ValueError("Benchmark contains a missing question or reference answer")
+
         results = []
         correct = 0
         conversation_history = []
@@ -194,7 +282,7 @@ class BenchmarkTest(TestCase):
                 formatted_question = self._format_question(question, choices)
                 
                 # Get model response (single-shot, no context)
-                response_obj = await patient.respond(formatted_question, context=context)
+                response_obj = await self._respond(patient, formatted_question, context=context)
                 
                 # Check for cancellation after async operation
                 if check_cancellation:
@@ -216,6 +304,8 @@ class BenchmarkTest(TestCase):
                     "choices": choices,
                     "correct": is_correct,
                     "reasoning": reasoning,
+                    "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                 })
                 conversation_history.append({
                     "speaker": "patient",
@@ -223,6 +313,8 @@ class BenchmarkTest(TestCase):
                     "prompt": formatted_question,
                     "response": response,
                     "reasoning": reasoning,
+                    "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                 })
                 if save_turn_callback:
                     turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -255,9 +347,9 @@ class BenchmarkTest(TestCase):
                     if conversation_context:
                         context_with_history = context.copy() if context else {}
                         context_with_history["conversation_history"] = conversation_context
-                        response_obj = await patient.respond(formatted_question, context=context_with_history)
+                        response_obj = await self._respond(patient, formatted_question, context=context_with_history)
                     else:
-                        response_obj = await patient.respond(formatted_question, context=context)
+                        response_obj = await self._respond(patient, formatted_question, context=context)
                     
                     # Check for cancellation after async operation
                     if check_cancellation:
@@ -300,6 +392,8 @@ class BenchmarkTest(TestCase):
                         "choices": choices,
                         "correct": is_correct,
                         "reasoning": reasoning,
+                        "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                     })
                     conversation_history.append({
                         "speaker": "patient",
@@ -307,6 +401,8 @@ class BenchmarkTest(TestCase):
                         "prompt": formatted_question,
                         "response": response,
                         "reasoning": reasoning,
+                        "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                     })
                     if save_turn_callback:
                         turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -352,7 +448,7 @@ class BenchmarkTest(TestCase):
                 formatted_question = self._format_question(question, choices)
                 
                 # Get model response
-                response_obj = await patient.respond(formatted_question, context=context)
+                response_obj = await self._respond(patient, formatted_question, context=context)
                 
                 # Check for cancellation after async operation
                 if check_cancellation:
@@ -374,6 +470,10 @@ class BenchmarkTest(TestCase):
                     "choices": choices,
                     "correct": is_correct,
                     "reasoning": reasoning,
+                    "sample_id": item.get("sample_id"),
+                    "dataset_index": item.get("dataset_index"),
+                    "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                 })
                 
                 conversation_history.append({
@@ -382,6 +482,8 @@ class BenchmarkTest(TestCase):
                     "prompt": formatted_question,
                     "response": response,
                     "reasoning": reasoning,
+                    "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                 })
                 if save_turn_callback:
                     turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -400,7 +502,7 @@ class BenchmarkTest(TestCase):
                     )
                     conversation_prompts.append({
                         "question": formatted_question,
-                        "ground_truth": item.get("answer"),
+                        "ground_truth": item.get("answer_letter", item.get("answer")),
                         "choices": item.get("choices", []),
                     })
             
@@ -429,9 +531,9 @@ class BenchmarkTest(TestCase):
                     # Include previous conversation in context for jailbreak attacks
                     context_with_history = context.copy() if context else {}
                     context_with_history["conversation_history"] = conversation_context
-                    response_obj = await patient.respond(question, context=context_with_history)
+                    response_obj = await self._respond(patient, question, context=context_with_history)
                 else:
-                    response_obj = await patient.respond(question, context=context)
+                    response_obj = await self._respond(patient, question, context=context)
                 
                 # Check for cancellation after async operation
                 if check_cancellation:
@@ -467,6 +569,8 @@ class BenchmarkTest(TestCase):
                     "choices": choices,
                     "correct": is_correct,
                     "reasoning": reasoning,
+                    "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                 })
                 
                 conversation_history.append({
@@ -475,6 +579,8 @@ class BenchmarkTest(TestCase):
                     "prompt": question,
                     "response": response,
                     "reasoning": reasoning,
+                    "finish_reason": getattr(response_obj, "finish_reason", None),
+                    "usage": getattr(response_obj, "usage", None),
                 })
                 if save_turn_callback:
                     turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -490,12 +596,25 @@ class BenchmarkTest(TestCase):
                     "content": response,
                 })
         
+        result_rows = (single_shot_prompts + [row for group in multi_shot_groups for row in group]) if use_per_prompt_mode else dataset
+        for result, row in zip(results, result_rows):
+            result.setdefault("sample_id", row.get("sample_id"))
+            result.setdefault("dataset_index", row.get("dataset_index"))
+            response = result["response"]
+            if row.get("choices"):
+                result["answer_valid"] = choice_answer(response, row["choices"]) is not None
+            elif self.benchmark_name.lower() == "gsm8k":
+                result["answer_valid"] = numeric_answer(response) is not None
+            else:
+                result["answer_valid"] = bool(final_answer_text(response))
+            result["truncated"] = result.get("finish_reason") in {"length", "max_tokens", "MAX_TOKENS"}
+        provenance = selection_provenance(result_rows, seed=self.seed, requested_count=self.num_samples, source=provenance)
         accuracy = correct / len(results) if results else 0.0
         
         # Log summary
         print(f"[BenchmarkTest] Final summary: {len(results)} results processed, {correct} correct, accuracy: {accuracy:.2%}")
         if len(results) != total_items:
-            print(f"[BenchmarkTest] WARNING: Processed {len(results)} results but dataset had {total_items} items!")
+            raise ValueError(f"Only {len(results)} of {total_items} benchmark samples were scored")
         
         # Format results text
         results_text = "\n\n".join([
@@ -507,6 +626,15 @@ class BenchmarkTest(TestCase):
         if len(results) > 10:
             results_text += f"\n\n... and {len(results) - 10} more questions"
         
+        runtime = {"python": platform.python_version(), "provider": getattr(patient_model, "provider", None)}
+        for package in ("torch", "transformers", "datasets"):
+            try:
+                runtime[package] = version(package)
+            except PackageNotFoundError:
+                pass
+        if results and getattr(response_obj, "metadata", None):
+            runtime.update({key: response_obj.metadata[key] for key in ("device", "dtype", "model_revision", "architecture") if key in response_obj.metadata})
+
         return TestResult(
             test_name=f"benchmark_{self.benchmark_name}",
             test_category="benchmark",
@@ -515,6 +643,26 @@ class BenchmarkTest(TestCase):
             score=accuracy,
             scores={"accuracy": accuracy, "correct": correct, "total": len(results)},
             metadata={
+                "truncated_count": sum(result["truncated"] for result in results),
+                "invalid_answer_count": sum(not result["answer_valid"] for result in results),
+                "runtime": runtime,
+                "dataset_provenance": provenance,
+                "generation": {
+                    "temperature": 0.0, "max_new_tokens": self.max_new_tokens,
+                    "seed": self.seed if getattr(patient_model, "supports_seed", True) else None,
+                    "sample_seed": self.seed,
+                    "seed_supported": getattr(patient_model, "supports_seed", True),
+                    "system_prompt": patient_system_prompt,
+                    "independent_questions": self.test_mode == "one_shot",
+                    "prompt_protocol": "zero-shot-direct-answer-v1",
+                    "thinking": False,
+                },
+                "scoring": {
+                    "version": SCORING_VERSION,
+                    "method": ("refusal_heuristic" if is_jailbreak_benchmark else
+                               "numeric_exact_match" if self.benchmark_name.lower() == "gsm8k" else
+                               "mcq_final_answer" if any(row.get("choices") for row in dataset) else "exact_final_answer"),
+                },
                 "benchmark_name": self.benchmark_name,
                 "test_mode": self.test_mode,
                 "num_samples": len(results),
@@ -530,7 +678,9 @@ class BenchmarkTest(TestCase):
         if choices and len(choices) > 0:
             # Multiple choice format
             choices_text = "\n".join([f"{chr(65+i)}. {choice}" for i, choice in enumerate(choices)])
-            return f"{question}\n\nChoices:\n{choices_text}\n\nAnswer:"
+            return f"{question}\n\nChoices:\n{choices_text}\n\nReply with only the letter of the correct option.\nAnswer:"
+        if self.benchmark_name.lower() == "gsm8k":
+            return question + "\n\nEnd your answer with: Final answer: <number>"
         return question
     
     def _evaluate_response(
@@ -547,55 +697,13 @@ class BenchmarkTest(TestCase):
         if isinstance(ground_truth, str) and ground_truth.lower() == "resisted":
             return self._evaluate_jailbreak_resistance(question, response)
         
-        response_lower = response.lower().strip()
-        response_upper = response.upper()
-        
-        # Handle multiple choice (A, B, C, D or 0, 1, 2, 3)
-        if choices and len(choices) > 0:
-            # Check if response contains the correct choice letter/number
-            if isinstance(ground_truth, (int, str)):
-                # Try to find choice index
-                choice_index = None
-                correct_letter = None
-                
-                if isinstance(ground_truth, str):
-                    # If ground_truth is a letter (A, B, C, D)
-                    if ground_truth.upper() in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-                        choice_index = ord(ground_truth.upper()) - ord("A")
-                        correct_letter = ground_truth.upper()
-                elif isinstance(ground_truth, int):
-                    # Numeric index (0-3 for A-D)
-                    choice_index = ground_truth
-                    if 0 <= choice_index <= 25:
-                        correct_letter = chr(65 + choice_index)  # A, B, C, D, etc.
-                
-                # Check if letter appears in response
-                if correct_letter and correct_letter in response_upper:
-                    return True
-                
-                # Check if correct answer text appears in response
-                if choice_index is not None and 0 <= choice_index < len(choices):
-                    correct_answer = choices[choice_index]
-                    if correct_answer and correct_answer.lower() in response_lower:
-                        return True
-                    
-                    # Also check if the index number appears
-                    if str(choice_index) in response or f"choice {choice_index}" in response_lower:
-                        return True
-        
-        # Direct answer matching
-        if isinstance(ground_truth, str):
-            ground_truth_lower = ground_truth.lower()
-            # Check if ground truth appears in response
-            if ground_truth_lower in response_lower:
-                return True
-            # Check for partial matches (first few words)
-            ground_truth_words = ground_truth_lower.split()[:3]
-            if all(word in response_lower for word in ground_truth_words if len(word) > 2):
-                return True
-        
-        return False
-    
+        if self.benchmark_name.lower() == "math":
+            ground_truth = final_answer_text(str(ground_truth))
+        return exact_response_matches(
+            response, ground_truth, choices,
+            numeric=self.benchmark_name.lower() == "gsm8k",
+        )
+
     def _evaluate_jailbreak_resistance(self, jailbreak_prompt: str, response: str) -> bool:
         """
         Evaluate if model resisted a jailbreak attempt.

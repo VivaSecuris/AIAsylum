@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { ModelSelector } from './ModelSelector'
 import { MultiPatientSelector } from './MultiPatientSelector'
 import { TestRunRequest } from '@/lib/api'
@@ -30,11 +30,36 @@ export function CreateTestForm() {
   const [formData, setFormData] = useState<TestRunRequest>({
     doctor_provider: savedSettings.defaultDoctorProvider,
     doctor_model: savedSettings.defaultDoctorModel,
-    patient_provider: savedSettings.defaultPatientProvider,
+    patient_provider: savedSettings.defaultPatientProvider || 'transformers',
     patient_model: savedSettings.defaultPatientModel,
     test_type: initialTestType,
     test_config: {},
   })
+
+  useEffect(() => {
+    if (!router.isReady || typeof router.query.model !== 'string') return
+    const model = router.query.model
+    const provider = typeof router.query.provider === 'string' ? router.query.provider : 'transformers'
+    let testConfig: Record<string, any> = {}
+    try {
+      const parsed = typeof router.query.test_config === 'string' ? JSON.parse(router.query.test_config) : {}
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) testConfig = parsed
+    } catch { /* A malformed URL does not replace editable defaults. */ }
+    const allowedTypes = ['one_shot', 'multi_shot', 'conversation', 'group_therapy', 'benchmark', 'scenario', 'adversarial']
+    setFormData((previous) => ({ ...previous,
+      patient_provider: provider, patient_model: model,
+      doctor_provider: typeof router.query.doctor_provider === 'string' ? router.query.doctor_provider : previous.doctor_provider,
+      doctor_model: typeof router.query.doctor_model === 'string' ? router.query.doctor_model : previous.doctor_model,
+      test_type: typeof router.query.type === 'string' && allowedTypes.includes(router.query.type) ? router.query.type : previous.test_type,
+      test_config: testConfig,
+      lineage_parent: typeof router.query.lineage_parent === 'string' ? router.query.lineage_parent : undefined,
+    }))
+    setSelectedPromptId(testConfig.prompt_id)
+    setSelectedPromptIds(Array.isArray(testConfig.prompt_ids) ? testConfig.prompt_ids : testConfig.prompt_id ? [testConfig.prompt_id] : [])
+    setSelectedDoctorSystemPromptId(testConfig.doctor_system_prompt_id)
+    setSelectedPatientSystemPromptId(testConfig.patient_system_prompt_id)
+    if (Array.isArray(testConfig.patients)) setGroupTherapyPatients(testConfig.patients.map((patient: any, i: number) => ({ id: `restored_${i}`, ...patient })))
+  }, [router.isReady, router.query.model, router.query.provider, router.query.type, router.query.test_config, router.query.lineage_parent, router.query.doctor_model, router.query.doctor_provider])
   
   // For one-shot and multi-shot, we only need one model (patient)
   // For conversation, we need both doctor and patient
@@ -60,9 +85,15 @@ export function CreateTestForm() {
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
   const [selectedBenchmark, setSelectedBenchmark] = useState<string>('')
   const [numSamples, setNumSamples] = useState<number>(100)
+  const [benchmarkSeed, setBenchmarkSeed] = useState<number>(0)
+  const [benchmarkTokens, setBenchmarkTokens] = useState<number>(512)
   const [groupTherapyPatients, setGroupTherapyPatients] = useState<Array<{ id: string; provider: string; model: string }>>([
     { id: 'patient_1', provider: '', model: '' }
   ])
+  const activeProviders = isGroupTherapyTest
+    ? [formData.doctor_provider, ...groupTherapyPatients.map((patient) => patient.provider)]
+    : [formData.patient_provider, ...(isConversationTest ? [formData.doctor_provider] : [])]
+  const supportsGenerationSeed = !activeProviders.some((provider) => ['anthropic', 'google'].includes(provider))
   
   // Auto-analysis configuration
   const [enableAutoAnalysis, setEnableAutoAnalysis] = useState(false)
@@ -84,7 +115,13 @@ export function CreateTestForm() {
   
   // Get variables from selected prompt
   const { data: promptVariablesData } = usePromptVariables(selectedPromptId)
-  const promptVariables = promptVariablesData?.variables || []
+  const promptVariables = useMemo(() => {
+    if (formData.test_type !== 'multi_shot') return promptVariablesData?.variables || []
+    const texts = formData.test_config?.prompts?.length
+      ? formData.test_config.prompts as string[]
+      : selectedPromptIds.map((id) => prompts.find((prompt) => prompt.id === id)?.prompt_text || '')
+    return Array.from(new Set(texts.flatMap((text) => Array.from(text.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g), (match) => match[1])))).sort()
+  }, [formData.test_type, formData.test_config?.prompts, selectedPromptIds, prompts, promptVariablesData])
   
   // Update test type if query param changes
   useEffect(() => {
@@ -134,7 +171,7 @@ export function CreateTestForm() {
       setVariableValues({})
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPromptId, promptVariablesData])
+  }, [selectedPromptId, promptVariables.join('|')])
   
   // Reset prompt selections when test type changes (but preserve if coming from query param)
   useEffect(() => {
@@ -192,6 +229,8 @@ export function CreateTestForm() {
           model: formData.patient_model,
           benchmark: selectedBenchmark,
           num_samples: numSamples,
+          seed: benchmarkSeed,
+          max_new_tokens: benchmarkTokens,
         }
         
         const result = await runBenchmark.mutateAsync(payload)
@@ -231,14 +270,12 @@ export function CreateTestForm() {
       
       // Handle prompt selection based on test type
       if (formData.test_type === 'multi_shot') {
-        // For multi-shot: use custom prompts if provided, otherwise use first selected library prompt
+        delete testConfig.prompt_id
+        delete testConfig.prompt_ids
         if (testConfig.prompts && testConfig.prompts.length > 0) {
-          // Custom prompts take precedence
-          // prompt_id will be ignored if prompts array is provided
+          // Custom prompts already contain their execution order.
         } else if (selectedPromptIds.length > 0) {
-          // Use first selected prompt as prompt_id
-          // Note: For multiple library prompts, user should copy text to custom prompts field
-          testConfig.prompt_id = selectedPromptIds[0]
+          testConfig.prompt_ids = selectedPromptIds
         }
       } else if (selectedPromptId) {
         // For one-shot: use selected prompt
@@ -270,6 +307,7 @@ export function CreateTestForm() {
       // Always include temperature and seed so the backend applies them to the model
       const temperature = formData.test_config?.temperature ?? 0.7
       const seed = formData.test_config?.seed
+      if (!supportsGenerationSeed) delete testConfig.seed
       const submitData = {
         ...formData,
         // For one-shot/multi-shot only one model is used; send patient model for both so backend gets one model under test.
@@ -284,7 +322,7 @@ export function CreateTestForm() {
         test_config: {
           ...testConfig,
           temperature: typeof temperature === 'number' ? temperature : parseFloat(String(temperature)) || 0.7,
-          ...(seed !== undefined && seed !== null && seed !== '' ? { seed: typeof seed === 'number' ? seed : parseInt(String(seed), 10) } : {}),
+          ...(supportsGenerationSeed && seed !== undefined && seed !== null && seed !== '' ? { seed: typeof seed === 'number' ? seed : parseInt(String(seed), 10) } : {}),
           // Store auto-analysis config if enabled
           ...(enableAutoAnalysis ? {
             auto_analysis: true,
@@ -430,9 +468,10 @@ export function CreateTestForm() {
                         <option
                           key={benchmark.name}
                           value={benchmark.name}
+                          disabled={benchmark.runnable === false}
                           className="bg-background text-foreground"
                         >
-                          {benchmark.title ?? benchmark.name}
+                          {benchmark.title ?? benchmark.name}{benchmark.runnable === false ? ' (unavailable)' : ''}
                         </option>
                       ))}
                     </optgroup>
@@ -462,6 +501,18 @@ export function CreateTestForm() {
               </p>
             </div>
 
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1 text-sm font-medium">Question selection seed
+                <input type="number" min="0" max="4294967295" value={benchmarkSeed} required onChange={(e) => setBenchmarkSeed(Number(e.target.value))} className="w-full rounded-md border border-input bg-background px-3 py-2" />
+              </label>
+              <label className="space-y-1 text-sm font-medium">Maximum output tokens per question
+                <input type="number" min="1" max="8192" value={benchmarkTokens} required onChange={(e) => setBenchmarkTokens(Number(e.target.value))} className="w-full rounded-md border border-input bg-background px-3 py-2" />
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Benchmarks use temperature 0, independent questions and the standard answer prompt. The seed selects the questions and controls generation where the provider supports it. Automatic behavioral analysis and extra reasoning prompts are not used. <Link href="/benchmarks" className="text-primary underline">Compare several server models in one benchmark campaign.</Link>
+            </p>
+
             {benchmarksData?.benchmarks && benchmarksData.benchmarks.length > 0 && (
               <div className="mt-4 rounded-lg border bg-muted/30 p-4">
                 <h3 className="text-sm font-semibold mb-3">Available Benchmarks</h3>
@@ -487,10 +538,11 @@ export function CreateTestForm() {
                                   ? 'bg-primary/10 border-primary'
                                   : 'bg-muted/30 hover:bg-muted/50'
                               }`}
-                              onClick={() => setSelectedBenchmark(benchmark.name)}
+                              onClick={() => { if (benchmark.runnable !== false) setSelectedBenchmark(benchmark.name) }}
                             >
                               <h4 className="font-medium">{benchmark.title ?? benchmark.name}</h4>
                               <p className="text-xs text-muted-foreground mt-1">{benchmark.description}</p>
+                              {benchmark.runnable === false && <p className="text-xs text-destructive mt-1">{benchmark.unavailable_reason}</p>}
                             </div>
                           ))}
                         </div>
@@ -689,7 +741,7 @@ export function CreateTestForm() {
                     value={selectedPromptIds.map(String)}
                     onChange={(e) => {
                       const selectedIds = Array.from(e.target.selectedOptions, (opt) => parseInt(opt.value))
-                      setSelectedPromptIds(selectedIds)
+                      setSelectedPromptIds((previous) => [...previous.filter((id) => selectedIds.includes(id)), ...selectedIds.filter((id) => !previous.includes(id))])
                       // Clear custom prompts when selecting from library
                       if (selectedIds.length > 0) {
                         setFormData((prev) => ({
@@ -717,14 +769,19 @@ export function CreateTestForm() {
                   {selectedPromptIds.length > 0 && (
                     <div className="mt-2 p-2 bg-muted/50 rounded text-xs">
                       <strong>Selected prompts ({selectedPromptIds.length}):</strong>
-                      <ul className="list-disc list-inside mt-1">
-                        {selectedPromptIds.map((id) => {
+                      <ol className="list-decimal list-inside mt-1 space-y-2">
+                        {selectedPromptIds.map((id, index) => {
                           const prompt = prompts.find((p) => p.id === id)
-                          return <li key={id}>{prompt ? getPromptDisplayName(prompt) : `ID: ${id}`}</li>
+                          const move = (offset: number) => setSelectedPromptIds((previous) => {
+                            const ordered = [...previous]
+                            ;[ordered[index], ordered[index + offset]] = [ordered[index + offset], ordered[index]]
+                            return ordered
+                          })
+                          return <li key={id}>{prompt ? getPromptDisplayName(prompt) : `ID: ${id}`} <button type="button" disabled={index === 0} onClick={() => move(-1)} className="ml-2 underline disabled:opacity-30" aria-label={`Move prompt ${index + 1} earlier`}>Earlier</button> <button type="button" disabled={index === selectedPromptIds.length - 1} onClick={() => move(1)} className="underline disabled:opacity-30" aria-label={`Move prompt ${index + 1} later`}>Later</button></li>
                         })}
-                      </ul>
+                      </ol>
                       <p className="mt-2 text-muted-foreground">
-                        Note: Only the first selected prompt will be used. To use multiple prompts, copy their text to the custom prompts field below.
+                        Every selected prompt runs in this order in the same conversation. Move prompts earlier or later to change the sequence.
                       </p>
                     </div>
                   )}
@@ -761,13 +818,20 @@ export function CreateTestForm() {
                     Each line will be sent as a separate prompt in sequence. Useful for context window testing and needle-in-haystack scenarios.
                   </p>
                 </div>
+
+                {promptVariables.length > 0 && <div className="space-y-2 rounded border bg-muted/30 p-3">
+                  <p className="text-sm font-medium">Variables shared by the selected prompts</p>
+                  {promptVariables.map((name) => <label key={name} className="block text-xs">${name}
+                    <input value={variableValues[name] || ''} onChange={(e) => setVariableValues((previous) => ({ ...previous, [name]: e.target.value }))} className="mt-1 w-full rounded border bg-background px-3 py-2 text-sm" />
+                  </label>)}
+                </div>}
               </div>
             )}
           </div>
         )}
 
         {/* Auto-Analysis Section */}
-        <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
+        {!isBenchmarkTest && <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
           <label className="flex items-center gap-3">
             <input
               type="checkbox"
@@ -909,17 +973,17 @@ export function CreateTestForm() {
               )}
             </div>
           )}
-        </div>
+        </div>}
 
-        <button
+        {!isBenchmarkTest && <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
           className="text-sm text-primary hover:underline"
         >
           {showAdvanced ? 'Hide' : 'Show'} Advanced Options
-        </button>
+        </button>}
 
-        {showAdvanced && (
+        {showAdvanced && !isBenchmarkTest && (
           <div className="space-y-4 rounded border bg-muted/50 p-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -951,6 +1015,7 @@ export function CreateTestForm() {
                   min="0"
                   step="1"
                   placeholder="Leave empty for random"
+                  disabled={!supportsGenerationSeed}
                   value={formData.test_config?.seed ?? ''}
                   onChange={(e) => {
                     const v = e.target.value === '' ? undefined : parseInt(e.target.value, 10)
@@ -964,7 +1029,7 @@ export function CreateTestForm() {
                   }}
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 />
-                <p className="text-xs text-muted-foreground mt-1">Fixed seed for reproducible runs (Ollama)</p>
+                <p className="text-xs text-muted-foreground mt-1">{supportsGenerationSeed ? 'Generation seed where supported; hosted services may still vary.' : 'Unavailable: Anthropic and the current Google integration do not accept generation seeds.'}</p>
               </div>
             </div>
             {formData.test_type === 'multi_shot' && (
@@ -985,7 +1050,7 @@ export function CreateTestForm() {
                     }))
                   }
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  disabled={Array.isArray(formData.test_config?.prompts) && formData.test_config.prompts.length > 0}
+                  disabled={selectedPromptIds.length > 0 || (Array.isArray(formData.test_config?.prompts) && formData.test_config.prompts.length > 0)}
                 />
                 <p className="text-xs text-muted-foreground mt-1">
                   Number of auto-generated sequential messages (only used if custom prompts are not provided)

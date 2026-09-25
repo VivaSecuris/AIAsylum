@@ -12,6 +12,8 @@ import Link from 'next/link'
 import { PlayCircle, TestTube, TrendingUp, Shield, AlertTriangle, Layers, BarChart3, Edit2, Check, X } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend } from 'recharts'
 import { toast } from '@/lib/toast'
+import { WorkflowEntry } from '@/components/benchmarks/WorkflowEntry'
+import { testRunModelRef } from '@/lib/test-run-display'
 
 // Pie chart that scales with container (ResponsiveContainer injects width/height)
 function StatusPieChartInner({
@@ -173,7 +175,8 @@ export default function Dashboard() {
       allAssessments.push(...assessments)
     })
     
-    const testsWithAnalysis = testRuns.filter(run => {
+    const analysisEligibleCompleted = testRuns.filter(run => run.status === 'completed' && run.test_type !== 'benchmark' && run.test_type !== 'analysis')
+    const testsWithAnalysis = analysisEligibleCompleted.filter(run => {
       const assessments = assessmentsMap.get(run.id) || []
       return assessments.length > 0
     }).length
@@ -212,6 +215,7 @@ export default function Dashboard() {
       completed, 
       failed,
       testsWithAnalysis,
+      analysisEligibleCompleted: analysisEligibleCompleted.length,
       totalAssessments: allAssessments.length,
       avgOverallScore,
       avgSafetyScore,
@@ -284,10 +288,11 @@ export default function Dashboard() {
       const assessments = assessmentsMap.get(run.id) || []
       if (assessments.length === 0) return
       
-      const key = `${run.patient_provider}:${run.patient_model}`
+      const model = testRunModelRef(run)
+      const key = `${run.patient_provider}:${model}`
       if (!modelScores[key]) {
         modelScores[key] = {
-          model: run.patient_model,
+          model,
           provider: run.patient_provider,
           scores: [],
           count: 0,
@@ -361,12 +366,12 @@ export default function Dashboard() {
     {
       key: 'doctor_model',
       header: 'Doctor',
-      render: (run: TestRun) => `${run.doctor_provider}/${run.doctor_model}`,
+      render: (run: TestRun) => run.test_type === 'benchmark' ? '—' : `${run.doctor_provider}/${run.doctor_model}`,
     },
     {
       key: 'patient_model',
       header: 'Patient',
-      render: (run: TestRun) => `${run.patient_provider}/${run.patient_model}`,
+      render: (run: TestRun) => `${run.patient_provider}/${testRunModelRef(run)}`,
     },
     {
       key: 'created_at',
@@ -450,14 +455,16 @@ export default function Dashboard() {
               Create Suite
             </Link>
             <Link
-              href="/create-test?type=benchmark"
+              href="/benchmarks"
               className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
               <TestTube className="h-4 w-4" />
-              Run Benchmark
+              Compare benchmarks
             </Link>
           </div>
         </div>
+
+        <WorkflowEntry />
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
           <MetricCard title="Total Tests" value={metrics.total} />
@@ -476,9 +483,9 @@ export default function Dashboard() {
         {metrics.totalAssessments > 0 && (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
             <MetricCard 
-              title="Tests with Analysis" 
+              title="Behavioral Tests with Analysis"
               value={metrics.testsWithAnalysis}
-              subtitle={`${metrics.completed > 0 ? ((metrics.testsWithAnalysis / metrics.completed) * 100).toFixed(0) : 0}% of completed`}
+              subtitle={`${metrics.analysisEligibleCompleted > 0 ? ((metrics.testsWithAnalysis / metrics.analysisEligibleCompleted) * 100).toFixed(0) : 0}% of completed behavioral tests`}
               icon={<TrendingUp className="h-5 w-5" />}
             />
             <MetricCard 
@@ -589,7 +596,7 @@ export default function Dashboard() {
                 Benchmarks
               </h2>
               <Link
-                href="/create-test?type=benchmark"
+                href="/benchmarks"
                 className="text-sm text-primary hover:underline"
               >
                 Run New
@@ -624,7 +631,7 @@ export default function Dashboard() {
                           }}
                         />
                         <p className="text-xs text-muted-foreground mt-1">
-                          {run.patient_provider}/{run.patient_model} • {formatDate(run.created_at)}
+                          {run.patient_provider}/{testRunModelRef(run)} • {formatDate(run.created_at)}
                         </p>
                       </div>
                       <StatusBadge status={run.status} />
@@ -641,7 +648,7 @@ export default function Dashboard() {
                 <div className="text-center py-8 text-muted-foreground">
                   <p className="text-sm mb-3">No benchmarks yet</p>
                   <Link
-                    href="/create-test?type=benchmark"
+                    href="/benchmarks"
                     className="text-sm text-primary hover:underline"
                   >
                     Run your first benchmark →
@@ -670,7 +677,7 @@ export default function Dashboard() {
                 {recentAssessments.slice(0, 5).map(({ assessment, testRun }) => {
                   const displayName = testRun?.suite_name || testRun?.meta_data?.name || 
                     (testRun 
-                      ? `${testRun.patient_provider}/${testRun.patient_model}`
+                      ? `${testRun.patient_provider}/${testRunModelRef(testRun)}`
                       : `Test Run #${assessment.test_run_id}`)
                   return (
                     <div
@@ -820,7 +827,7 @@ export default function Dashboard() {
                           <div className="flex-1">
                             <p className="text-sm font-medium">
                               {testRun 
-                                ? `${testRun.patient_provider}/${testRun.patient_model}`
+                                ? `${testRun.patient_provider}/${testRunModelRef(testRun)}`
                                 : `Test Run #${assessment.test_run_id}`
                               }
                             </p>

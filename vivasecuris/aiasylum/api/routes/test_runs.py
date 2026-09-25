@@ -4,10 +4,11 @@ from datetime import datetime
 from typing import List, Optional
 import json
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.runner import TestRunner
 from vivasecuris.aiasylum.database import get_session, TestRun, TestResult, ConversationTurn
@@ -27,6 +28,7 @@ class TestRunRequest(BaseModel):
     patient_model: str
     test_type: str
     test_config: Optional[dict] = None
+    lineage_parent: Optional[str] = Field(None, max_length=1024)
     prompt_id: Optional[int] = None  # Optional prompt from library
     variables: Optional[dict] = None  # Variable values for prompt substitution (e.g., {"country": "France"})
     suite_id: Optional[int] = None  # Optional suite ID to link test run to a suite
@@ -227,7 +229,8 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
             test_type=request.test_type,
             status=STATUS_PENDING,
             suite_id=request.suite_id,
-            meta_data={"test_config": test_config},
+            meta_data={"test_config": test_config, "lineage_parent": request.lineage_parent,
+                       "lineage_id": uuid4().hex},
         )
         session.add(test_run)
         session.commit()
@@ -362,7 +365,9 @@ async def delete_test_run(test_run_id: int):
         if not test_run:
             print(f"DELETE /api/v1/test-runs/{test_run_id} - Test run not found")
             raise HTTPException(status_code=404, detail="Test run not found")
-        
+
+        _require_inactive_campaign(test_run, session)
+
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Found test run, status: {test_run.status}")
         
         # If test run is running, stop it first (mark as cancelled)
@@ -390,6 +395,8 @@ async def delete_test_run(test_run_id: int):
         
         # Delete the test run (cascade will handle results, conversation_turns, assessments)
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Deleting test run from database")
+        from vivasecuris.aiasylum.api.model_history import archive_run
+        archive_run(test_run)
         session.delete(test_run)
         session.commit()
         print(f"DELETE /api/v1/test-runs/{test_run_id} - Deletion committed successfully")
@@ -458,6 +465,46 @@ async def get_conversation(test_run_id: int):
         session.close()
 
 
+def _require_standalone_run(test_run: TestRun) -> None:
+    """Campaign workers must keep their scheduler and cancellation ownership."""
+    if (test_run.meta_data or {}).get("benchmark_campaign"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This run belongs to a benchmark comparison and is managed by its queue. "
+                "Open the benchmark comparison to cancel it or start a new comparison to retry."
+            ),
+        )
+
+
+def _require_inactive_campaign(test_run: TestRun, session) -> None:
+    """Keep comparison rows and cancellation handles until all workers drain."""
+    campaign = (test_run.meta_data or {}).get("benchmark_campaign")
+    if not campaign:
+        return
+    campaign_id = campaign.get("id") if isinstance(campaign, dict) else None
+    rows = [test_run]
+    if campaign_id:
+        rows.extend(
+            row for row in session.query(TestRun).filter(TestRun.test_type == "benchmark")
+            if isinstance((row.meta_data or {}).get("benchmark_campaign"), dict)
+            and row.meta_data["benchmark_campaign"].get("id") == campaign_id
+            and row.id != test_run.id
+        )
+    if any(
+        row.status in (STATUS_PENDING, STATUS_RUNNING, STATUS_PAUSED)
+        or cancellation_manager.has_active_task(row.id)
+        for row in rows
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This benchmark comparison still has queued or active work. "
+                "Use Cancel comparison and wait for its workers to stop before deleting a run."
+            ),
+        )
+
+
 @router.post("/{test_run_id}/start", response_model=TestRunResponse)
 async def start_test_run(test_run_id: int, background_tasks: BackgroundTasks):
     """Start/execute a pending test run."""
@@ -467,7 +514,9 @@ async def start_test_run(test_run_id: int, background_tasks: BackgroundTasks):
     test_run = runner.get_test_run(test_run_id)
     if not test_run:
         raise HTTPException(status_code=404, detail="Test run not found")
-    
+
+    _require_standalone_run(test_run)
+
     if test_run.status not in (STATUS_PENDING, STATUS_FAILED, STATUS_PAUSED):
         raise HTTPException(
             status_code=400,
@@ -497,7 +546,9 @@ async def pause_test_run(test_run_id: int):
         test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
         if not test_run:
             raise HTTPException(status_code=404, detail="Test run not found")
-        
+
+        _require_standalone_run(test_run)
+
         if test_run.status != STATUS_RUNNING:
             raise HTTPException(
                 status_code=400,
@@ -549,7 +600,9 @@ async def resume_test_run(test_run_id: int, background_tasks: BackgroundTasks):
         test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
         if not test_run:
             raise HTTPException(status_code=404, detail="Test run not found")
-        
+
+        _require_standalone_run(test_run)
+
         if test_run.status != STATUS_PAUSED:
             raise HTTPException(
                 status_code=400,
@@ -597,7 +650,9 @@ async def stop_test_run(test_run_id: int):
         test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
         if not test_run:
             raise HTTPException(status_code=404, detail="Test run not found")
-        
+
+        _require_standalone_run(test_run)
+
         if test_run.status not in (STATUS_RUNNING, STATUS_PAUSED):
             raise HTTPException(
                 status_code=400,

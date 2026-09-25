@@ -2,7 +2,7 @@
 
 import logging
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 from vivasecuris.aiasylum.runner import TestRunner
@@ -25,7 +25,10 @@ class BenchmarkRequest(BaseModel):
     provider: str
     model: str
     benchmark: str
-    num_samples: Optional[int] = None
+    num_samples: Optional[int] = Field(default=100, ge=1, le=100000)
+    seed: int = Field(default=0, ge=0, le=2**32 - 1)
+    max_new_tokens: int = Field(default=512, ge=1, le=8192)
+    dataset_revision: Optional[str] = Field(default=None, min_length=1, max_length=128)
     suite_id: Optional[int] = None  # Optional suite ID to link benchmark run to a suite
 
 
@@ -138,6 +141,8 @@ _BENCHMARKS = [
         "title": "RealToxicityPrompts",
         "description": "50,000 naturally occurring web sentences used to measure how often a model generates toxic continuations.",
         "category": "safety_alignment",
+        "runnable": False,
+        "unavailable_reason": "Dataset browsing is available; running requires a toxicity evaluator, which is not implemented.",
     },
     {
         "name": "jailbreak",
@@ -153,7 +158,7 @@ async def list_benchmarks():
     """List available benchmarks grouped by category."""
     return {
         "categories": _BENCHMARK_CATEGORIES,
-        "benchmarks": _BENCHMARKS,
+        "benchmarks": [{"runnable": True, **benchmark} for benchmark in _BENCHMARKS],
     }
 
 
@@ -167,7 +172,8 @@ async def _run_benchmark_background(test_run_id: int):
     
     # Run with worker pool limit
     async def _execute():
-        await runner.execute_test_run(test_run_id)
+        from vivasecuris.aiasylum.api.benchmark_runtime import execute_benchmark_job
+        await execute_benchmark_job(test_run_id)
     
     try:
         await worker_pool.run_with_limit(test_run_id, _execute())
@@ -187,6 +193,12 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
     # For now, benchmarks are implemented as test runs with benchmark-specific configuration
     # This allows us to reuse the existing test infrastructure
     
+    if request.benchmark.lower() not in BENCHMARK_DATASETS:
+        raise HTTPException(status_code=400, detail=f"Unknown benchmark: {request.benchmark}")
+    if request.benchmark.lower() == "realtoxicityprompts":
+        raise HTTPException(status_code=400, detail="RealToxicityPrompts requires a toxicity evaluator; accuracy scoring is unavailable")
+    sample_count = request.num_samples if request.num_samples is not None else 100
+
     # For jailbreak benchmarks, verify prompts exist before creating test run
     if request.benchmark.lower() == "jailbreak":
         from vivasecuris.aiasylum.tests.jailbreak_loader import count_jailbreak_prompts
@@ -219,10 +231,14 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
             suite_id=request.suite_id,
             meta_data={
                 "benchmark": request.benchmark,
-                "num_samples": request.num_samples,
+                "num_samples": sample_count,
                 "test_config": {
                     "benchmark_name": request.benchmark,
-                    "num_samples": request.num_samples or 100,
+                    "num_samples": sample_count,
+                    "seed": request.seed,
+                    "max_new_tokens": request.max_new_tokens,
+                    "temperature": 0.0,
+                    "dataset_revision": request.dataset_revision,
                     # Jailbreak benchmarks default to one_shot mode
                     # Individual prompts will be handled based on their is_multi_shot flag
                     # This allows single-shot and multi-shot prompts to be mixed properly
@@ -354,7 +370,8 @@ async def get_prompts(
         formatted_prompts = []
         for i, prompt in enumerate(filtered_prompts):
             formatted_prompt = {
-                "index": i,
+                "index": prompt.get("dataset_index", i),
+                "sample_id": prompt.get("sample_id"),
                 "question": prompt.get("question", ""),
                 "choices": prompt.get("choices"),
                 "answer": prompt.get("answer"),
@@ -655,6 +672,7 @@ async def create_suite_from_prompts(
                 },
             )
             session.add(test_run)
+            session.flush()
             test_run_ids.append(test_run.id)
         
         # Update suite total_runs

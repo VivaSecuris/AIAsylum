@@ -1,0 +1,13 @@
+import Link from 'next/link'
+import { ArrowRight, BarChart3, Brain, GitBranch } from 'lucide-react'
+
+/** Shared entry into the experiment loop; detailed forms remain on their own pages. */
+export function WorkflowEntry({ compact = false }: { compact?: boolean }) {
+  if (compact) return <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-primary/5 p-4"><div><p className="font-medium">Comparing models or checking a change?</p><p className="mt-1 text-sm text-muted-foreground">Choose models → run the same benchmarks → inspect differences → try a new version.</p></div><Link href="/benchmarks" className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">Benchmark comparisons <ArrowRight className="h-4 w-4" /></Link></div>
+
+  return <section aria-label="Model experiment workflow" className="space-y-4 rounded-xl border bg-primary/5 p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">Start with a model comparison</h2><p className="mt-1 text-sm text-muted-foreground">Keep a baseline, understand what changed, and test the next version.</p></div><Link href="/benchmarks" className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">New comparison <ArrowRight className="h-4 w-4" /></Link></div><div className="grid gap-3 md:grid-cols-3">
+    <Link href="/benchmarks" className="rounded-lg border bg-card p-4 hover:border-primary"><div className="flex items-center gap-2 text-sm font-semibold"><BarChart3 className="h-4 w-4 text-primary" /> 1. Establish a baseline</div><p className="mt-2 text-sm text-muted-foreground">Choose original and custom models. Run shared checks and compare their scores.</p></Link>
+    <Link href="/compare?view=charts" className="rounded-lg border bg-card p-4 hover:border-primary"><div className="flex items-center gap-2 text-sm font-semibold"><Brain className="h-4 w-4 text-primary" /> 2. Understand the difference</div><p className="mt-2 text-sm text-muted-foreground">Inspect saved charts, model activations, and weight experiments.</p></Link>
+    <Link href="/compare?view=history" className="rounded-lg border bg-card p-4 hover:border-primary"><div className="flex items-center gap-2 text-sm font-semibold"><GitBranch className="h-4 w-4 text-primary" /> 3. Branch and test again</div><p className="mt-2 text-sm text-muted-foreground">Trace a model’s history, revisit a step, and compare the next version.</p></Link>
+  </div></section>
+}

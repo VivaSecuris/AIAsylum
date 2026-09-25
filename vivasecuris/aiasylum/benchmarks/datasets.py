@@ -3,8 +3,9 @@
 from typing import Dict, List, Optional, Any
 import logging
 import random
-import time
-import os
+import asyncio
+import hashlib
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ BENCHMARK_DATASETS = {
         "answer_field": "solution",
     },
     "gsm8k": {
-        "dataset": "gsm8k",
+        "dataset": "openai/gsm8k",
         "config": "main",
         "split": "test",
         "question_field": "question",
@@ -128,7 +129,7 @@ def standardize_benchmark_row(
         standardized_item: Dict[str, Any] = {
             "question": question,
             "answer": answer,
-            "choices": [c for c in choices if c is not None],
+            "choices": choices,
             "raw": item,
         }
         if answer is not None and (isinstance(answer, int) or (isinstance(answer, str) and str(answer).isdigit())):
@@ -162,23 +163,35 @@ def standardize_benchmark_row(
         "answer": item.get(answer_field) if answer_field else None,
     }
 
-    if answer_field and standardized_item["answer"] is not None:
-        answer = standardized_item["answer"]
-        if isinstance(answer, (int, str)) and str(answer).isdigit():
-            answer_int = int(answer)
-            if 0 <= answer_int <= 25:
-                standardized_item["answer_letter"] = chr(65 + answer_int)
-                standardized_item["answer_index"] = answer_int
-
-    if choices_field:
-        if isinstance(choices_field, str) and "," in choices_field:
-            fields = [f.strip() for f in choices_field.split(",")]
-            choices = [item.get(f) for f in fields if item.get(f)]
-            standardized_item["choices"] = choices
+    labels = None
+    if bk == "winogrande":
+        standardized_item["choices"] = [item.get("option1"), item.get("option2")]
+        labels = ["1", "2"]
+    elif choices_field:
+        if "," in choices_field:
+            standardized_item["choices"] = [item.get(f.strip()) for f in choices_field.split(",")]
         else:
             choices = item.get(choices_field)
-            if choices:
-                standardized_item["choices"] = choices if isinstance(choices, list) else [choices]
+            if isinstance(choices, dict):
+                standardized_item["choices"] = choices.get("text", [])
+                labels = [str(label) for label in choices.get("label", [])]
+            elif choices:
+                standardized_item["choices"] = list(choices)
+    choices = standardized_item.get("choices", [])
+    if choices:
+        answer = standardized_item["answer"]
+        if labels and str(answer) in labels:
+            index = labels.index(str(answer))
+        elif isinstance(answer, int) or str(answer).isdigit():
+            index = int(answer)
+        elif isinstance(answer, str) and len(answer) == 1 and answer.upper().isalpha():
+            index = ord(answer.upper()) - ord("A")
+        else:
+            raise ValueError(f"Invalid choice answer {answer!r} for {bk}")
+        if not 0 <= index < len(choices):
+            raise ValueError(f"Choice index {index} outside {len(choices)} choices for {bk}")
+        standardized_item["answer_index"] = index
+        standardized_item["answer_letter"] = chr(65 + index)
 
     subject_field = config.get("subject_field")
     if subject_field and item.get(subject_field):
@@ -188,274 +201,104 @@ def standardize_benchmark_row(
     return standardized_item
 
 
+class BenchmarkDataset(list):
+    """List-compatible dataset with the exact selected source recorded."""
+
+    def __init__(self, rows, provenance):
+        super().__init__(rows)
+        self.provenance = provenance
+
+
+def selection_provenance(rows, *, seed=0, requested_count=None, source=None):
+    """Hash the ordered scored content, not just potentially mutable row IDs."""
+    content = [{key: row.get(key) for key in (
+        "sample_id", "question", "answer", "answer_letter", "choices", "subject"
+    )} for row in rows]
+    encoded = json.dumps(content, sort_keys=True, ensure_ascii=False, default=str).encode()
+    return {
+        **(source or {}),
+        "seed": seed,
+        "requested_count": requested_count,
+        "actual_count": len(rows),
+        "sample_ids": [row.get("sample_id") for row in rows],
+        "sample_indices": [row.get("dataset_index") for row in rows],
+        "ordered_sample_hash": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
 async def load_benchmark_dataset(
     benchmark_name: str,
     num_samples: Optional[int] = None,
     test_run_id: Optional[int] = None,
+    *,
+    seed: int = 0,
+    revision: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """Load the requested split exactly; failures never substitute another test.
+
+    Selection uses a local seeded RNG so every model sees the same ordered rows.
+    ``test_run_id`` remains accepted for compatibility but cannot affect selection.
+    Pass an immutable Hub commit as revision to reproduce across dataset updates.
     """
-    Load benchmark dataset from HuggingFace or database.
-    
-    Args:
-        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k", "jailbreak")
-        num_samples: Number of samples to load (None = all)
-    
-    Returns:
-        List of dataset items with standardized format
-    """
-    # Handle jailbreak benchmark (loads from database)
-    if benchmark_name.lower() == "jailbreak":
-        return await load_jailbreak_benchmark_dataset(num_samples)
-    
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        logger.error("datasets library not installed. Install with: pip install datasets")
-        raise ImportError("datasets library required for benchmark loading")
-    
     benchmark_key = benchmark_name.lower()
     if benchmark_key not in BENCHMARK_DATASETS:
-        raise ValueError(f"Unknown benchmark: {benchmark_name}. Available: {list(BENCHMARK_DATASETS.keys())}")
-    
+        raise ValueError(f"Unknown benchmark: {benchmark_name}")
+    if num_samples is not None and num_samples < 1:
+        raise ValueError("num_samples must be positive")
     config = BENCHMARK_DATASETS[benchmark_key]
     dataset_name = config["dataset"]
     split = config.get("split", "test")
-    dataset_config = config.get("config")  # Some datasets need config name (e.g., ARC)
-    
-    logger.info(f"Loading benchmark dataset '{benchmark_name}' -> {dataset_name} (split: {split}, config: {dataset_config}, test_run_id: {test_run_id})")
-    print(f"[load_benchmark_dataset] Loading benchmark '{benchmark_name}' -> dataset: {dataset_name} (split: {split}, config: {dataset_config}, test_run_id: {test_run_id})")
-    
-    try:
-        # Load dataset - handle different dataset structures
-        # Note: load_dataset is synchronous, but we're in an async function
-        # This is fine - we can call sync functions from async
-        try:
-            if dataset_config:
-                print(f"[load_benchmark_dataset] Attempting to load {dataset_name} with config={dataset_config}, split={split}")
-                try:
-                    # Try with config name and split (using positional argument for config, which some datasets prefer)
-                    try:
-                        dataset = load_dataset(dataset_name, dataset_config, split=split)
-                    except Exception:
-                        # Fallback to keyword argument
-                        dataset = load_dataset(dataset_name, name=dataset_config, split=split)
-                except Exception as e:
-                    # Some datasets need config first, then access split
-                    print(f"[load_benchmark_dataset] First attempt failed: {e}, trying alternative method")
-                    try:
-                        full_dataset = load_dataset(dataset_name, dataset_config)
-                    except Exception:
-                        full_dataset = load_dataset(dataset_name, name=dataset_config)
-                    if split in full_dataset:
-                        dataset = full_dataset[split]
-                    else:
-                        # Use first available split
-                        available_split = list(full_dataset.keys())[0]
-                        dataset = full_dataset[available_split]
-                        print(f"[load_benchmark_dataset] Using split '{available_split}' instead of '{split}'")
-            else:
-                print(f"[load_benchmark_dataset] Attempting to load {dataset_name} with split={split}")
-                dataset = load_dataset(dataset_name, split=split)
-            print(f"[load_benchmark_dataset] Successfully loaded {dataset_name}, got {len(dataset)} samples")
-        except Exception as e:
-            # Try without split first, then select split
-            logger.warning(f"Failed to load {dataset_name} with split {split}, trying without split: {e}")
-            print(f"[load_benchmark_dataset] First attempt failed: {e}, trying without split")
-            try:
-                if dataset_config:
-                    try:
-                        full_dataset = load_dataset(dataset_name, dataset_config)
-                    except Exception:
-                        full_dataset = load_dataset(dataset_name, name=dataset_config)
-                else:
-                    full_dataset = load_dataset(dataset_name)
-                print(f"[load_benchmark_dataset] Loaded full dataset, available splits: {list(full_dataset.keys())}")
-                if split in full_dataset:
-                    dataset = full_dataset[split]
-                elif "test" in full_dataset:
-                    dataset = full_dataset["test"]
-                    print(f"[load_benchmark_dataset] Using 'test' split instead of '{split}'")
-                elif "validation" in full_dataset:
-                    dataset = full_dataset["validation"]
-                    print(f"[load_benchmark_dataset] Using 'validation' split instead of '{split}'")
-                else:
-                    # Take first available split
-                    available_split = list(full_dataset.keys())[0]
-                    dataset = full_dataset[available_split]
-                    logger.warning(f"Using split {available_split} instead of {split}")
-                    print(f"[load_benchmark_dataset] Using first available split: {available_split}")
-            except Exception as e2:
-                logger.error(f"Failed to load dataset {dataset_name}: {e2}")
-                print(f"[load_benchmark_dataset] Failed to load dataset: {e2}")
-                raise
-        
-        # Limit samples if specified - randomize selection
-        total_samples = len(dataset)
-        if num_samples:
-            max_samples = min(num_samples, total_samples)
-            # Use a unique seed based on time, process ID, benchmark name, and test_run_id
-            # This ensures different selections each run and different questions for each test
-            seed_base = int(time.time() * 1000000) + os.getpid() + hash(benchmark_name)
-            if test_run_id:
-                seed_base += test_run_id * 1000  # Add test_run_id to make each test unique
-            seed = seed_base
-            random.seed(seed)
-            
-            # Randomly select samples using sample() which is designed for this purpose
-            selected_indices = random.sample(range(total_samples), max_samples)
-            dataset = dataset.select(selected_indices)
-            print(f"[load_benchmark_dataset] Randomly selected {max_samples} samples from {total_samples} total (seed: {seed}, benchmark: {benchmark_name})")
-            print(f"[load_benchmark_dataset] Selected indices: {selected_indices[:10]}{'...' if len(selected_indices) > 10 else ''}")
-        else:
-            print(f"[load_benchmark_dataset] Using all {total_samples} samples")
-        
-        # Standardize format
-        standardized = []
-        qf = config.get("question_field", "")
-        af = config.get("answer_field")
-        print(f"[load_benchmark_dataset] Standardizing format (question_field: {qf}, answer_field: {af})")
-
-        for i, item in enumerate(dataset):
-            if i == 0:
-                print(f"[load_benchmark_dataset] Sample item keys: {list(item.keys())}")
-            standardized.append(standardize_benchmark_row(benchmark_key, config, item))
-        
-        # Shuffle the standardized list to randomize the order of questions
-        # This ensures that even if the same indices are selected, the order is different
-        if len(standardized) > 1:
-            # Always shuffle to randomize order, even when using all samples
-            if num_samples:
-                # Use a different seed component for shuffling to ensure different order
-                shuffle_seed = seed + 12345  # Add offset to make shuffle different from selection
-            else:
-                # For full dataset, use time-based seed for shuffling
-                shuffle_seed = int(time.time() * 1000000) + os.getpid() + hash(benchmark_name)
-                if test_run_id:
-                    shuffle_seed += test_run_id * 1000
-            random.seed(shuffle_seed)
-            random.shuffle(standardized)
-            print(f"[load_benchmark_dataset] Shuffled {len(standardized)} samples (shuffle_seed: {shuffle_seed})")
-            if len(standardized) > 0:
-                print(f"[load_benchmark_dataset] First question after shuffle: {standardized[0].get('question', '')[:100]}...")
-                if len(standardized) > 1:
-                    print(f"[load_benchmark_dataset] Second question: {standardized[1].get('question', '')[:100]}...")
-        
-        logger.info(f"Loaded {len(standardized)} samples from {benchmark_name}")
-        print(f"[load_benchmark_dataset] Successfully standardized {len(standardized)} samples from {benchmark_name}")
-        if len(standardized) > 0 and not num_samples and len(standardized) == 1:
-            print(f"[load_benchmark_dataset] Sample question: {standardized[0].get('question', '')[:100]}...")
-        return standardized
-        
-    except Exception as e:
-        logger.error(f"Error loading dataset {dataset_name}: {e}")
-        # Fallback to simple questions if dataset loading fails
-        logger.warning(f"Falling back to simple questions for {benchmark_name}")
-        return _get_fallback_questions(benchmark_name, num_samples)
-
-
-def _get_fallback_questions(benchmark_name: str, num_samples: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fallback questions if dataset loading fails."""
-    from vivasecuris.aiasylum.benchmarks.simple import SIMPLE_MATH_QUESTIONS, SIMPLE_REASONING_QUESTIONS
-    
-    bn = benchmark_name.lower()
-    if bn in ["math", "gsm8k"]:
-        questions = SIMPLE_MATH_QUESTIONS
-    elif bn in ["arc", "reasoning", "medqa", "medmcqa", "pubmedqa"]:
-        questions = SIMPLE_REASONING_QUESTIONS
+    source = {
+        "dataset": dataset_name, "config": config.get("config"), "split": split,
+        "requested_revision": revision or "main", "resolved_revision": revision if revision and len(revision) == 40 else None,
+        "source": "database" if benchmark_key == "jailbreak" else "huggingface",
+    }
+    if benchmark_key == "jailbreak":
+        rows = await load_jailbreak_benchmark_dataset(None)
+        source.update(split=None, requested_revision=None, resolved_revision=None)
     else:
-        questions = SIMPLE_MATH_QUESTIONS + SIMPLE_REASONING_QUESTIONS
-    
-    if num_samples:
-        questions = questions[:num_samples]
-    
-    return questions
+        try:
+            from datasets import load_dataset
+            kwargs = {"split": split}
+            if revision:
+                kwargs["revision"] = revision
+            if config.get("config"):
+                kwargs["name"] = config["config"]
+            dataset = await asyncio.to_thread(load_dataset, dataset_name, **kwargs)
+            source["dataset_fingerprint"] = getattr(dataset, "_fingerprint", None)
+            rows = []
+            for index, item in enumerate(dataset):
+                row = standardize_benchmark_row(benchmark_key, config, item)
+                row["dataset_index"] = index
+                row["sample_id"] = f"{dataset_name}:{config.get('config') or 'default'}:{split}:{index}"
+                rows.append(row)
+        except Exception as exc:
+            raise ValueError(
+                f"Cannot load benchmark {benchmark_name} from {dataset_name} "
+                f"(config={config.get('config')}, split={split}, revision={revision or 'main'}): {exc}. "
+                "No substitute questions were used."
+            ) from exc
+    if not rows:
+        raise ValueError(f"Benchmark {benchmark_name} has no samples in the requested split")
+    source["available_count"] = len(rows)
+    if num_samples is not None:
+        indices = random.Random(seed).sample(range(len(rows)), min(num_samples, len(rows)))
+        rows = [rows[i] for i in indices]
+    for row in rows:
+        if row.get("choices") and any(not isinstance(choice, str) or not choice.strip() for choice in row["choices"]):
+            raise ValueError(f"Invalid choice text at {row.get('sample_id')}")
+        if not isinstance(row.get("question"), str) or not row["question"].strip():
+            raise ValueError(f"Invalid or empty question at {row.get('sample_id')}")
+    return BenchmarkDataset(rows, selection_provenance(
+        rows, seed=seed, requested_count=num_samples, source=source,
+    ))
 
 
 async def load_benchmark_dataset_all(
-    benchmark_name: str,
+    benchmark_name: str, *, revision: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """
-    Load all benchmark dataset items without randomization.
-    
-    Args:
-        benchmark_name: Name of the benchmark (e.g., "mmlu", "gsm8k", "jailbreak")
-    
-    Returns:
-        List of all dataset items with standardized format (no randomization)
-    """
-    # Handle jailbreak benchmark (loads from database)
-    if benchmark_name.lower() == "jailbreak":
-        # Load all jailbreak prompts (no limit, but no randomization in this function)
-        return await load_jailbreak_benchmark_dataset(num_samples=None)
-    
-    # Call the main function with None for num_samples to get all items
-    # But we need to modify it to skip randomization
-    # We'll duplicate the logic but skip the random selection part
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        logger.error("datasets library not installed. Install with: pip install datasets")
-        raise ImportError("datasets library required for benchmark loading")
-    
-    if benchmark_name.lower() not in BENCHMARK_DATASETS:
-        raise ValueError(f"Unknown benchmark: {benchmark_name}. Available: {list(BENCHMARK_DATASETS.keys())}")
-    
-    config = BENCHMARK_DATASETS[benchmark_name.lower()]
-    dataset_name = config["dataset"]
-    split = config.get("split", "test")
-    dataset_config = config.get("config")
-    
-    logger.info(f"Loading all benchmark dataset: {dataset_name} (split: {split}, config: {dataset_config})")
-    
-    try:
-        # Load dataset - same logic as load_benchmark_dataset but without randomization
-        try:
-            if dataset_config:
-                try:
-                    dataset = load_dataset(dataset_name, dataset_config, split=split)
-                except Exception:
-                    dataset = load_dataset(dataset_name, name=dataset_config, split=split)
-            else:
-                dataset = load_dataset(dataset_name, split=split)
-        except Exception as e:
-            logger.warning(f"Failed to load {dataset_name} with split {split}, trying without split: {e}")
-            try:
-                if dataset_config:
-                    try:
-                        full_dataset = load_dataset(dataset_name, dataset_config)
-                    except Exception:
-                        full_dataset = load_dataset(dataset_name, name=dataset_config)
-                else:
-                    full_dataset = load_dataset(dataset_name)
-                
-                if split in full_dataset:
-                    dataset = full_dataset[split]
-                elif "test" in full_dataset:
-                    dataset = full_dataset["test"]
-                elif "validation" in full_dataset:
-                    dataset = full_dataset["validation"]
-                else:
-                    available_split = list(full_dataset.keys())[0]
-                    dataset = full_dataset[available_split]
-                    logger.warning(f"Using split {available_split} instead of {split}")
-            except Exception as e2:
-                logger.error(f"Failed to load dataset {dataset_name}: {e2}")
-                raise
-        
-        # NO randomization - use all samples
-        print(f"[load_benchmark_dataset_all] Using all {len(dataset)} samples (no randomization)")
-
-        standardized = [
-            standardize_benchmark_row(benchmark_name.lower(), config, item) for item in dataset
-        ]
-        
-        logger.info(f"Loaded {len(standardized)} samples from {benchmark_name} (all samples, no randomization)")
-        return standardized
-        
-    except Exception as e:
-        logger.error(f"Error loading dataset {dataset_name}: {e}")
-        logger.warning(f"Falling back to simple questions for {benchmark_name}")
-        return _get_fallback_questions(benchmark_name, None)
+    """Load the exact requested split in stable source order."""
+    return await load_benchmark_dataset(benchmark_name, revision=revision)
 
 
 def parse_index_selection(index_string: str, max_index: int) -> List[int]:
@@ -487,7 +330,7 @@ def parse_index_selection(index_string: str, max_index: int) -> List[int]:
                 start, end = part.split("-", 1)
                 start_idx = int(start.strip())
                 end_idx = int(end.strip())
-                if start_idx < 0 or end_idx >= max_index:
+                if start_idx < 0 or end_idx >= max_index or end_idx < start_idx:
                     raise ValueError(f"Index out of range: {part}")
                 indices.update(range(start_idx, end_idx + 1))
             except ValueError as e:
@@ -525,7 +368,9 @@ def filter_prompts_by_selection(
     
     # Filter by indices first (indices refer to original list positions)
     if indices is not None:
-        filtered = [prompts[i] for i in indices if 0 <= i < len(prompts)]
+        if any(i < 0 or i >= len(prompts) for i in indices):
+            raise ValueError("Selected benchmark index is outside the dataset")
+        filtered = [prompts[i] for i in indices]
     
     # Filter by subject (applied after index filtering)
     if subject:
@@ -580,18 +425,9 @@ async def load_jailbreak_benchmark_dataset(
             # Get prompts with metadata
             all_prompts = session.query(PromptLibrary).filter(
                 PromptLibrary.category == "adversarial"
-            ).all()
+            ).order_by(PromptLibrary.id).all()
             
             prompts = [p for p in all_prompts if p.tags and "jailbreak" in p.tags]
-            
-            # Apply randomization
-            import random
-            import time
-            import os
-            if len(prompts) > 1:
-                seed = int(time.time() * 1000000) + os.getpid()
-                random.seed(seed)
-                random.shuffle(prompts)
             
             # Apply limit
             if num_samples:
@@ -609,6 +445,8 @@ async def load_jailbreak_benchmark_dataset(
                     is_multi_shot = technique in JAILBREAK_TECHNIQUES.get("multi_shot", [])
                 
                 standardized.append({
+                    "sample_id": f"prompt-library:{prompt.id}",
+                    "dataset_index": len(standardized),
                     "question": prompt.prompt_text,
                     "answer": "resisted",  # For jailbreaks, desired outcome is resistance
                     "is_multi_shot": is_multi_shot,  # Flag indicating if this prompt needs multi-shot
@@ -629,17 +467,3 @@ async def load_jailbreak_benchmark_dataset(
         error_msg = f"Error loading jailbreak prompts from database: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise ValueError(error_msg) from e
-    
-    # Format as benchmark dataset items
-    # For jailbreak benchmarks, the "answer" is "resisted" (model should resist)
-    # The evaluation logic will check if the model was successfully jailbroken
-    standardized = []
-    for i, prompt_text in enumerate(prompt_texts):
-        standardized_item = {
-            "question": prompt_text,
-            "answer": "resisted",  # Desired outcome: model resists jailbreak
-            "question_number": i + 1,
-        }
-        standardized.append(standardized_item)
-    
-    return standardized

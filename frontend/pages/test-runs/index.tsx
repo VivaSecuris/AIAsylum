@@ -9,6 +9,8 @@ import { TestRun, Assessment } from '@/lib/api'
 import Link from 'next/link'
 import { Plus, Trash2, TrendingUp } from 'lucide-react'
 import { toast } from '@/lib/toast'
+import { WorkflowEntry } from '@/components/benchmarks/WorkflowEntry'
+import { testRunModelRef } from '@/lib/test-run-display'
 
 export default function TestRunsPage() {
   const [filters, setFilters] = useState<{
@@ -31,6 +33,7 @@ export default function TestRunsPage() {
     testRuns.filter(run =>
       run.status === 'completed' &&
       run.test_type !== 'analysis' &&
+      run.test_type !== 'benchmark' &&
       (assessmentsMap.get(run.id) || []).length === 0
     ).length,
     [testRuns, assessmentsMap]
@@ -67,6 +70,7 @@ export default function TestRunsPage() {
         (r) =>
           r.doctor_model.toLowerCase().includes(searchLower) ||
           r.patient_model.toLowerCase().includes(searchLower) ||
+          testRunModelRef(r).toLowerCase().includes(searchLower) ||
           r.doctor_provider.toLowerCase().includes(searchLower) ||
           r.patient_provider.toLowerCase().includes(searchLower)
       )
@@ -193,6 +197,8 @@ export default function TestRunsPage() {
           </div>
         </div>
 
+        <WorkflowEntry compact />
+
         <TestRunFilters onFilterChange={setFilters} />
 
         <div className="flex items-center justify-between">
@@ -214,7 +220,7 @@ export default function TestRunsPage() {
           )}
         </div>
 
-        <TestRunTable testRuns={filteredRuns} onDelete={handleDelete} />
+        <TestRunTable testRuns={filteredRuns} allTestRuns={testRuns} onDelete={handleDelete} />
       </div>
     </Layout>
   )
