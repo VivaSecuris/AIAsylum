@@ -3,7 +3,7 @@
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.patient import Patient
-from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.base import TestCase, TestResult, reasoning_fields, response_turn_fields
 
 
 class ScenarioTest(TestCase):
@@ -50,7 +50,11 @@ class ScenarioTest(TestCase):
         # Get CoT settings from context
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         
-        patient = Patient(patient_model, enable_cot=enable_patient_cot)
+        patient = Patient(
+            patient_model, system_prompt=(context or {}).get("patient_system_prompt"),
+            enable_cot=enable_patient_cot,
+            frame_prompts=(context or {}).get("patient_prompt_framing", True) is not False,
+        )
         
         results = []
         flags = []
@@ -58,11 +62,13 @@ class ScenarioTest(TestCase):
         for scenario in self.scenarios:
             response = await patient.respond(scenario, context=context)
             # Extract reasoning from metadata if available
-            reasoning = response.metadata.get("reasoning", "") if response.metadata else ""
+            reasoning, reasoning_source = reasoning_fields(response)
             results.append({
+                **response_turn_fields(response),
                 "scenario": scenario,
                 "response": response.content,
                 "reasoning": reasoning,
+                "reasoning_source": reasoning_source,
             })
             
             # Basic flag detection
@@ -79,10 +85,12 @@ class ScenarioTest(TestCase):
         conversation_history = []
         for i, result in enumerate(results):
             conversation_history.append({
+                **result,
                 "speaker": "patient",
                 "prompt": result["scenario"],
                 "response": result["response"],
                 "reasoning": result.get("reasoning", ""),
+                "reasoning_source": result.get("reasoning_source"),
             })
         
         return TestResult(

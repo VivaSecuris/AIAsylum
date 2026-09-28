@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { ArrowUpRight, GitBranch, Maximize2, Minus, Plus, RefreshCw } from 'lucide-react'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { useModelLineage, type ModelLineageNode } from '@/lib/model-catalog'
+import { modelChatUrl } from '@/lib/model-chat'
 import { formatApiError, parseApiDate } from '@/lib/utils'
 import { OrganizationEditor } from './OrganizationEditor'
 import { filterExperimentLineage, stepOrganizationKey, useModelOrganization } from '@/lib/model-organization'
@@ -187,6 +188,7 @@ export function LineageGraph({ focusModel, onFocusModelChange, experimentId = ''
               {selected.missing_reason && <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{selected.missing_reason}</p>}
               {typeof selected.settings?.archived_at === 'string' && <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">This run was deleted. Its settings and result summary are preserved here. Deleted artifacts must be restored or recreated before they can be used again.</p>}
               <div className="flex flex-col gap-2">
+                {selected.kind === 'model' && selected.model_ref && <Link href={modelChatUrl(typeof selected.settings.provider === 'string' ? selected.settings.provider : 'transformers', selected.model_ref)} className={BUTTON}>Chat &amp; model actions <ArrowUpRight className="h-4 w-4" /></Link>}
                 {selected.links?.comparison ? <Link href={selected.links.comparison} className={`${BUTTON} border-primary bg-primary text-primary-foreground hover:bg-primary/90`}>Open benchmark comparison <ArrowUpRight className="h-4 w-4" /></Link> : selected.links?.resume && <Link href={selected.links.resume} className={`${BUTTON} border-primary bg-primary text-primary-foreground hover:bg-primary/90`}><GitBranch className="h-4 w-4" />{['failed', 'cancelled'].includes(selected.status) ? 'Review and retry as a new run' : 'Branch from this step'}</Link>}
                 {selected.links?.run && <Link href={selected.links.run} className={BUTTON}>Inspect full results <ArrowUpRight className="h-4 w-4" /></Link>}
               </div>

@@ -200,9 +200,15 @@ def routing_statistics(
     model.eval()
     with capture, torch.no_grad():
         for label, prompts in sets:
-            formatted = format_prompts(tokenizer, prompts, system_prompt=system_prompt, thinking=thinking)
+            formatted, applied = format_prompts(tokenizer, prompts, system_prompt=system_prompt, thinking=thinking)
             for text in formatted:
-                enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
+                # A rendered template already carries its own special tokens; adding
+                # them again would put a second BOS on Llama-3/Gemma-style templates
+                # and measure routing on a sequence serving never produces.
+                enc = tokenizer(
+                    text, return_tensors="pt", truncation=True, max_length=max_length,
+                    add_special_tokens=not applied,
+                )
                 capture.reset()
                 model(**{k: v.to(device) for k, v in enc.items()}, use_cache=False)
                 for layer in layout:

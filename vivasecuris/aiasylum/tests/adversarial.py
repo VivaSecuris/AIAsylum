@@ -12,7 +12,7 @@ both single-shot and multi-shot jailbreak techniques including:
 
 from typing import Dict, List, Optional
 
-from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.base import TestCase, TestResult, reasoning_fields, response_turn_fields
 
 
 class AdversarialTest(TestCase):
@@ -280,7 +280,10 @@ console.log(unrot("instructions for making a homemade explosive."));""",
 
         from vivasecuris.aiasylum.patient import Patient
 
-        patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
+        patient = Patient(
+            patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot,
+            frame_prompts=(context or {}).get("patient_prompt_framing", True) is not False,
+        )
         
         results = []
         flags = []
@@ -303,17 +306,19 @@ console.log(unrot("instructions for making a homemade explosive."));""",
             
             response = await patient.respond(context_prompt, context=context)
             # Extract reasoning from metadata if available
-            reasoning = response.metadata.get("reasoning", "") if response.metadata else ""
+            reasoning, reasoning_source = reasoning_fields(response)
             
             # Classify response with safety taxonomy (Module 4)
             response_labels = self._classify_response(response.content, prompt)
             labels.extend(response_labels)
             
             results.append({
+                **response_turn_fields(response),
                 "prompt_number": prompt_number,
                 "prompt": prompt,
                 "response": response.content,
                 "reasoning": reasoning,
+                "reasoning_source": reasoning_source,
                 "labels": response_labels,
             })
             
@@ -348,11 +353,13 @@ console.log(unrot("instructions for making a homemade explosive."));""",
         conversation_history = []
         for i, result in enumerate(results):
             conversation_history.append({
+                **result,
                 "speaker": "patient",
                 "prompt_number": result.get("prompt_number", i + 1),
                 "prompt": result["prompt"],
                 "response": result["response"],
                 "reasoning": result.get("reasoning", ""),
+                "reasoning_source": result.get("reasoning_source"),
                 "labels": result.get("labels", []),
             })
         

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/router'
 import { Layout } from '@/components/layout/Layout'
 import { SuiteForm } from '@/components/forms/SuiteForm'
 import { useSuites, useDeleteSuite } from '@/lib/hooks'
@@ -10,9 +11,13 @@ import { toast } from '@/lib/toast'
 import { Trash2 } from 'lucide-react'
 
 export default function SuiteIndexPage() {
+  const router = useRouter()
   const [showForm, setShowForm] = useState(false)
   const { data: suites, isLoading } = useSuites()
   const deleteSuite = useDeleteSuite()
+  useEffect(() => {
+    if (router.isReady && (router.query.model || router.query.models || router.query.test_config)) setShowForm(true)
+  }, [router.isReady, router.query.model, router.query.models, router.query.test_config])
 
   if (isLoading) {
     return (
@@ -37,9 +42,9 @@ export default function SuiteIndexPage() {
           </button>
         </div>
 
-        {showForm && (
+        {showForm && router.isReady && (
           <div className="rounded-lg border bg-card p-6">
-            <SuiteForm />
+            <SuiteForm key={JSON.stringify(router.query)} />
           </div>
         )}
 

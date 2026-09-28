@@ -44,12 +44,16 @@ def prepare_benchmark_inputs(tokenizer, prompt, system_prompt, messages, device)
     # MistralCommonBackend implements its own template without a Jinja string;
     # decoding its control tokens to text and encoding again is not equivalent.
     native_mistral = tokenizer.__class__.__name__ == "MistralCommonBackend"
-    template = getattr(tokenizer, "chat_template", None)
-    if not template and not native_mistral:
-        text = "\n\n".join(message.get("content", "") for message in chat)
-        return tokenizer(text, return_tensors="pt", add_special_tokens=False).to(device)
-    kwargs = {"enable_thinking": False} if template and "enable_thinking" in template else {}
-    return tokenizer.apply_chat_template(
-        chat, tokenize=True, add_generation_prompt=True, return_dict=True,
-        return_tensors="pt", **kwargs,
-    ).to(device)
+    if native_mistral:
+        return tokenizer.apply_chat_template(
+            chat, tokenize=True, add_generation_prompt=True, return_dict=True,
+            return_tensors="pt",
+        ).to(device)
+    # Every Jinja-templated or template-less tokenizer goes through the shared
+    # formatter. transformers' own tokenize=True path is render-then-tokenize with
+    # add_special_tokens=False, so this is byte-identical for templates and, for a
+    # base model, finally adds the BOS the old hardcoded False never did.
+    from vivasecuris.aiasylum.weights.capture import format_chat
+
+    text, applied = format_chat(tokenizer, chat)
+    return tokenizer(text, return_tensors="pt", add_special_tokens=not applied).to(device)

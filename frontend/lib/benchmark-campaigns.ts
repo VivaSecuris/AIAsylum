@@ -31,6 +31,12 @@ export interface BenchmarkCampaign {
   num_samples: number
   seed: number
   max_new_tokens: number
+  enable_cot?: boolean
+  patient_system_prompt_id?: number
+  patient_system_prompt?: string
+  patient_prompt_framing?: boolean
+  temperature?: number
+  top_p?: number
   completed: number
   total: number
   runs: BenchmarkCampaignRun[]
@@ -47,6 +53,12 @@ export interface BenchmarkCampaignRequest {
   num_samples: number
   seed: number
   max_new_tokens: number
+  enable_cot?: boolean
+  patient_system_prompt_id?: number
+  patient_system_prompt?: string
+  patient_prompt_framing?: boolean
+  temperature?: number
+  top_p?: number
 }
 
 export const BENCHMARK_CHECKS = [

@@ -35,15 +35,25 @@ def score_prompts(
     probe_set,
     batch_size: int = 8,
     max_length: int = 512,
+    system_prompt: Optional[str] = None,
     progress: Optional[callable] = None,
 ) -> List[float]:
-    """Internal harm score per prompt, captured the way the probe was trained."""
+    """Internal harm score per prompt, captured the way the probe was trained.
+
+    ``system_prompt`` is the one the model is being served with. The
+    knows-but-complies verdict pairs an internal signal with the behaviour of
+    the *same* forward pass; scoring the bare prompt while serving it under a
+    system prompt would describe a pass the model never ran. Prior turns of a
+    conversation are still not scored -- only the latest message and its
+    system prompt.
+    """
     from vivasecuris.aiasylum.weights.capture import capture_pooled_residuals
 
     acts = capture_pooled_residuals(
         model, tokenizer, list(prompts),
         pooling=probe_set.pooling, prompt_suffix=probe_set.prompt_suffix,
-        batch_size=batch_size, max_length=max_length, progress=progress,
+        batch_size=batch_size, max_length=max_length,
+        system_prompt=system_prompt, progress=progress,
     )
     probe = probe_set.best
     if probe.layer >= acts.shape[0]:

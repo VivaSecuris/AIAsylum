@@ -12,3 +12,14 @@ export function testRunModelRef(run: DisplayRun): string {
   }
   return run.patient_model
 }
+
+/** A model reference short enough for a card: a local checkpoint path becomes its folder name. */
+export function shortModelRef(ref: string): string {
+  return ref?.startsWith('/') ? ref.split('/').filter(Boolean).pop() || ref : ref
+}
+
+/** "provider/model" for display, with local checkpoint paths shortened (keep the full ref in a tooltip). */
+export function testRunModelLabel(run: DisplayRun & { patient_provider: string }): string {
+  const ref = testRunModelRef(run)
+  return ref?.startsWith('/') ? shortModelRef(ref) : `${run.patient_provider}/${ref}`
+}

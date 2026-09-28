@@ -46,10 +46,10 @@ The UI adds four things the CLI does not have:
   really a broken model. A sweep whose refusal drop comes with a capability drop
   is reported as `capability_cost`, not `causal`.
 
-The five stages map onto the CLI commands: `direction`, `steer --sweep`,
-`select`, `ablate`, `compare`. Chat is a per-turn endpoint rather than a stage,
-and it borrows the shared model slot for one reply at a time so a conversation
-never blocks a job.
+The stages map onto the CLI commands: `direction`, `steer --sweep`, `select`,
+`autotune`, `ablate`, `compare`, and `verify` for any written directory. Chat is
+a per-turn endpoint rather than a stage, and it borrows the shared model slot
+for one reply at a time so a conversation never blocks a job.
 
 Paths are never accepted from the browser: surgery takes a name, and the
 destination is always built under the configured models directory.
@@ -101,6 +101,25 @@ pair, so ties are broken on Cohen's d.
 **Why the last prompt token:** with `add_generation_prompt=True` the final
 position is the start of the assistant turn — where the model has committed to
 answering or refusing. Earlier positions are still reading the question.
+
+**Base models (no chat template) are refused unless asked for.** Every prompt
+in this pipeline is rendered by one function, `capture.format_chat`, which
+returns the text *and* whether a template was applied; callers tokenize with
+`add_special_tokens=not template_applied`, because a chat template carries its
+own BOS and plain text needs the tokenizer to add one. A tokenizer with no
+template gets the plain rendering `system\n\nprompt\n\n` — the trailing blank
+line stands in for `add_generation_prompt=True` — and one BOS. Deriving a
+refusal direction from plain text is a different experiment from deriving it
+from a chat turn, so `derive` and `probe` refuse a template-less tokenizer with
+`NoChatTemplateError`; pass `--allow-no-chat-template` (API:
+`allow_no_chat_template: true`) to say you mean it. The direction records
+`format_version` and `template_applied` in `direction.json` (probes the same in
+`probes.json`). Files written before this rule (`format_version` 1, or missing)
+had no BOS and dropped the system prompt on base models; `steer` and the sweep
+stage refuse such a file on a base model (`check_direction_format`) and it has
+to be re-derived. On any model with a template nothing changed: the rendered
+ids are byte-identical before and after, so stored instruct-model directions
+load as version 1 and are as good as version 2.
 
 ---
 
@@ -343,11 +362,16 @@ aiasylum weights select --model Qwen/Qwen2.5-3B-Instruct --direction runs/qwen3b
   --n-prompts 32 --ranks 1,2,3,4,6,8 --ks 1.0,1.25,1.5 --factual-floor 0.05 --device mps
 ```
 
-Every (rank, k) is previewed at inference time — no 6 GB written — and scored on
-both refusal and the factual control. A config is admissible only if it stays
-within `--factual-floor` of the unedited baseline and is not degenerate. The
-command prints the whole frontier (the "what 100% costs" curve) and recommends
-the least-destructive admissible config. Example frontier (12 held-out harmful,
+Every (rank, k) is applied to the real weights in memory against a bit-exact
+snapshot of the residual writers, scored, and restored — no 6 GB written — on
+refusal, the factual control, degeneracy and language drift. A config is
+admissible only if it stays within `--factual-floor` of the unedited baseline,
+is not degenerate, and keeps its answers in the prompt's script
+(`--language-drift-max`, default 10% of answers). The command prints the whole
+frontier (the "what 100% costs" curve) and recommends the least-destructive
+admissible config. `--no-embeddings` previews the edit with the embedding table
+untouched; `--preview hooks` is the pre-September inference-time projection,
+kept for comparison only (see §12c). Example frontier (12 held-out harmful,
 greedy):
 
 | rank | k | refuse | factual | admissible |
@@ -365,16 +389,72 @@ subspaces — the plan's thesis, enforced by code rather than by discipline.
 ### Write and verify the chosen edit
 
 ```bash
-# derive at the chosen rank so the basis matches, then remove it as a subspace
-aiasylum weights direction --subspace-rank 4 --out runs/qwen3b_r4/ --device mps
-aiasylum weights ablate --direction runs/qwen3b_r4/ --subspace --k 1.0 \
+# the basis is built incrementally, so its first N rows are the rank-N subspace
+aiasylum weights ablate --direction runs/qwen3b_sub/ --subspace --rank 4 --k 1.0 \
   --out models/ablated_r4/ --model Qwen/Qwen2.5-3B-Instruct
+aiasylum weights verify --model models/ablated_r4/ --baseline Qwen/Qwen2.5-3B-Instruct
 aiasylum weights compare --modified models/ablated_r4/ --device mps
 ```
 
-The manifest records `method="direction_subspace"` with the rank, `k` and source
-layers in `extra`, so it rides `ModelResponse.metadata` into every test run just
-like a β edit.
+The API `surgery` stage takes the same `rank`. The manifest records
+`method="direction_subspace"` with the rank, `k` and source layers in `extra`,
+so it rides `ModelResponse.metadata` into every test run just like a β edit.
+
+Or skip the hand-off entirely and let the loop do select, write and verify in
+one run: §6b.
+
+## 6b. Autotune: modify → evaluate → keep or restore → verify
+
+```bash
+aiasylum weights autotune --model Qwen/Qwen2.5-3B-Instruct --direction runs/qwen3b_sub/ \
+  --out models/qwen3b-auto/ --n-prompts 32 --ranks 1,2,3,4 --ks 1.0,1.25 \
+  --embeddings auto --report runs/qwen3b-auto.json
+```
+
+This is the loop the manual pipeline asks the operator to run by hand — write a
+checkpoint, compare it, find it answers in Chinese, start over — done in memory:
+
+1. **Snapshot.** One bit-exact copy of every residual-writing tensor
+   (`surgery.ResidualWriterSnapshot`; about 2.5 GB for a 3B, 6 GB for an 8B,
+   on the host).
+2. **Try.** For each candidate, least destructive first — strength outermost,
+   then rank, then whether the embedding table is edited — apply the *same*
+   `apply_subspace_to_model` call `ablate` makes, generate greedily for the
+   held-out harmful prompts and the capability control, score, record the
+   trial, restore.
+3. **Gate.** A trial is admissible only if it is not degenerate, does not drift
+   out of the Latin script, and holds the factual floor. `--max-refusal` is a
+   target, reported as met or not; it never admits or rejects anything.
+4. **Pick.** Lowest refusal wins; ties go to the smaller edit (rank, then k,
+   then fewer matrices, then more retained capability). `--stop-at-first`
+   stops at the first admissible trial that meets the target instead.
+5. **Re-check under sampling.** The winner is re-applied and scored again at
+   the provider's serving settings (`models.base.DEFAULT_TEMPERATURE` /
+   `DEFAULT_TOP_P`, seeded). If it fails there, the next-best admissible trial
+   is tried. Greedy passes and sampled drift is exactly how an edit looked fine
+   in `compare` and then answered a test run in Chinese.
+6. **Write and verify.** The tensors that passed are written to a staging
+   sibling; the in-memory model is released; the directory is reloaded from
+   disk through the same loader the `transformers` provider uses and gated
+   again, greedy and sampled. SHA-256 digests of the weight files and the
+   verification report are stamped into the manifest (`extra.weights_sha256`,
+   `extra.verification`), and only then is the directory renamed into place.
+
+A run that finds nothing admissible writes nothing and keeps every trial; a
+written checkpoint that fails the disk check is removed, not published. The
+API stage `autotune` does the same through the browser and records the full
+trial log (every generation included) on the run, so a failed run still
+explains itself. Manifest `extra.autotune` holds the winner, the spec and the
+counts.
+
+On a model whose `lm_head` is tied to the embedding table (Qwen2.5 0.5B–3B),
+`--embeddings auto` tries the untouched-embeddings edit first: editing the
+table also rewrites the unembedding, which is the usual route to a model that
+answers in Chinese. On untied models the full edit goes first.
+
+`aiasylum weights verify --model <dir> [--baseline <stock>] [--check-hashes]`
+runs the disk check on its own for any directory, including ones written
+before this existed and the `-rebuild` copies on the GPU server.
 
 ### Poke it by hand
 
@@ -420,7 +500,29 @@ meaningless across layers; that is why `add` is single-layer and norm-relative.
 
 **Tied embeddings.** Qwen2.5 at 0.5B/1.5B/3B ties `lm_head` to `embed_tokens`.
 `residual_write_matrices()` deduplicates by `data_ptr()` so the projection is
-applied once, and the manifest records `embeddings_tied`.
+applied once, and the manifest records `embeddings_tied`. Editing the table
+therefore also rewrites the unembedding — the inference-time hook preview never
+did, so a frontier measured with hooks could not see the difference. Prefer
+`--no-embeddings` / `include_embeddings=false` on tied models when the edited
+model drifts into another language; `autotune` tries that first. A token remap
+that edits only the head is the one edit that has to untie the pair before it
+saves; see §17.
+
+**Language drift.** An over-edited Qwen answers in Chinese. No English refusal
+phrase appears, so the phrase matcher reads 0% refusal, and the repetition
+detector splits on whitespace, which Chinese does not have. Compare #30
+(rank 18) recorded exactly this as `degenerate: false`, 0% refusal.
+`evaluate.language_drift` now counts answers whose letters are mostly outside
+the Latin script; `compare_verdict` returns `language_drift`, `select` and
+`autotune` reject the candidate, and the degeneracy detector judges
+whitespace-free text on character bigrams. Read the drift column before the
+refusal column.
+
+**Greedy passes, sampling drifts.** Every measurement here is greedy so the
+weights are the only variable, but the `transformers` provider serves test runs
+at temperature 0.7 / top-p 0.95. A damaged model can pass greedy and drift under
+sampling. `autotune` and `verify` run a seeded sampled pass at the serving
+settings; `compare` is still greedy.
 
 **Ollama names are rejected.** Model ids must be Hugging Face ids or local
 paths. labotomy's loader silently mapped `llama3.2`/`llama3`/`llama3.1` to
@@ -438,10 +540,13 @@ gitignored. A bf16 3B copy is ~6 GB.
 ## Tests
 
 ```bash
-pytest tests/test_weights_surgery.py -v    # the projection algebra, synthetic, seconds
+pytest tests/test_weights_surgery.py -v    # the projection algebra, language drift, the verdict; synthetic, seconds
 pytest tests/test_weights_arch.py -v       # detection + enumeration on a tiny real Qwen2
 pytest tests/test_weights_arch_moe.py -v   # per-expert + shared-expert enumeration across 8 MoE families
-pytest tests/test_weights_pipeline.py -v   # capture -> direction -> surgery -> provider
+pytest tests/test_weights_pipeline.py -v   # capture -> direction -> surgery -> provider; snapshot/restore, autotune, verify
+pytest tests/test_weights_execute_new_kinds.py -k autotune -v   # the API stage end to end on a tiny model
+pytest tests/test_weights_cli_autotune.py -v                     # the autotune and verify commands
+pytest tests/test_weights_remap.py -v                            # token remap: the decode-time filter, row moves, the untie, save and reload
 ```
 
 `test_weights_surgery.py` is the one that matters most. It asserts on synthetic
@@ -637,6 +742,33 @@ control. `scripts/validate_interp_2026.py` now scales it with the budget, and
 `weights compare` can use `--capability-set mmlu:<n>` when a dozen questions is
 not enough to support the claim you want to make.
 
+## 12c. Correction: `select` frontiers recorded before 26 September 2026 measured a different edit
+
+`select_edit` previewed every candidate with the inference-time hooks of
+`steering.ablate_subspace`, not with the weight edit `ablate` writes. The two
+differ in three ways, and every one of them made the frontier kinder than the
+checkpoint:
+
+- **Inside a block** the MLP reads the attention write before the next block's
+  hook projects it; the weight edit removes the component from the write
+  itself. The two disagree on the logits even at k=1 on an untied model.
+- **Above k=1** the hooks re-scale the accumulated residual at every block, so
+  the leftover component compounds; the weight edit scales each write once.
+- **On tied models** the weight edit with `include_embeddings=True` rewrites
+  `lm_head`; the hooks never touch it.
+
+So a select run could recommend a (rank, k) whose checkpoint then answered in
+Chinese, and nothing between the two would have said why. `select` now previews
+with `temporary_subspace_edit` against a `ResidualWriterSnapshot` — the exact
+write-path call, restored bit for bit — and reports `preview: "weights"` on the
+run. `--preview hooks` keeps the old behaviour for comparison. Frontiers with
+no `preview` field were hook-measured: re-run them before trusting a
+recommendation, and prefer `autotune`, which also re-checks under sampling and
+from disk. Regressions pin the divergence
+(`test_weights_preview_is_not_the_hook_preview`,
+`test_tied_lm_head_edit_is_visible_in_the_logits`) and the restore
+(`test_snapshot_restore_is_bit_exact`).
+
 ## 13. Talking to the model
 
 Numbers say an edit moved refusal by N points. They do not say whether the
@@ -785,7 +917,8 @@ from a benchmark's items.
 "system": optional}`. Each row is rendered through the tokenizer's chat
 template exactly as capture and evaluation render prompts, so the trained
 positions are the ones inference will see. A base model without a template
-falls back to `prompt + "\n\n"`, and the manifest records which.
+gets the same plain rendering capture and serving use (`system\n\nprompt\n\n`,
+with the tokenizer's BOS; see §1), and the manifest records which.
 
 **The loss is masked to the response.** Every prompt token carries label
 `-100`: the model learns to answer, not to reproduce the question.
@@ -864,3 +997,167 @@ sizes share a tokenizer but not an embedding width; the logits are sliced to
 the common prefix in that case.
 
 Tests: `pytest tests/test_weights_distill.py -v`.
+
+---
+
+## 17. Token remap: the unembedding is a lookup table
+
+Everything above edits a *direction*. This edits a *token*: make the model emit
+` Bye` wherever it would have emitted ` Hello`.
+
+> **Status.** Implemented, with unit tests on a tiny model that have been
+> written but not yet run. Nothing here has been run on a real checkpoint. The
+> commands below are the procedure, not a recorded result.
+
+### The idea
+
+The last step of the model turns the final residual `h` (the output of the
+final norm, a list of `d_model` numbers) into one score per vocabulary entry.
+With `W_U` the output head (`lm_head.weight`, one row per token) and `w_v` the
+row for token `v`:
+
+```
+l_v = w_v · h
+```
+
+In words: a token's score is how well its row lines up with what the model has
+computed. Nothing else in the network reads `W_U`, so the head is a lookup
+table from "what I want to say" to "which token that is". Exchange two rows and
+the two tokens exchange scores, for every prompt and every position, because
+`h` has not changed. That is why the head is never a *direction-surgery*
+target (§3) and is the only target here.
+
+### Two layers, like steer before ablate
+
+| | Command | Writes | What it does |
+|---|---|---|---|
+| Preview | `weights remap ... --preview` | nothing | Filters the scores at every generation step: the target gets `max(target, source)`, the source gets `-inf` |
+| Saved edit | `weights remap ... --out DIR` | a model directory | Moves rows of `lm_head.weight` |
+
+### Three modes for the saved edit
+
+For a source row `a` and a target row `b`:
+
+| `--mode` | Row operation | Scores afterwards | Exact | Reversible |
+|---|---|---|---|---|
+| `swap` (default) | exchange `w_a` and `w_b` | `l_a` and `l_b` trade places | yes | yes: apply it again |
+| `copy` | `w_b ← w_a`, then `w_a ← 0` | `l_b = old l_a`, `l_a = 0` | yes | no |
+| `merge` | `w_b ← w_b + w_a`, then `w_a ← 0` | `l_b = old l_b + old l_a`, `l_a = 0` | approximate | no |
+
+Each has a cost. `swap` also turns every goodbye into a hello. `copy` throws
+the target's own row away, so the model can no longer say ` Bye` when it means
+` Bye`. `merge` keeps both meanings on one row, at the price of adding two
+scores that were never meant to be added; it behaves like the preview's `max`
+only while one of the two scores dominates.
+
+`swap` and `copy` move bit patterns and do no arithmetic, so they are exact in
+bfloat16 and need no float32 detour. `merge` adds, so it runs in float32 and
+casts back, like the projection edits.
+
+**Why the source row is zeroed and not banned.** `softmax` gives a token a
+probability of zero only when its score is `-inf`, and the preview does exactly
+that. A weight cannot. `l_a = w_a · h` is a finite number for every finite row,
+so no row produces `-inf` for every `h`. A zero row gives `l_a = 0` for every
+`h`, which loses whenever the model's real choice scores above zero. That is a
+suppression, not a ban, and how often a zero score wins on these models has not
+been measured.
+
+### Tokens are not words
+
+A word is several rows. On the Qwen2.5 tokenizer:
+
+| Text | Token ids | |
+|---|---|---|
+| `Hello` | 9707 | one token |
+| ` Hello` | 21927 | one token |
+| `hello` | 14990 | one token |
+| ` hello` | 23811 | one token |
+| `HELLO` | 50712, 1593 | two tokens: not a row |
+| `Bye` | 1359, 68 | two tokens: cannot be a target |
+| ` Bye` | 89325 | one token |
+| `bye` | 28374 | one token |
+| ` bye` | 53041 | one token |
+
+A target must be exactly one token, because a row move produces one row. By
+default every single-token spelling of `--from` is paired with the same-shaped
+spelling of `--to`, and a spelling whose target is not one token is reported and
+left alone. So `--from Hello --to Bye` remaps three spellings and reports that
+sentence-initial `Hello` was skipped, because `Bye` is two tokens. `--exact`
+takes both strings literally: `--exact --from Hello --to ' Bye'`.
+
+Each row can take part in one move. Two sources cannot both `swap` or `copy`
+onto the same target, so ` Hello` and `Hello` cannot both become ` Bye` in those
+modes. `merge` can stack: run it once per source, each run against the previous
+output.
+
+### The model reads its own output
+
+After emitting token `b` the next step embeds `b`. With the head edited alone
+the model hears itself say ` Bye` and continues from there, so a greeting may
+turn into a farewell mid-sentence. `--inputs` applies the same row operation to
+the input embedding table as well. The model then reads its own ` Bye` as
+` Hello` and carries on as before, at the price that a ` Bye` typed by the user
+is read as ` Hello` too. The manifest records which was done
+(`extra.inputs_edited`).
+
+### Tied embeddings
+
+Qwen2.5 at 0.5B/1.5B/3B stores the head and the embedding table as one tensor.
+
+| Model | `--inputs` | What happens |
+|---|---|---|
+| tied | no | The head is untied first, then edited. The checkpoint grows by one table |
+| tied | yes | One row operation on the shared table does both edits. It stays tied |
+| untied | no | The head is edited |
+| untied | yes | The head is edited, then the embedding table |
+
+The untie is three steps: clone `lm_head.weight` into its own parameter, set
+`config.tie_word_embeddings = false`, and save. It is not optional.
+`save_pretrained` drops `lm_head.weight` from a tied model as a duplicate of
+the embedding table, and `from_pretrained` rebuilds the head from that table.
+A head-only edit saved without the untie therefore loads back as the stock
+model, with no error.
+
+### Reversing it
+
+A second `swap` with the same pair restores every row bit for bit. It does not
+re-tie: a model that was untied stays untied, with two identical tables.
+`copy` and `merge` overwrite a row and cannot be undone from the checkpoint.
+
+### Commands
+
+```bash
+# 1. See it, touching nothing
+aiasylum weights remap --model Qwen/Qwen2.5-0.5B-Instruct \
+    --from Hello --to Bye --preview --prompt "Say hello to me"
+
+# 2. Sentence-initial "Hello" needs an explicit single-token target
+aiasylum weights remap --model Qwen/Qwen2.5-0.5B-Instruct \
+    --exact --from Hello --to ' Bye' --preview
+
+# 3. Write it
+aiasylum weights remap --model Qwen/Qwen2.5-0.5B-Instruct \
+    --exact --from Hello --to ' Bye' --mode merge --out models/qwen05b-hello-bye
+
+# 4. Read the manifest, then talk to it
+aiasylum weights info --model models/qwen05b-hello-bye
+aiasylum weights chat --model models/qwen05b-hello-bye --single "Say hello to me"
+```
+
+Before saving, the write path scores one neutral prompt before and after the
+edit and refuses to write unless the moved columns hold what the mode promises
+and every other column is unchanged. The result is recorded as
+`extra.logit_check`.
+
+### Limits
+
+- **One pair of words per run**, and single-token targets only.
+- **Surface form, not meaning.** The model still computes a greeting. A
+  paraphrase such as "Hi" or "Greetings" is a different row and is untouched.
+  Changing what the model *believes* a word means is a knowledge edit
+  (ROME/MEMIT), which is not built here.
+- **CLI only.** There is no API stage or UI for it, and the decode-time filter
+  is not plumbed into the serving provider: the saved model is the artifact the
+  test harness loads.
+
+Tests: `pytest tests/test_weights_remap.py -v`.

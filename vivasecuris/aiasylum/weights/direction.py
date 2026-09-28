@@ -20,6 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# capture.py is stdlib-only at import time (torch is imported inside its
+# functions), so this pulls in no heavy dependency and creates no cycle.
+from vivasecuris.aiasylum.weights.capture import PROMPT_FORMAT_VERSION, has_chat_template
+
 logger = logging.getLogger(__name__)
 
 # Below this, the direction is not meaningfully separating the classes and
@@ -66,6 +70,12 @@ class RefusalDirection:
     # Method-specific provenance and the class projection means the timeline
     # and any threshold use. Free-form JSON.
     extra: dict = field(default_factory=dict)
+    # The prompt-formatting contract the captures were taken under
+    # (``capture.PROMPT_FORMAT_VERSION``). A file without the key loads as 1:
+    # pre-fix, meaning no BOS and a dropped system prompt whenever the tokenizer
+    # had no chat template. ``template_applied`` None means unknown (pre-fix).
+    format_version: int = PROMPT_FORMAT_VERSION
+    template_applied: Optional[bool] = None
 
     @property
     def usable(self) -> bool:
@@ -101,6 +111,8 @@ class RefusalDirection:
             "usable": self.usable,
             "rank": self.rank,
             "method": self.method,
+            "format_version": int(self.format_version),
+            "template_applied": self.template_applied,
             "layer_scores": [
                 {
                     "layer": s.layer,
@@ -195,6 +207,8 @@ class RefusalDirection:
             weights=([float(w) for w in weights.tolist()] if weights is not None else None),
             method=meta.get("method", "diff_in_means"),
             extra=dict(meta.get("extra") or {}),
+            format_version=int(meta.get("format_version", 1)),
+            template_applied=meta.get("template_applied"),
         )
 
 
@@ -228,6 +242,26 @@ def _cohens_d(pos, neg) -> float:
     return ((pos.mean() - neg.mean()) / pooled).item()
 
 
+def check_direction_format(direction: "RefusalDirection", tokenizer) -> None:
+    """Refuse a direction whose captures predate the prompt-format fix on a base model.
+
+    ``format_version`` 1 files were captured with no BOS token and the system
+    prompt dropped whenever the tokenizer had no chat template. On a templated
+    model the template path was unchanged, so a version-1 direction there is as
+    good as a version-2 one; on a base model it was fit against text the model
+    never sees when generating, and must be re-derived. This runs at sweep
+    time -- the causal gate everything downstream depends on -- so one check
+    covers the whole pipeline.
+    """
+    if direction.format_version < PROMPT_FORMAT_VERSION and not has_chat_template(tokenizer):
+        raise ValueError(
+            f"This direction (format_version {direction.format_version}) was derived before "
+            f"the prompt-format fix, on a model without a chat template: its captures had no "
+            f"BOS token and dropped the system prompt, so it describes positions the model "
+            f"never sees when generating. Re-derive it, passing allow_no_chat_template."
+        )
+
+
 def _score_layers(
     model,
     tokenizer,
@@ -237,6 +271,8 @@ def _score_layers(
     layer_range: Optional[tuple] = None,
     progress: Optional[callable] = None,
     return_captures: bool = False,
+    thinking: bool = False,
+    allow_no_chat_template: bool = False,
 ):
     """Capture residuals and compute the per-layer difference-in-means direction.
 
@@ -258,6 +294,7 @@ def _score_layers(
             progress(f"capturing {label} ({len(prompts)} prompts)")
         return capture_last_token_residuals(
             model, tokenizer, prompts, batch_size=batch_size, max_length=max_length,
+            thinking=thinking, require_template=not allow_no_chat_template,
             progress=(lambda d, t: progress(None, d, t)) if progress else None,
         )
 
@@ -338,14 +375,22 @@ def derive_direction(
     max_length: int = 512,
     layer_range: Optional[tuple] = None,
     progress: Optional[callable] = None,
+    thinking: bool = False,
+    allow_no_chat_template: bool = False,
 ) -> RefusalDirection:
-    """Fit a direction on ``split``'s train half and select the layer on its test half."""
+    """Fit a direction on ``split``'s train half and select the layer on its test half.
+
+    ``thinking`` is recorded on the direction because it is part of the
+    formatting the captures were taken under. ``allow_no_chat_template`` lets a
+    base model through; by default a tokenizer without a chat template refuses
+    (``NoChatTemplateError``) rather than silently capturing plain text.
+    """
     import torch
 
     directions, scores, caps = _score_layers(
         model, tokenizer, split, batch_size=batch_size,
         max_length=max_length, layer_range=layer_range, progress=progress,
-        return_captures=True,
+        return_captures=True, thinking=thinking, allow_no_chat_template=allow_no_chat_template,
     )
 
     best = _rank_layers(scores)[0]
@@ -358,7 +403,9 @@ def derive_direction(
         model_id=model_id,
         split_hash=split.hash,
         layer_scores=sorted(scores, key=lambda s: s.layer),
-        extra=_projection_extra(directions, scores, caps, best.layer, vec),
+        extra={**(_projection_extra(directions, scores, caps, best.layer, vec) or {}),
+               "thinking": bool(thinking)},
+        template_applied=has_chat_template(tokenizer),
     )
 
     logger.info("Best layer %d: held-out AUC %.3f, Cohen's d %.2f", best.layer, best.auc, best.cohens_d)
@@ -384,6 +431,8 @@ def derive_subspace(
     layer_range: Optional[tuple] = None,
     progress: Optional[callable] = None,
     tol: float = 1e-4,
+    thinking: bool = False,
+    allow_no_chat_template: bool = False,
 ) -> RefusalDirection:
     """Derive an orthonormal refusal *subspace* of up to ``rank`` directions.
 
@@ -407,7 +456,7 @@ def derive_subspace(
     directions, scores, caps = _score_layers(
         model, tokenizer, split, batch_size=batch_size,
         max_length=max_length, layer_range=layer_range, progress=progress,
-        return_captures=True,
+        return_captures=True, thinking=thinking, allow_no_chat_template=allow_no_chat_template,
     )
 
     ranked = _rank_layers(scores)
@@ -455,7 +504,9 @@ def derive_subspace(
         basis=basis,
         basis_layers=row_layers,
         method="diff_in_means",
-        extra=_projection_extra(directions, scores, caps, best.layer, best_vec),
+        extra={**(_projection_extra(directions, scores, caps, best.layer, best_vec) or {}),
+               "thinking": bool(thinking)},
+        template_applied=has_chat_template(tokenizer),
     )
     logger.info(
         "Derived rank-%d refusal subspace from layers %s (best layer %d, AUC %.3f)",

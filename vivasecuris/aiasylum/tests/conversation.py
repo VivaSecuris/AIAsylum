@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.doctor import Doctor
 from vivasecuris.aiasylum.patient import Patient
-from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.base import TestCase, TestResult, reasoning_fields, response_turn_fields
 
 
 def _extract_doctor_question(raw: str) -> str:
@@ -19,11 +19,23 @@ def _extract_doctor_question(raw: str) -> str:
         r"Next question to ask the patient\s*\(you may rephrase\)\s*:\s*",
         r"Question\s*:\s*",
     ):
-        m = re.search(prefix, text, re.IGNORECASE)
+        m = re.match(prefix, text, re.IGNORECASE)
         if m:
             text = text[m.end() :].strip()
             break
     return text or raw.strip()
+
+
+def _request_system_fields(response) -> Dict:
+    """Only propagate observed request evidence; never infer legacy prompts."""
+    metadata = response.metadata or {}
+    prompts = metadata.get("request_system_prompts")
+    if isinstance(prompts, list) and all(isinstance(prompt, str) for prompt in prompts):
+        fields = {"request_system_prompts": list(prompts)}
+        if isinstance(metadata.get("request_system_prompts_source"), str):
+            fields["request_system_prompts_source"] = metadata["request_system_prompts_source"]
+        return fields
+    return {}
 
 
 class ConversationTest(TestCase):
@@ -57,7 +69,11 @@ class ConversationTest(TestCase):
         enable_doctor_cot = context.get("enable_doctor_cot", False) if context else False
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         
-        patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
+        patient = Patient(
+            patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot,
+            frame_prompts=(context or {}).get("patient_prompt_framing", True) is not False,
+            interview_mode=True,
+        )
         # Enable dynamic strategies by default, but allow override from context
         use_dynamic_strategies = context.get("use_dynamic_strategies", True) if context else True
         doctor = Doctor(
@@ -87,12 +103,14 @@ class ConversationTest(TestCase):
             # Extract actual question (strip "Next question to ask the patient:" etc.)
             doctor_question = _extract_doctor_question(doctor_response.content)
             # Extract reasoning from metadata if available
-            reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
+            reasoning, reasoning_source = reasoning_fields(doctor_response)
             turn_data = {
                 "speaker": "doctor",
+                **response_turn_fields(doctor_response),
                 "prompt": "",
                 "response": doctor_question,
                 "reasoning": reasoning,
+                "reasoning_source": reasoning_source,
                 "turn_number": len(conversation_history),
             }
             conversation_history.append(turn_data)
@@ -109,12 +127,14 @@ class ConversationTest(TestCase):
                 check_cancellation()
             
             # Extract reasoning from metadata if available
-            reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
+            reasoning, reasoning_source = reasoning_fields(patient_response)
             turn_data = {
                 "speaker": "patient",
+                **response_turn_fields(patient_response),
                 "prompt": doctor_question,
                 "response": patient_response.content,
                 "reasoning": reasoning,
+                "reasoning_source": reasoning_source,
                 "turn_number": len(conversation_history),
                 "patient_model": getattr(patient_model, "model_name", getattr(patient_model, "name", "unknown")),
                 "patient_provider": getattr(patient_model, "provider", "unknown"),
@@ -148,12 +168,14 @@ class ConversationTest(TestCase):
             # Extract actual question (strip meta-instruction prefixes)
             doctor_question = _extract_doctor_question(doctor_response.content)
             # Extract reasoning from metadata if available
-            reasoning = doctor_response.metadata.get("reasoning", "") if doctor_response.metadata else ""
+            reasoning, reasoning_source = reasoning_fields(doctor_response)
             turn_data = {
                 "speaker": "doctor",
+                **response_turn_fields(doctor_response),
                 "prompt": patient_response.content,
                 "response": doctor_question,
                 "reasoning": reasoning,
+                "reasoning_source": reasoning_source,
                 "turn_number": len(conversation_history),
             }
             conversation_history.append(turn_data)
@@ -169,12 +191,14 @@ class ConversationTest(TestCase):
             if check_cancellation:
                 check_cancellation()
             # Extract reasoning from metadata if available
-            reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
+            reasoning, reasoning_source = reasoning_fields(patient_response)
             turn_data = {
                 "speaker": "patient",
+                **response_turn_fields(patient_response),
                 "prompt": doctor_question,
                 "response": patient_response.content,
                 "reasoning": reasoning,
+                "reasoning_source": reasoning_source,
                 "turn_number": len(conversation_history),
                 "patient_model": getattr(patient_model, "model_name", getattr(patient_model, "name", "unknown")),
                 "patient_provider": getattr(patient_model, "provider", "unknown"),
@@ -187,10 +211,12 @@ class ConversationTest(TestCase):
         
         # Generate final assessment if doctor is available
         analysis = None
+        assessment_record = None
         if doctor:
             conversation_summary = self._summarize_conversation(conversation_history)
             assessment = await doctor.generate_assessment(conversation_summary, context=context)
             analysis = assessment.content
+            assessment_record = {"response": assessment.content, **response_turn_fields(assessment)}
         
         return TestResult(
             test_name=self.name,
@@ -198,7 +224,8 @@ class ConversationTest(TestCase):
             input_prompt=str(conversation_history[0] if conversation_history else ""),
             output_response=str(conversation_history[-1] if conversation_history else ""),
             analysis=analysis,
-            metadata={"conversation_history": conversation_history},
+            metadata={"conversation_history": conversation_history,
+                      **({"doctor_assessment": assessment_record} if assessment_record is not None else {})},
         )
     
     def _summarize_conversation(self, history: List[Dict[str, str]]) -> str:

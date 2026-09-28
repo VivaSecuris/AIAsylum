@@ -28,6 +28,16 @@ BENCHMARK_DATASETS = {
         "answer_field": "best_answer",
         "correct_answers_field": "correct_answers",  # Multiple correct answers
     },
+    "triviaqa": {
+        # Free-form short-answer QA. The rc.nocontext config drops the evidence
+        # documents so the model answers from parametric knowledge alone -- which
+        # is exactly the setting H-Neuron labelling needs (does it know this?).
+        "dataset": "mandarjoshi/trivia_qa",
+        "config": "rc.nocontext",
+        "split": "validation",
+        "question_field": "question",
+        "answer_field": "answer",           # a dict; unpacked in standardize_benchmark_row
+    },
     "hellaswag": {
         "dataset": "Rowan/hellaswag",
         "split": "validation",
@@ -153,6 +163,24 @@ def standardize_benchmark_row(
         fd = item.get("final_decision")
         answer = fd.lower().strip() if isinstance(fd, str) else fd
         return {"question": question, "answer": answer, "choices": [], "raw": item}
+
+    if bk == "triviaqa":
+        # answer is {"value", "aliases", "normalized_aliases", ...}. Keep the
+        # canonical value as the answer and every alias for lenient matching.
+        ans = item.get("answer") or {}
+        value = (ans.get("value") or "").strip() if isinstance(ans, dict) else str(ans)
+        aliases = []
+        if isinstance(ans, dict):
+            aliases = list(ans.get("aliases") or []) + list(ans.get("normalized_aliases") or [])
+        seen: set = set()
+        aliases = [a for a in ([value] + aliases) if a and not (a in seen or seen.add(a))]
+        return {
+            "question": (item.get("question") or "").strip(),
+            "answer": value,
+            "aliases": aliases,
+            "choices": [],
+            "raw": item,
+        }
 
     question_field = config["question_field"]
     answer_field = config.get("answer_field")

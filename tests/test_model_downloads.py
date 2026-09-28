@@ -67,7 +67,8 @@ def spawned():
 
 
 @pytest.fixture
-def manager(cache, tmp_path, spawned):
+def manager(cache, tmp_path, spawned, monkeypatch):
+    monkeypatch.setenv("AIASYLUM_MODEL_LOCK", str(tmp_path / "model-job.lock"))
     def spawn(repo_id, revision, log_path):
         proc = FakeProcess()
         spawned.append((repo_id, revision, proc))
@@ -238,6 +239,71 @@ def test_delete_refuses_a_symlinked_repo(manager, cache, tmp_path):
     with pytest.raises(LookupError):
         manager.delete_cached("org/link")
     assert elsewhere.exists()
+
+
+def test_delete_refuses_a_held_model_lease_then_succeeds(manager, cache):
+    from vivasecuris.aiasylum.api.model_jobs import try_process_lock
+
+    snapshot = land_snapshot(cache, "org/name")
+    lease = try_process_lock()
+    assert lease is not None
+    try:
+        with pytest.raises(RuntimeError, match="model job"):
+            manager.delete_cached("org/name")
+        assert snapshot.exists()
+    finally:
+        lease.close()
+    assert manager.delete_cached("org/name")["freed_bytes"] == 1000
+
+
+@pytest.mark.parametrize("kind", ["test", "interp", "weight"])
+@pytest.mark.parametrize("status", ["pending", "queued", "running", "paused"])
+def test_delete_refuses_queued_or_active_runs(manager, cache, test_db, kind, status):
+    from vivasecuris.aiasylum.database import InterpRun, TestRun, WeightRun
+
+    snapshot = land_snapshot(cache, "org/name")
+    if kind == "test":
+        row = TestRun(doctor_provider="ollama", doctor_model="doctor", patient_provider="transformers",
+                      patient_model="org/name", test_type="one_shot", status=status)
+    elif kind == "interp":
+        row = InterpRun(mode="single", model_a=str(snapshot), status=status)
+    else:
+        row = WeightRun(kind="direction", source_model="org/name", status=status)
+    test_db.add(row)
+    test_db.commit()
+    with pytest.raises(RuntimeError, match="queued and active"):
+        manager.delete_cached("org/name")
+    assert snapshot.exists()
+    # Historical runs retain their reports without pinning cached model bytes.
+    row.status = "completed"
+    test_db.commit()
+    assert manager.delete_cached("org/name")["freed_bytes"] == 1000
+
+
+def test_delete_holds_lease_until_cleanup_and_releases_it_after_errors(manager, cache, monkeypatch):
+    from vivasecuris.aiasylum.api.model_jobs import try_process_lock
+
+    snapshot = land_snapshot(cache, "org/name")
+
+    def failed_cleanup(path):
+        assert try_process_lock() is None
+        raise OSError("disk cleanup failed")
+
+    monkeypatch.setattr(model_downloads.shutil, "rmtree", failed_cleanup)
+    with pytest.raises(OSError, match="disk cleanup failed"):
+        manager.delete_cached("org/name")
+    assert snapshot.exists()
+    lease = try_process_lock()
+    assert lease is not None
+    lease.close()
+
+
+def test_delete_refuses_an_in_memory_waiter(manager, cache, monkeypatch):
+    snapshot = land_snapshot(cache, "org/name")
+    monkeypatch.setattr(model_downloads, "slot_status", lambda: {"held_by": None, "waiting": ["external validation"]})
+    with pytest.raises(RuntimeError, match="queued and active"):
+        manager.delete_cached("org/name")
+    assert snapshot.exists()
 
 
 # -- routes -------------------------------------------------------------------

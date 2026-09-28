@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
+from vivasecuris.aiasylum.reasoning import split_reasoning
 from vivasecuris.aiasylum.models.providers import ModelProvider
 
 # Patterns mirrored from securisnexus check_jailbreak_compliance / InjectionRelay
@@ -234,6 +235,12 @@ class ServusModel(BaseModel):
                 )
 
         content, meta = await self._wait_assistant(session_id, before_count=before_count)
+        # Score the answer the user saw, not the model's private trace: a
+        # jailbreak phrase or a refusal inside <think> is neither compliance
+        # nor a catch. The trace is kept under the keys ModelResponse uses.
+        content, native = split_reasoning(content)
+        if native is not None:
+            meta["reasoning"], meta["reasoning_source"] = native, "inline"
         local_flags = score_response_flags(content)
         flags = list(meta.get("response_flags") or []) + local_flags
         meta["response_flags"] = sorted(set(flags))
@@ -403,6 +410,9 @@ class AgenticA2AModel(BaseModel):
                     meta["decision_kind"] = "deny"
             else:
                 content = str(result)
+            content, native = split_reasoning(content)
+            if native is not None:
+                meta["reasoning"], meta["reasoning_source"] = native, "inline"
             meta["cognition_caught"] = _caught_from_meta(meta, content)
             return ModelResponse(
                 content=content,

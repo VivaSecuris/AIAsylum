@@ -106,7 +106,7 @@ class ChatSession:
         max_tokens: int = 256,
         temperature: float = 0.0,
         probe_set: Any = None,
-        probe_scorer: Optional[Callable[[str], float]] = None,
+        probe_scorer: Optional[Callable[[str, Optional[str]], float]] = None,
     ):
         if not handles:
             raise ValueError("A session needs at least one model")
@@ -138,10 +138,17 @@ class ChatSession:
     # -- measurement ------------------------------------------------------
 
     def _harm_score(self, prompt: str) -> Optional[float]:
+        """Internal harm score for ``prompt`` as this session serves it.
+
+        The scorer gets the session's system prompt too, so the probe reads the
+        same text the model generates from. Scoring the bare prompt would pair
+        the answer with a forward pass the model never ran -- and if the system
+        prompt *is* the jailbreak, that is exactly the pass that matters.
+        """
         if self._probe_scorer is None:
             return None
         try:
-            return float(self._probe_scorer(prompt))
+            return float(self._probe_scorer(prompt, self.system_prompt))
         except Exception as exc:  # a broken probe must not end the session
             logger.warning("Probe scoring failed: %s", exc)
             return None
@@ -237,6 +244,11 @@ class ChatSession:
         ))
         metrics = self.measure(handle.label, message, response.content, time.time() - t0, harm)
         metrics.truncated = getattr(response, "finish_reason", None) == "length"
+        # The provider already split the trace off the answer; the answer the
+        # session sees carries no <think> block, so the count comes from the record.
+        trace = (getattr(response, "metadata", None) or {}).get("reasoning")
+        if trace and not metrics.thinking_chars:
+            metrics.thinking_chars = len(trace)
         return response.content, metrics
 
     def commit_turn(self, message: str, answer: str, metrics: TurnMetrics,
@@ -322,7 +334,7 @@ def make_probe_scorer(probe_path: str, handle: ModelHandle, device: str, dtype: 
     ps = ProbeSet.load(probe_path)
     model, tokenizer = _get_cached(handle.path, device, dtype)
 
-    def score(prompt: str) -> float:
-        return score_prompts(model, tokenizer, [prompt], ps)[0]
+    def score(prompt: str, system_prompt: Optional[str] = None) -> float:
+        return score_prompts(model, tokenizer, [prompt], ps, system_prompt=system_prompt)[0]
 
     return ps, score

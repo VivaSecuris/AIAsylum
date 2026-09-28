@@ -3,7 +3,7 @@
 import logging
 from copy import deepcopy
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
@@ -32,8 +32,56 @@ from vivasecuris.aiasylum.constants import (
 from vivasecuris.aiasylum.exceptions import TestExecutionError
 from vivasecuris.aiasylum.api.progress_events import progress_event_manager
 from vivasecuris.aiasylum.api.cancellation import cancellation_manager
+from vivasecuris.aiasylum.runner.run_config import (
+    apply_seed_support,
+    generation_record,
+    normalize_test_config,
+    patient_test_prompts,
+    patient_generation,
+    resolve_system_prompts,
+    validate_patient_prompt_selection,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _turn_meta_data(turn: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Snapshot observed request, response, reasoning, and group-role evidence.
+
+    Every persistence path uses this shape; fields absent from old responses
+    remain unknown rather than being inferred from configured settings.
+    """
+    meta: Dict[str, Any] = {}
+    for key in ("finish_reason", "generation_metadata", "elapsed_seconds", "tokens_per_second"):
+        if key in turn and turn[key] is not None:
+            meta[key] = deepcopy(turn[key])
+    systems = turn.get("request_system_prompts")
+    if isinstance(systems, list) and all(isinstance(text, str) for text in systems):
+        meta["request_system_prompts"] = list(systems)
+        if turn.get("request_system_prompts_source"):
+            meta["request_system_prompts_source"] = turn["request_system_prompts_source"]
+    if turn.get("reasoning"):
+        meta["reasoning"] = turn["reasoning"]
+        if turn.get("reasoning_source"):
+            meta["reasoning_source"] = turn["reasoning_source"]
+    if turn.get("patient_id") is not None:
+        meta["patient_id"] = turn["patient_id"]
+    for key in ("patient_name", "patient_model", "patient_provider"):
+        if turn.get(key):
+            meta[key] = turn[key]
+    return meta or None
+
+
+def _result_meta_data(metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Stamp a result with the version of the visible-answer rule its flags were
+    computed under. A ``refusal`` or ``harmful_content`` flag on a result without
+    the stamp predates the rule and was computed on the raw text, reasoning
+    trace included."""
+    from vivasecuris.aiasylum.reasoning import REASONING_SPLIT_VERSION
+
+    meta = dict(metadata or {})
+    meta["scoring"] = {**(meta.get("scoring") or {}), "reasoning_split": REASONING_SPLIT_VERSION}
+    return meta
 
 
 def _resolve_multi_shot_prompts(session: Session, config: Dict) -> None:
@@ -46,9 +94,7 @@ def _resolve_multi_shot_prompts(session: Session, config: Dict) -> None:
         return
     if not isinstance(ids, list) or any(type(value) is not int or value <= 0 for value in ids):
         raise ValueError("Multi-shot prompt_ids must be a list of positive integer IDs")
-    rows = session.query(PromptLibrary).filter(
-        PromptLibrary.id.in_(ids), PromptLibrary.prompt_type == "test_prompt"
-    ).all()
+    rows = patient_test_prompts(session, ids)
     by_id = {row.id: row for row in rows}
     missing = [value for value in ids if value not in by_id]
     if missing:
@@ -58,6 +104,13 @@ def _resolve_multi_shot_prompts(session: Session, config: Dict) -> None:
     for value in ids:
         by_id[value].usage_count = (by_id[value].usage_count or 0) + 1
     session.commit()
+
+
+def _record_resolved_config(session: Session, test_run_id: int, test_run: TestRun,
+                            resolved_config: Dict[str, Any]) -> None:
+    """Store what each step actually used. Reassigns: the JSON column ignores in-place edits."""
+    test_run.meta_data = {**(test_run.meta_data or {}), "resolved_config": resolved_config}
+    safe_commit(session, test_run_id, test_run)
 
 
 def safe_commit(session: Session, test_run_id: int, test_run: Optional[TestRun] = None):
@@ -140,6 +193,7 @@ class TestRunner:
                 patient_model=patient_model,
                 test_type=test_type,
                 status=STATUS_RUNNING,
+                meta_data={"test_config": deepcopy(test_config or {})},
             )
             session.add(test_run)
             session.commit()
@@ -147,6 +201,7 @@ class TestRunner:
             
             try:
                 test_config = deepcopy(test_config or {})
+                validate_patient_prompt_selection(session, test_type, test_config)
                 if test_type == TEST_TYPE_MULTI_SHOT:
                     _resolve_multi_shot_prompts(session, test_config)
                 # Get providers and create models
@@ -167,36 +222,29 @@ class TestRunner:
                         logger.info(f"Ollama model {patient_model} not found, pulling...")
                         await patient_model_instance.pull_model()
                 
-                # Load system prompts for doctor and patient
-                doctor_system_prompt = None
-                patient_system_prompt = None
-                
-                if test_config and test_config.get("doctor_system_prompt_id"):
-                    doctor_prompt = session.query(PromptLibrary).filter(
-                        PromptLibrary.id == test_config["doctor_system_prompt_id"],
-                        PromptLibrary.prompt_type == "system_prompt",
-                        PromptLibrary.target == "doctor"
-                    ).first()
-                    if doctor_prompt:
-                        doctor_system_prompt = doctor_prompt.prompt_text
-                        doctor_prompt.usage_count = (doctor_prompt.usage_count or 0) + 1
-                        session.commit()
-                
-                if test_config and test_config.get("patient_system_prompt_id"):
-                    patient_prompt = session.query(PromptLibrary).filter(
-                        PromptLibrary.id == test_config["patient_system_prompt_id"],
-                        PromptLibrary.prompt_type == "system_prompt",
-                        PromptLibrary.target == "patient"
-                    ).first()
-                    if patient_prompt:
-                        patient_system_prompt = patient_prompt.prompt_text
-                        patient_prompt.usage_count = (patient_prompt.usage_count or 0) + 1
-                        session.commit()
+                # Resolve each step's system prompt and withhold unsupported seeds
+                normalize_test_config(test_config)
+                resolved_prompts, config_warnings = resolve_system_prompts(session, test_config, test_type)
+                session.commit()
+                apply_seed_support(test_config, "doctor", doctor_model_instance)
+                apply_seed_support(test_config, "patient", patient_model_instance)
+                _record_resolved_config(session, test_run.id, test_run, {
+                    "system_prompts": resolved_prompts,
+                    "generation": {
+                        "doctor": generation_record(test_config, "doctor", doctor_model_instance),
+                        "patient": generation_record(test_config, "patient", patient_model_instance),
+                    },
+                    "doctor_goal": test_config.get("doctor_goal"),
+                    "doctor_context_protocol": "user-goal-strategy-v2",
+                    "patient_prompt_framing": test_config.get("patient_prompt_framing", True) is not False,
+                    "seed": test_config.get("seed"),
+                    "warnings": config_warnings,
+                })
                 
                 # Load test prompt from library if prompt_id is specified
                 prompt_text = None
                 if test_config and test_config.get("prompt_id"):
-                    prompt = session.query(PromptLibrary).filter(
+                    prompt = patient_test_prompts(session, [test_config["prompt_id"]])[0] if test_type in (TEST_TYPE_ONE_SHOT, TEST_TYPE_MULTI_SHOT) else session.query(PromptLibrary).filter(
                         PromptLibrary.id == test_config["prompt_id"],
                         PromptLibrary.prompt_type == "test_prompt"
                     ).first()
@@ -208,14 +256,6 @@ class TestRunner:
                         # Increment usage count
                         prompt.usage_count = (prompt.usage_count or 0) + 1
                         session.commit()
-                
-                # Update test_config with system prompts
-                if not test_config:
-                    test_config = {}
-                if doctor_system_prompt:
-                    test_config["doctor_system_prompt"] = doctor_system_prompt
-                if patient_system_prompt:
-                    test_config["patient_system_prompt"] = patient_system_prompt
                 
                 # Substitute variables in custom prompts if provided
                 variables = test_config.get("variables", {}) if test_config else {}
@@ -274,7 +314,7 @@ class TestRunner:
                     # Create patient model instances
                     patient_models = []
                     patient_info_list = []
-                    patient_system_prompts = {}
+                    patient_generations: Dict[int, Dict] = {}
                     
                     for i, patient_cfg in enumerate(patients_config):
                         p_provider = patient_cfg.get("provider", patient_provider)
@@ -292,28 +332,18 @@ class TestRunner:
                             "model": p_model,
                         })
                         
-                        # Load patient system prompt if specified
-                        patient_system_prompt_id = patient_cfg.get("system_prompt_id")
-                        if patient_system_prompt_id:
-                            p_prompt = session.query(PromptLibrary).filter(
-                                PromptLibrary.id == patient_system_prompt_id,
-                                PromptLibrary.prompt_type == "system_prompt",
-                                PromptLibrary.target == "patient"
-                            ).first()
-                            if p_prompt:
-                                patient_system_prompts[i] = p_prompt.prompt_text
-                                p_prompt.usage_count = (p_prompt.usage_count or 0) + 1
-                                session.commit()
+                        apply_seed_support(test_config, "patient", p_model_instance, index=i)
+                        generation = patient_generation(test_config, i)
+                        if generation:
+                            patient_generations[i] = generation
                     
-                    # Store patient list in test_run metadata
-                    if not test_run.meta_data:
-                        test_run.meta_data = {}
-                    test_run.meta_data["patients"] = patient_info_list
+                    # Store patient list in test_run metadata (reassign: the JSON
+                    # column does not track in-place changes)
+                    test_run.meta_data = {**(test_run.meta_data or {}), "patients": patient_info_list}
                     session.commit()
                     
-                    # Add patient system prompts and patient info to context
-                    if patient_system_prompts:
-                        test_config["patient_system_prompts"] = patient_system_prompts
+                    # Per-patient settings and patient info for the test
+                    test_config["patient_generation"] = patient_generations
                     test_config["patient_info"] = patient_info_list
                     
                     test = GroupTherapyTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
@@ -348,34 +378,23 @@ class TestRunner:
                     scores=test_result.scores,
                     analysis=test_result.analysis,
                     flags=test_result.flags,
-                    meta_data=test_result.metadata,
+                    meta_data=_result_meta_data(test_result.metadata),
                 )
                 session.add(db_result)
                 
                 # Save conversation turns if available
                 if test_result.metadata and "conversation_history" in test_result.metadata:
                     for i, turn in enumerate(test_result.metadata["conversation_history"]):
-                        reasoning = turn.get("reasoning", "")
-                        # Store reasoning and patient info in metadata
-                        turn_metadata = {}
-                        if reasoning:
-                            turn_metadata["reasoning"] = reasoning
-                        # Add patient metadata for group therapy
-                        if turn.get("patient_id") is not None:
-                            turn_metadata["patient_id"] = turn.get("patient_id")
-                        if turn.get("patient_name"):
-                            turn_metadata["patient_name"] = turn.get("patient_name")
-                        if turn.get("patient_model"):
-                            turn_metadata["patient_model"] = turn.get("patient_model")
-                        if turn.get("patient_provider"):
-                            turn_metadata["patient_provider"] = turn.get("patient_provider")
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=i,
                             speaker=turn["speaker"],
                             prompt=turn.get("prompt", ""),
                             response=turn.get("response", ""),
-                            meta_data=turn_metadata if turn_metadata else None,
+                            model_name=turn.get("model_name"),
+                            model_provider=turn.get("model_provider"),
+                            usage=turn.get("usage"),
+                            meta_data=_turn_meta_data(turn),
                         )
                         session.add(turn_record)
                 
@@ -506,6 +525,7 @@ class TestRunner:
             
             try:
                 # Get providers and create models
+                validate_patient_prompt_selection(session, test_run.test_type, (test_run.meta_data or {}).get("test_config"))
                 doctor_provider_instance = get_provider(test_run.doctor_provider)
                 patient_provider_instance = get_provider(test_run.patient_provider)
                 
@@ -526,6 +546,13 @@ class TestRunner:
                 # Get test config from metadata if available
                 # Runtime callbacks must never enter the persisted JSON config.
                 test_config = deepcopy((test_run.meta_data or {}).get("test_config") or {})
+                if test_run.test_type == TEST_TYPE_GROUP_THERAPY:
+                    # Normalize legacy/top-level patients before resolving their
+                    # prompts and seed support, so every indexed override has a
+                    # concrete patient and never changes the shared role.
+                    fallback = {"provider": test_run.patient_provider, "model": test_run.patient_model}
+                    patients = test_config.get("patients") or (test_run.meta_data or {}).get("patients") or [fallback]
+                    test_config["patients"] = [deepcopy(p if isinstance(p, dict) else fallback) for p in patients]
                 if test_run.test_type == TEST_TYPE_MULTI_SHOT:
                     _resolve_multi_shot_prompts(session, test_config)
                 
@@ -536,36 +563,21 @@ class TestRunner:
                     test_config["benchmark_name"] = benchmark_name
                     test_config["num_samples"] = num_samples
                 
-                # Load system prompts for doctor and patient
-                doctor_system_prompt = None
-                patient_system_prompt = None
-                
-                if test_config.get("doctor_system_prompt_id"):
-                    doctor_prompt = session.query(PromptLibrary).filter(
-                        PromptLibrary.id == test_config["doctor_system_prompt_id"],
-                        PromptLibrary.prompt_type == "system_prompt",
-                        PromptLibrary.target == "doctor"
-                    ).first()
-                    if doctor_prompt:
-                        doctor_system_prompt = doctor_prompt.prompt_text
-                        doctor_prompt.usage_count = (doctor_prompt.usage_count or 0) + 1
-                        session.commit()
-                
-                if test_config.get("patient_system_prompt_id"):
-                    patient_prompt = session.query(PromptLibrary).filter(
-                        PromptLibrary.id == test_config["patient_system_prompt_id"],
-                        PromptLibrary.prompt_type == "system_prompt",
-                        PromptLibrary.target == "patient"
-                    ).first()
-                    if patient_prompt:
-                        patient_system_prompt = patient_prompt.prompt_text
-                        patient_prompt.usage_count = (patient_prompt.usage_count or 0) + 1
-                        session.commit()
+                # Resolve each step's system prompt (library ID, custom text or built-in)
+                # and withhold the seed from providers that reject one.
+                normalize_test_config(test_config)
+                resolved_prompts, config_warnings = resolve_system_prompts(
+                    session, test_config, test_run.test_type
+                )
+                session.commit()
+                apply_seed_support(test_config, "doctor", doctor_model_instance)
+                if test_run.test_type != TEST_TYPE_GROUP_THERAPY:
+                    apply_seed_support(test_config, "patient", patient_model_instance)
                 
                 # Load test prompt from library if prompt_id is specified
                 prompt_text = None
                 if test_config.get("prompt_id"):
-                    prompt = session.query(PromptLibrary).filter(
+                    prompt = patient_test_prompts(session, [test_config["prompt_id"]])[0] if test_run.test_type in (TEST_TYPE_ONE_SHOT, TEST_TYPE_MULTI_SHOT) else session.query(PromptLibrary).filter(
                         PromptLibrary.id == test_config["prompt_id"],
                         PromptLibrary.prompt_type == "test_prompt"
                     ).first()
@@ -578,12 +590,6 @@ class TestRunner:
                         prompt.usage_count = (prompt.usage_count or 0) + 1
                         session.commit()
                 
-                # Update test_config with system prompts
-                if doctor_system_prompt:
-                    test_config["doctor_system_prompt"] = doctor_system_prompt
-                if patient_system_prompt:
-                    test_config["patient_system_prompt"] = patient_system_prompt
-                
                 # Substitute variables in custom prompts if provided
                 variables = test_config.get("variables", {})
                 if variables:
@@ -594,6 +600,37 @@ class TestRunner:
                     if test_config.get("prompt"):
                         test_config["prompt"] = substitute_variables(test_config["prompt"], variables)
                 
+                # Conversation and group therapy use a library test prompt as the
+                # doctor's instructions when no doctor system prompt was chosen.
+                if (
+                    test_run.test_type in (TEST_TYPE_CONVERSATION, TEST_TYPE_GROUP_THERAPY)
+                    and resolved_prompts["doctor"]["source"] == "default"
+                    and (prompt_text or test_config.get("doctor_prompt"))
+                ):
+                    resolved_prompts["doctor"] = {
+                        "source": "test_prompt", "prompt_id": test_config.get("prompt_id"),
+                        "text": prompt_text or test_config.get("doctor_prompt"),
+                    }
+                resolved_config: Dict[str, Any] = {
+                    "system_prompts": resolved_prompts,
+                    "doctor_goal": test_config.get("doctor_goal"),
+                    "doctor_context_protocol": "user-goal-strategy-v2",
+                    "generation": {
+                        "doctor": generation_record(test_config, "doctor", doctor_model_instance),
+                        "patient": generation_record(test_config, "patient", patient_model_instance),
+                    },
+                    "patient_prompt_framing": test_config.get("patient_prompt_framing", True) is not False,
+                    "seed": test_config.get("seed"),
+                    "warnings": config_warnings,
+                }
+                if test_run.test_type != TEST_TYPE_BENCHMARK:
+                    _record_resolved_config(session, test_run_id, test_run, resolved_config)
+                    if config_warnings:
+                        await progress_event_manager.emit_event(
+                            test_run_id, "config_warning", {"warnings": config_warnings},
+                            "; ".join(config_warnings),
+                        )
+
                 # Create callback to save conversation turns incrementally
                 saved_turn_numbers = set()
                 async def save_conversation_turn(turn: Dict):
@@ -609,29 +646,16 @@ class TestRunner:
                         speaker = turn.get("speaker", "unknown")
                         prompt = turn.get("prompt", "")
                         response = turn.get("response", "")
-                        reasoning = turn.get("reasoning", "")
-                        
-                        # Store reasoning and patient info in metadata
-                        turn_metadata = {}
-                        if reasoning:
-                            turn_metadata["reasoning"] = reasoning
-                        # Add patient metadata for group therapy
-                        if turn.get("patient_id") is not None:
-                            turn_metadata["patient_id"] = turn.get("patient_id")
-                        if turn.get("patient_name"):
-                            turn_metadata["patient_name"] = turn.get("patient_name")
-                        if turn.get("patient_model"):
-                            turn_metadata["patient_model"] = turn.get("patient_model")
-                        if turn.get("patient_provider"):
-                            turn_metadata["patient_provider"] = turn.get("patient_provider")
-                        
                         turn_record = ConversationTurn(
                             test_run_id=test_run.id,
                             turn_number=turn_number,
                             speaker=speaker,
                             prompt=prompt,
                             response=response,
-                            meta_data=turn_metadata if turn_metadata else None,
+                            model_name=turn.get("model_name"),
+                            model_provider=turn.get("model_provider"),
+                            usage=turn.get("usage"),
+                            meta_data=_turn_meta_data(turn),
                         )
                         turn_session.add(turn_record)
                         turn_session.commit()
@@ -846,7 +870,10 @@ class TestRunner:
                                 speaker=turn.get("speaker", "patient"),
                                 prompt=turn.get("prompt", ""),
                                 response=turn.get("response", ""),
-                                meta_data={"reasoning": turn.get("reasoning", "")} if turn.get("reasoning") else None,
+                                model_name=turn.get("model_name"),
+                                model_provider=turn.get("model_provider"),
+                                usage=turn.get("usage"),
+                                meta_data=_turn_meta_data(turn),
                             )
                             turn_session.add(turn_record)
                             turn_session.commit()
@@ -972,7 +999,8 @@ class TestRunner:
                     # Create patient model instances
                     patient_models = []
                     patient_info_list = []
-                    patient_system_prompts = {}
+                    patient_generations: Dict[int, Dict] = {}
+                    patient_generation_records: List[Dict[str, Any]] = []
                     
                     for i, patient_cfg in enumerate(patients_config):
                         if isinstance(patient_cfg, dict):
@@ -995,30 +1023,32 @@ class TestRunner:
                             "model": p_model,
                         })
                         
-                        # Load patient system prompt if specified
-                        if isinstance(patient_cfg, dict):
-                            patient_system_prompt_id = patient_cfg.get("system_prompt_id")
-                            if patient_system_prompt_id:
-                                p_prompt = session.query(PromptLibrary).filter(
-                                    PromptLibrary.id == patient_system_prompt_id,
-                                    PromptLibrary.prompt_type == "system_prompt",
-                                    PromptLibrary.target == "patient"
-                                ).first()
-                                if p_prompt:
-                                    patient_system_prompts[i] = p_prompt.prompt_text
-                                    p_prompt.usage_count = (p_prompt.usage_count or 0) + 1
-                                    session.commit()
+                        # Per-patient seed support and generation settings; system
+                        # prompts were resolved into test_config["patient_system_prompts"].
+                        apply_seed_support(test_config, "patient", p_model_instance, index=i)
+                        generation = patient_generation(test_config, i)
+                        if generation:
+                            patient_generations[i] = generation
+                        patient_generation_records.append(
+                            generation_record(test_config, "patient", p_model_instance, overrides=generation)
+                        )
                     
-                    # Store patient list in test_run metadata if not already there
-                    if not test_run.meta_data:
-                        test_run.meta_data = {}
-                    if "patients" not in test_run.meta_data:
-                        test_run.meta_data["patients"] = patient_info_list
-                        safe_commit(session, test_run_id, test_run)
+                    # Store patient list and per-patient settings (reassign: the JSON
+                    # column does not track in-place changes)
+                    meta = dict(test_run.meta_data or {})
+                    meta.setdefault("patients", patient_info_list)
+                    recorded = dict(meta.get("resolved_config") or resolved_config)
+                    recorded["generation"] = {
+                        **(recorded.get("generation") or {}),
+                        "patient": patient_generation_records[0],
+                        "patients": patient_generation_records,
+                    }
+                    meta["resolved_config"] = recorded
+                    test_run.meta_data = meta
+                    safe_commit(session, test_run_id, test_run)
                     
-                    # Add patient system prompts and patient info to context
-                    if patient_system_prompts:
-                        test_config["patient_system_prompts"] = patient_system_prompts
+                    # Add per-patient settings and patient info to context
+                    test_config["patient_generation"] = patient_generations
                     test_config["patient_info"] = patient_info_list
                     
                     test = GroupTherapyTest(max_turns=max_turns, doctor_prompt=doctor_prompt)
@@ -1053,7 +1083,7 @@ class TestRunner:
                     scores=test_result.scores,
                     analysis=test_result.analysis,
                     flags=test_result.flags,
-                    meta_data=test_result.metadata,
+                    meta_data=_result_meta_data(test_result.metadata),
                 )
                 session.add(db_result)
                 
@@ -1074,26 +1104,16 @@ class TestRunner:
                             response = turn.get("response", "")
                             reasoning = turn.get("reasoning", "")
                             print(f"  Turn {i}: speaker={speaker}, prompt_length={len(prompt)}, response_length={len(response)}, reasoning_length={len(reasoning)}")
-                            # Store reasoning and patient info in metadata
-                            turn_metadata = {}
-                            if reasoning:
-                                turn_metadata["reasoning"] = reasoning
-                            # Add patient metadata for group therapy
-                            if turn.get("patient_id") is not None:
-                                turn_metadata["patient_id"] = turn.get("patient_id")
-                            if turn.get("patient_name"):
-                                turn_metadata["patient_name"] = turn.get("patient_name")
-                            if turn.get("patient_model"):
-                                turn_metadata["patient_model"] = turn.get("patient_model")
-                            if turn.get("patient_provider"):
-                                turn_metadata["patient_provider"] = turn.get("patient_provider")
                             turn_record = ConversationTurn(
                                 test_run_id=test_run.id,
                                 turn_number=i,
                                 speaker=speaker,
                                 prompt=prompt,
                                 response=response,
-                                meta_data=turn_metadata if turn_metadata else None,
+                                model_name=turn.get("model_name"),
+                                model_provider=turn.get("model_provider"),
+                                usage=turn.get("usage"),
+                                meta_data=_turn_meta_data(turn),
                             )
                             session.add(turn_record)
                     else:
@@ -1172,6 +1192,11 @@ class TestRunner:
                                         "enable_factuality_check": analysis_config.get("enable_factuality_check", False),
                                         "enable_manipulation_analysis": analysis_config.get("enable_manipulation_analysis", False),
                                         "evaluator_system_prompt_id": analysis_config.get("evaluator_system_prompt_id"),
+                                        "evaluator_system_prompt": analysis_config.get("evaluator_system_prompt"),
+                                        "evaluator_temperature": analysis_config.get("evaluator_temperature"),
+                                        "evaluator_max_tokens": analysis_config.get("evaluator_max_tokens"),
+                                        "evaluator_top_p": analysis_config.get("evaluator_top_p"),
+                                        "evaluator_enable_cot": analysis_config.get("evaluator_enable_cot", False),
                                         "evaluator_provider": evaluator_provider,
                                         "evaluator_model": evaluator_model,
                                     },
@@ -1202,6 +1227,11 @@ class TestRunner:
                             evaluator_model=evaluator_model,
                             analysis_test_run_id=analysis_test_run_id,
                             evaluator_system_prompt_id=analysis_config.get("evaluator_system_prompt_id"),
+                            evaluator_system_prompt=analysis_config.get("evaluator_system_prompt"),
+                            evaluator_temperature=analysis_config.get("evaluator_temperature"),
+                            evaluator_max_tokens=analysis_config.get("evaluator_max_tokens"),
+                            evaluator_top_p=analysis_config.get("evaluator_top_p"),
+                            evaluator_enable_cot=analysis_config.get("evaluator_enable_cot", False),
                         ))
                         logger.info(f"Auto-analysis task created for test run {test_run_id}, analysis test run {analysis_test_run_id}")
                     except Exception as e:

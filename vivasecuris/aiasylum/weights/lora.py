@@ -174,24 +174,22 @@ def build_examples(
     not fit is cut from its tail and then carries no EOS, because teaching the
     model to stop after a cut-off answer would teach it to stop early.
     """
-    from vivasecuris.aiasylum.weights.capture import render_chat
+    from vivasecuris.aiasylum.weights.capture import format_chat, has_chat_template
 
-    has_template = bool(getattr(tokenizer, "chat_template", None))
+    has_template = has_chat_template(tokenizer)
     eos = tokenizer.eos_token_id
     examples: List[Dict[str, List[int]]] = []
     dropped = truncated = total_tokens = 0
 
     for row in rows:
-        if has_template:
-            messages = []
-            if row.system:
-                messages.append({"role": "system", "content": row.system})
-            messages.append({"role": "user", "content": row.prompt})
-            prompt_text = render_chat(tokenizer, messages, thinking=False)
-            prompt_ids = list(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
-        else:
-            prompt_text = (f"{row.system}\n\n" if row.system else "") + f"{row.prompt}\n\n"
-            prompt_ids = list(tokenizer(prompt_text, add_special_tokens=True)["input_ids"])
+        # The same renderer capture and serving use, so a base-model adapter's
+        # training positions coincide with the positions later read and served.
+        messages = []
+        if row.system:
+            messages.append({"role": "system", "content": row.system})
+        messages.append({"role": "user", "content": row.prompt})
+        prompt_text, applied = format_chat(tokenizer, messages, thinking=False)
+        prompt_ids = list(tokenizer(prompt_text, add_special_tokens=not applied)["input_ids"])
         if len(prompt_ids) >= max_length:
             dropped += 1
             continue

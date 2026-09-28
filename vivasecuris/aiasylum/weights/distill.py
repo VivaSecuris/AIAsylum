@@ -41,38 +41,31 @@ def generate_teacher_rows(
 ) -> List[TrainRow]:
     """Greedy teacher completions for ``prompts``, as training rows.
 
-    Uses ``evaluate.generate_greedy`` one prompt at a time (template on,
-    thinking block stripped) so ``progress`` and ``should_stop`` work per
+    Uses ``evaluate.generate_greedy`` one prompt at a time -- through the
+    model's chat template when it has one, as plain text with BOS otherwise,
+    the thinking block stripped -- so ``progress`` and ``should_stop`` work per
     prompt. ``system_prompt`` conditions the teacher only: the rows carry no
     system prompt, so the student learns the behaviour without it (context
     distillation). A stop request returns the rows generated so far.
     """
-    from vivasecuris.aiasylum.weights.capture import format_prompts
     from vivasecuris.aiasylum.weights.evaluate import generate_greedy
 
-    has_template = bool(getattr(tokenizer, "chat_template", None))
     rows: List[TrainRow] = []
     total = len(prompts)
     for i, prompt in enumerate(prompts, 1):
         if should_stop is not None and should_stop():
             logger.info("Stop requested after %d of %d teacher generations", len(rows), total)
             break
-        if system_prompt and has_template:
-            text = format_prompts(tokenizer, [prompt], system_prompt)[0]
-            # generate_greedy re-adds special tokens for raw text; drop the
-            # template's leading BOS so it is not doubled.
-            bos = getattr(tokenizer, "bos_token", None)
-            if bos and text.startswith(bos):
-                text = text[len(bos):]
-            response = generate_greedy(teacher, tokenizer, [text], max_new_tokens=max_new_tokens,
-                                       apply_template=False)[0]
-        elif system_prompt:
-            text = f"{system_prompt}\n\n{prompt}"
-            response = generate_greedy(teacher, tokenizer, [text], max_new_tokens=max_new_tokens,
-                                       apply_template=False)[0]
-        else:
-            response = generate_greedy(teacher, tokenizer, [prompt], max_new_tokens=max_new_tokens,
-                                       apply_template=True)[0]
+        # One path whether or not a system prompt is set and whether or not the
+        # tokenizer has a template. The earlier three-way branch gave a
+        # base-model teacher a BOS token only when a system prompt happened to be
+        # set, and stripped-then-re-added the template's BOS otherwise; routing
+        # every case through generate_greedy makes the special-token rule the
+        # formatter's, once.
+        response = generate_greedy(
+            teacher, tokenizer, [prompt], max_new_tokens=max_new_tokens,
+            system_prompt=system_prompt,
+        )[0]
         rows.append(TrainRow(prompt=prompt, response=(response or "").strip()))
         if progress is not None:
             progress(i, total)

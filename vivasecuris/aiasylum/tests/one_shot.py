@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.doctor import Doctor
-from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.base import TestCase, TestResult, response_turn_fields
 
 
 class OneShotTest(TestCase):
@@ -40,7 +40,10 @@ class OneShotTest(TestCase):
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         enable_doctor_cot = context.get("enable_doctor_cot", False) if context else False
         
-        patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
+        patient = Patient(
+            patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot,
+            frame_prompts=(context or {}).get("patient_prompt_framing", True) is not False,
+        )
         doctor = Doctor(doctor_model, system_prompt=doctor_system_prompt, enable_cot=enable_doctor_cot) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []
@@ -62,14 +65,11 @@ class OneShotTest(TestCase):
             
             # Patient responds to prompt
             patient_response = await patient.respond(prompt, context=context)
-            # Extract reasoning from metadata if available
-            reasoning = patient_response.metadata.get("reasoning", "") if patient_response.metadata else ""
-            
             conversation_history.append({
                 "speaker": "patient",
                 "prompt": prompt,
                 "response": patient_response.content,
-                "reasoning": reasoning,
+                **response_turn_fields(patient_response),
             })
             
             results.append({
@@ -85,10 +85,12 @@ class OneShotTest(TestCase):
         
         # Generate assessment if doctor is available
         analysis = None
+        assessment_record = None
         if doctor and conversation_history:
             conversation_summary = self._summarize_responses(conversation_history)
             assessment = await doctor.generate_assessment(conversation_summary, context=context)
             analysis = assessment.content
+            assessment_record = {"response": assessment.content, **response_turn_fields(assessment)}
         
         # Combine results
         combined_response = "\n\n".join([r["response"] for r in results])
@@ -104,6 +106,7 @@ class OneShotTest(TestCase):
             metadata={
                 "conversation_history": conversation_history,
                 "num_prompts": len(self.prompts),
+                **({"doctor_assessment": assessment_record} if assessment_record is not None else {}),
             },
         )
     

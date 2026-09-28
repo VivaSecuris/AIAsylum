@@ -1,21 +1,25 @@
 import { useRouter } from 'next/router'
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
-import { ConversationViewer } from '@/components/conversation/ConversationViewer'
+import { ConversationViewer, reasoningLabelFor, turnModelLabel, turnPromptLabel, TurnSystemPrompts, TurnFinishStatus } from '@/components/conversation/ConversationViewer'
+import { DoctorAssessmentEvidence, DoctorAssessmentPanel } from '@/components/test-runs/DoctorAssessmentEvidence'
+import { ModelChatLink } from '@/components/models/ModelChatLink'
 import { DataTable } from '@/components/common/DataTable'
 import { AnalysisConfigDialog, AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
 import { useTestRun, useConversation, useTestResults, useAssessments, useRunAnalysis, useStartTestRun, usePauseTestRun, useResumeTestRun, useStopTestRun, useDeleteTestRun, useTestRunProgress } from '@/lib/hooks'
 import { useBenchmarkCampaign } from '@/lib/benchmark-campaigns'
 import { formatDate, formatDateTime } from '@/lib/utils'
-import { TestResult, Assessment } from '@/lib/api'
-import { Play, Download, GitCompare, Trash2, Square, Pause, RotateCw } from 'lucide-react'
+import { apiClient, TestResult, Assessment } from '@/lib/api'
+import { Play, Download, GitCompare, Trash2, Square, Pause, RotateCw, X } from 'lucide-react'
 import * as Tabs from '@radix-ui/react-tabs'
 import { toast } from '@/lib/toast'
 import { BenchmarkEvidence, BenchmarkSummary } from '@/components/benchmarks/BenchmarkEvidence'
+import { RunConfigurationCard } from '@/components/test-runs/RunConfigurationCard'
+import { TEST_TYPES } from '@/lib/create-test-config'
 
 export default function TestRunDetailPage() {
   const router = useRouter()
@@ -52,15 +56,31 @@ export default function TestRunDetailPage() {
   }, [testRun?.id, testRun?.test_type])
   const [showAnalysisDialog, setShowAnalysisDialog] = useState(false)
   const [analysisProgress, setAnalysisProgress] = useState<{step?: string; message?: string} | null>(null)
-  
-  // Use SSE for live progress monitoring when test is running, pending, or when analysis is running
-  // Enable if testRun is loading (undefined) or if status is running/pending, OR if analysis is pending
-  const shouldMonitor = !testRun || testRun?.status === 'running' || testRun?.status === 'pending' || runAnalysis.isPending
+  // The analysis started from this page runs as its own test run, which is where its progress is published
+  const [analysisRunId, setAnalysisRunId] = useState<number | null>(null)
+  const [analysisError, setAnalysisError] = useState<{ runId: number; message: string } | null>(null)
+
+  useEffect(() => {
+    setAnalysisRunId(null)
+    setAnalysisProgress(null)
+    setAnalysisError(null)
+  }, [testRunId])
+
+  // Use SSE for live progress monitoring when test is running or pending
+  // Enable if testRun is loading (undefined) or if status is running/pending
+  const shouldMonitor = !testRun || testRun?.status === 'running' || testRun?.status === 'pending'
   const { progress, isConnected, error: progressError } = useTestRunProgress(
-    testRunId, 
+    testRunId,
     shouldMonitor && testRunId > 0
   )
-  
+  const { progress: analysisEvent } = useTestRunProgress(analysisRunId ?? 0, analysisRunId !== null)
+  const { data: trackedAnalysisRun } = useQuery({
+    queryKey: ['test-run', analysisRunId],
+    queryFn: () => apiClient.getTestRun(analysisRunId as number),
+    enabled: analysisRunId !== null,
+    refetchInterval: 3000,
+  })
+
   // Debug logging
   useEffect(() => {
     if (testRunId > 0) {
@@ -81,6 +101,14 @@ export default function TestRunDetailPage() {
       setActiveTab('live')
     }
   }, [testRun?.status, testRun?.test_type, activeTab])
+
+  // Keep a visible panel selected when a run finishes or pauses while on Live.
+  const showLiveTab = testRun?.status === 'running' || testRun?.status === 'pending'
+  useEffect(() => {
+    if (testRun && !showLiveTab && activeTab === 'live') {
+      setActiveTab(testRun.test_type === 'benchmark' ? 'results' : conversation.length > 0 || ['one_shot', 'multi_shot'].includes(testRun.test_type) ? 'conversation' : 'overview')
+    }
+  }, [testRun?.id, testRun?.test_type, showLiveTab, activeTab, conversation.length])
 
   // When Analysis tab is hidden (test not completed and not an analysis run), switch to overview if we're on Analysis
   const showAnalysisTab = testRun?.status === 'completed' || testRun?.test_type === 'analysis'
@@ -157,20 +185,55 @@ export default function TestRunDetailPage() {
     }
   }, [progress, testRun?.status, testRunId, dataRunId, queryClient])
 
-  // Poll for assessments when analysis might be running
+  // Progress of an analysis started from this page arrives on the analysis run's own stream
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null
-    if (runAnalysis.isPending || analysisProgress || (assessments.length === 0 && testRun?.status === 'completed' && testRun.test_type !== 'benchmark')) {
-      // Poll more aggressively when analysis is pending or in progress
-      interval = setInterval(() => {
-        queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
-        queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
-      }, 2000) // Check every 2 seconds
+    if (!analysisRunId || !analysisEvent || analysisEvent.test_run_id !== analysisRunId) return
+    if (analysisEvent.event_type === 'analysis_started' || analysisEvent.event_type === 'analysis_progress') {
+      const data = analysisEvent.data || {}
+      setAnalysisProgress({
+        step: data.step || (analysisEvent.event_type === 'analysis_started' ? 'started' : 'progress'),
+        message: data.message || analysisEvent.message || 'Analysis in progress...',
+      })
+    } else if (analysisEvent.event_type === 'analysis_completed') {
+      queryClient.invalidateQueries({ queryKey: ['test-run', analysisRunId] })
     }
-    return () => {
-      if (interval) clearInterval(interval)
+  }, [analysisEvent, analysisRunId, queryClient])
+
+  // The analysis run's status is authoritative: a failure publishes no event
+  useEffect(() => {
+    if (!analysisRunId || !trackedAnalysisRun || trackedAnalysisRun.id !== analysisRunId) return
+    if (trackedAnalysisRun.status !== 'completed' && trackedAnalysisRun.status !== 'failed') return
+    setAnalysisRunId(null)
+    setAnalysisProgress(null)
+    queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
+    queryClient.invalidateQueries({ queryKey: ['test-runs'] })
+    if (trackedAnalysisRun.status === 'completed') {
+      toast.success(`Analysis #${analysisRunId} completed`)
+    } else {
+      const message = trackedAnalysisRun.meta_data?.error || 'Analysis failed'
+      setAnalysisError({ runId: analysisRunId, message })
+      toast.error(`Analysis #${analysisRunId} failed: ${message}`)
     }
-  }, [runAnalysis.isPending, analysisProgress, testRunId, dataRunId, queryClient, assessments.length, testRun?.status, testRun?.test_type])
+  }, [trackedAnalysisRun, analysisRunId, dataRunId, queryClient])
+
+  // When viewing an analysis run itself, its status ends the progress display
+  useEffect(() => {
+    if (testRun?.test_type === 'analysis' && (testRun.status === 'completed' || testRun.status === 'failed')) {
+      setAnalysisProgress(null)
+    }
+  }, [testRun?.test_type, testRun?.status])
+
+  // Poll for assessments only while an analysis is actually in progress
+  const analysisInProgress = runAnalysis.isPending || analysisRunId !== null || !!analysisProgress
+    || (testRun?.test_type === 'analysis' && (testRun.status === 'running' || testRun.status === 'pending'))
+  useEffect(() => {
+    if (!analysisInProgress) return
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
+      queryClient.invalidateQueries({ queryKey: ['test-run', testRunId] })
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [analysisInProgress, testRunId, dataRunId, queryClient])
 
   const handleRunAnalysis = async (config: AnalysisConfig) => {
     if (!testRunId) {
@@ -180,34 +243,26 @@ export default function TestRunDetailPage() {
     try {
       console.log('Starting analysis with config:', config)
       // Set initial progress state immediately
+      setAnalysisError(null)
       setAnalysisProgress({ step: 'starting', message: 'Starting analysis...' })
       const result = await runAnalysis.mutateAsync({
         testRunId,
-        config: {
-          evaluator_provider: config.evaluator_provider,
-          evaluator_model: config.evaluator_model,
-          enable_cot_detection: config.enable_cot_detection,
-          cot_analysis_mode: config.cot_analysis_mode,
-          enable_factuality_check: config.enable_factuality_check,
-          enable_manipulation_analysis: config.enable_manipulation_analysis,
-          evaluator_system_prompt_id: config.evaluator_system_prompt_id,
-        },
+        config: { ...config },
       })
       console.log('Analysis started, result:', result)
       
       // Invalidate test runs to show the new analysis test run
       queryClient.invalidateQueries({ queryKey: ['test-runs'] })
       
-      // If analysis_test_run_id is returned, navigate to it or show a link
+      // Follow the analysis run to completion; without its id there is nothing to follow
       if (result.analysis_test_run_id) {
+        setAnalysisRunId(result.analysis_test_run_id)
         toast.success(`Analysis started! View progress at test run #${result.analysis_test_run_id}`)
-        // Optionally navigate to the analysis test run
-        // router.push(`/test-runs/${result.analysis_test_run_id}`)
       } else {
+        setAnalysisProgress(null)
         toast.success('Analysis started! Results will appear when complete.')
       }
-      
-      // Start polling for results
+
       queryClient.invalidateQueries({ queryKey: ['assessments', dataRunId] })
     } catch (error: any) {
       console.error('Failed to run analysis:', error)
@@ -319,6 +374,37 @@ export default function TestRunDetailPage() {
     }
   }
 
+  const handleExport = async () => {
+    if (!testRun) return
+    try {
+      const [exportConversation, exportResults, exportAssessments] = await Promise.all([
+        apiClient.getConversation(dataRunId),
+        apiClient.getTestResults(dataRunId),
+        apiClient.getAssessments(dataRunId),
+      ])
+      const payload = {
+        test_run: testRun,
+        test_config: testRun.meta_data?.test_config ?? null,
+        conversation: exportConversation,
+        results: exportResults,
+        assessments: exportAssessments,
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `test-run-${testRun.id}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error: any) {
+      console.error('Failed to export test run:', error)
+      const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to export test run'
+      toast.error(errorMessage)
+    }
+  }
+
   if (loadingRun) {
     return (
       <Layout>
@@ -399,6 +485,9 @@ export default function TestRunDetailPage() {
   const campaignDeletionBlocked = isBenchmarkCampaignRun && (
     !benchmarkCampaign || benchmarkCampaign.runs.some((run) => ['pending', 'running', 'paused'].includes(run.status))
   )
+  const analysisBannerEvent = analysisRunId === null
+    ? progress
+    : analysisEvent?.test_run_id === analysisRunId ? analysisEvent : null
 
   return (
     <Layout>
@@ -408,6 +497,7 @@ export default function TestRunDetailPage() {
           <div>
             <h1 className="text-3xl font-bold">
               {isAnalysisRun ? 'Analysis' : isBenchmarkRun ? 'Benchmark' : 'Test Run'} #{testRun.id}
+              {testRun.meta_data?.name && <span className="ml-3 text-xl font-normal text-muted-foreground">{testRun.meta_data.name}</span>}
             </h1>
             {isAnalysisRun && sourceTestRunId && (
               <p className="text-sm text-muted-foreground mt-1">
@@ -429,7 +519,7 @@ export default function TestRunDetailPage() {
             </div>
           </div>
           <div className="flex gap-2">
-            {!isBenchmarkCampaignRun && (testRun.status === 'pending' || (testRun.status === 'failed' && !testRun.meta_data?.cancelled)) && (
+            {!isBenchmarkCampaignRun && !isAnalysisRun && (testRun.status === 'pending' || (testRun.status === 'failed' && !testRun.meta_data?.cancelled)) && (
               <button
                 onClick={handleStartRun}
                 disabled={startTestRun.isPending}
@@ -496,11 +586,11 @@ export default function TestRunDetailPage() {
                     console.log('Run Analysis button clicked')
                     setShowAnalysisDialog(true)
                   }}
-                  disabled={runAnalysis.isPending}
+                  disabled={runAnalysis.isPending || analysisRunId !== null}
                   className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
                 >
                   <Play className="h-4 w-4" />
-                  {runAnalysis.isPending ? 'Running...' : 'Run Analysis'}
+                  {runAnalysis.isPending || analysisRunId !== null ? 'Running...' : 'Run Analysis'}
                 </button>
                 <a
                   href={`/analysis/${testRunId}`}
@@ -510,7 +600,10 @@ export default function TestRunDetailPage() {
                 </a>
               </>
             )}
-            <button className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+            >
               <Download className="h-4 w-4" />
               Export
             </button>
@@ -529,6 +622,25 @@ export default function TestRunDetailPage() {
 
         {isBenchmarkRun && <BenchmarkSummary run={testRun} results={results} />}
 
+        {analysisError && (
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-destructive bg-destructive/10 p-4">
+            <div className="text-sm">
+              <p className="font-medium text-destructive">Analysis failed</p>
+              <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{analysisError.message}</p>
+              <Link href={`/test-runs/${analysisError.runId}`} className="mt-1 inline-block text-primary hover:underline">
+                View analysis run #{analysisError.runId}
+              </Link>
+            </div>
+            <button
+              onClick={() => setAnalysisError(null)}
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
         <Tabs.Root value={activeTab} onValueChange={setActiveTab} className="space-y-4">
           <Tabs.List className="flex gap-2 border-b">
             <Tabs.Trigger
@@ -537,7 +649,7 @@ export default function TestRunDetailPage() {
             >
               Overview
             </Tabs.Trigger>
-            {(testRun.status === 'running' || testRun.status === 'pending') && (
+            {showLiveTab && (
               <Tabs.Trigger
                 value="live"
                 className="px-4 py-2 text-sm font-medium data-[state=active]:border-b-2 data-[state=active]:border-primary flex items-center gap-2"
@@ -580,9 +692,9 @@ export default function TestRunDetailPage() {
                       Analysis in Progress
                     </span>
                   </div>
-                  {progress && (
+                  {analysisBannerEvent && (
                     <span className="text-xs text-muted-foreground">
-                      {new Date(progress.timestamp).toLocaleTimeString()}
+                      {new Date(analysisBannerEvent.timestamp).toLocaleTimeString()}
                     </span>
                   )}
                 </div>
@@ -782,7 +894,7 @@ export default function TestRunDetailPage() {
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">{isAnalysisRun ? 'Evaluator Model' : 'Doctor Model'}</h3>
                 <p className="text-sm text-muted-foreground">{testRun.doctor_provider}</p>
-                <p className="text-lg font-medium">{testRun.doctor_model}</p>
+                <p className="text-lg font-medium"><ModelChatLink provider={testRun.doctor_provider} model={testRun.doctor_model} /></p>
               </div>
               {testRun.test_type === 'group_therapy' && testRun.meta_data?.patients ? (
                 <div className="rounded-lg border bg-card p-4 col-span-2">
@@ -792,7 +904,7 @@ export default function TestRunDetailPage() {
                       <div key={index} className="rounded border bg-muted/30 p-3">
                         <p className="text-xs text-muted-foreground">Patient {index + 1}</p>
                         <p className="text-sm font-medium">{patient.provider}</p>
-                        <p className="text-base font-semibold">{patient.model}</p>
+                        <p className="text-base font-semibold"><ModelChatLink provider={patient.provider} model={patient.model} /></p>
                       </div>
                     ))}
                   </div>
@@ -801,22 +913,23 @@ export default function TestRunDetailPage() {
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">{isAnalysisRun ? 'Model Being Analyzed' : 'Patient Model'}</h3>
                 <p className="text-sm text-muted-foreground">{testRun.patient_provider}</p>
-                <p className="text-lg font-medium">{testRun.patient_model}</p>
+                <p className="text-lg font-medium"><ModelChatLink provider={testRun.patient_provider} model={testRun.patient_model} /></p>
               </div>
               )}
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">Test Type</h3>
-                <p className="text-lg font-medium capitalize">{testRun.test_type}</p>
+                <p className="text-lg font-medium">{TEST_TYPES.find((t) => t.value === testRun.test_type)?.label ?? (testRun.test_type === 'analysis' ? 'Analysis' : testRun.test_type.replace(/_/g, ' '))}</p>
               </div>
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">Status</h3>
                 <StatusBadge status={testRun.status} />
               </div>
             </div>}
+            {!isBenchmarkRun && <RunConfigurationCard testRun={testRun} />}
           </Tabs.Content>
 
           {/* Live Monitoring Tab */}
-          {(testRun.status === 'running' || testRun.status === 'pending') && (
+          {showLiveTab && (
             <Tabs.Content value="live" className="space-y-4">
               {/* Status Bar */}
               <div className="rounded-lg border bg-card p-3">
@@ -851,47 +964,54 @@ export default function TestRunDetailPage() {
                 
                 {conversation.length > 0 ? (
                   <div className="space-y-4 max-h-[600px] overflow-y-auto" id="live-messages-container">
-                    {conversation.map((turn) => {
+                    {conversation.map((turn, index) => {
                       const isDoctor = turn.speaker === 'doctor'
                       const patientName = turn.metadata?.patient_name
-                      const patientModel = turn.metadata?.patient_model
+                      const modelLabel = turnModelLabel(turn)
+                      const nativeReasoning = turn.metadata?.native_reasoning || turn.metadata?.generation_metadata?.native_reasoning
                       const reasoning = turn.metadata?.reasoning
+                      const reasoningLabel = reasoningLabelFor(turn.metadata?.reasoning_source)
                       const hasPrompt = turn.prompt && turn.prompt.trim().length > 0
-                      // Context is what this speaker is replying to (the other party). Label the other speaker.
-                      const replyingToLabel = isDoctor ? '🤖 Patient' : '👨‍⚕️ Doctor'
+                      const promptLabel = turnPromptLabel(turn, conversation[index - 1])
 
                       return (
                         <div key={turn.id} className="space-y-1">
                           {/* Compact context: what this AI is responding to (no duplicate full message) */}
                           {hasPrompt && (
                             <div className="text-xs text-muted-foreground italic border-l-2 border-muted pl-2 ml-2">
-                              <span className="font-medium">Replying to {replyingToLabel}: </span>
+                              <span className="font-medium">{promptLabel}: </span>
                               <span>{turn.prompt.length > 180 ? `${turn.prompt.substring(0, 180)}…` : turn.prompt}</span>
                             </div>
                           )}
                           {/* Main message: one bubble per turn */}
-                          {turn.response && (
+                          {(
                             <div className={`flex ${isDoctor ? 'justify-start' : 'justify-end'}`}>
                               <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
                                 isDoctor
                                   ? 'bg-blue-500 text-white'
                                   : 'bg-green-500 text-white'
                               }`}>
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="text-xs font-semibold opacity-90">
-                                    {isDoctor ? '👨‍⚕️ Doctor' : (patientName ? `🤖 ${patientName}${patientModel ? ` (${patientModel})` : ''}` : '🤖 Patient')}
-                                  </span>
-                                  <span className="text-xs opacity-75">
+                                <div className="flex items-start justify-between gap-3 mb-1">
+                                  <div className="min-w-0">
+                                    <span className="text-xs font-semibold opacity-90">
+                                      {isDoctor ? '👨‍⚕️ Doctor' : (patientName ? `🤖 ${patientName}` : '🤖 Patient')}
+                                    </span>
+                                    {modelLabel && <p className="break-words text-xs opacity-75"><ModelChatLink provider={turn.model_provider} model={turn.model_name}>{modelLabel}</ModelChatLink></p>}
+                                  </div>
+                                  <span className="shrink-0 text-xs opacity-75">
                                     Turn {turn.turn_number}
                                   </span>
                                 </div>
+                                <TurnSystemPrompts prompts={turn.metadata?.request_system_prompts} />
                                 {reasoning && (
                                   <div className="mb-2 p-2 rounded bg-black/10 dark:bg-white/10">
-                                    <p className="text-xs font-semibold mb-1 opacity-90">💭 Reasoning:</p>
+                                    <p className="text-xs font-semibold mb-1 opacity-90">💭 {reasoningLabel}</p>
                                     <p className="text-xs whitespace-pre-wrap opacity-90">{reasoning}</p>
                                   </div>
                                 )}
-                                <p className="text-sm whitespace-pre-wrap">{turn.response}</p>
+                                {nativeReasoning && <div className="mb-2 rounded bg-black/10 p-2 text-xs"><p className="mb-1 font-semibold">Model-provided reasoning</p><p className="whitespace-pre-wrap">{nativeReasoning}</p></div>}
+                                <p className="text-sm whitespace-pre-wrap">{turn.response?.trim() ? turn.response : '(The model returned no answer text.)'}</p>
+                                <TurnFinishStatus reason={turn.metadata?.finish_reason} />
                                 {turn.created_at && (
                                   <p className="text-xs opacity-75 mt-1">
                                     {new Date(turn.created_at).toLocaleTimeString()}
@@ -958,7 +1078,7 @@ export default function TestRunDetailPage() {
                   </div>
                 </details>
               )}
-
+              <DoctorAssessmentPanel results={results} pending={['one_shot', 'multi_shot'].includes(testRun.test_type) && ['pending', 'running', 'paused'].includes(testRun.status)} />
             </Tabs.Content>
           )}
 
@@ -982,6 +1102,7 @@ export default function TestRunDetailPage() {
                 <ConversationViewer turns={conversation} />
               </div>
             )}
+            <DoctorAssessmentPanel results={results} pending={['one_shot', 'multi_shot'].includes(testRun.test_type) && ['pending', 'running', 'paused'].includes(testRun.status)} />
           </Tabs.Content>
 
           <Tabs.Content value="results">
@@ -998,6 +1119,7 @@ export default function TestRunDetailPage() {
                   columns={resultsColumns}
                   emptyMessage="No results available"
                 />
+                {results.map((result) => <DoctorAssessmentEvidence key={result.id} result={result} />)}
               </div>
             )}
           </Tabs.Content>
@@ -1013,9 +1135,9 @@ export default function TestRunDetailPage() {
                       Analysis in Progress
                     </span>
                   </div>
-                  {progress && (
+                  {analysisBannerEvent && (
                     <span className="text-xs text-muted-foreground">
-                      {new Date(progress.timestamp).toLocaleTimeString()}
+                      {new Date(analysisBannerEvent.timestamp).toLocaleTimeString()}
                     </span>
                   )}
                 </div>
@@ -1210,13 +1332,13 @@ export default function TestRunDetailPage() {
                 {!isAnalysisRun && (
                   <button
                     onClick={() => setShowAnalysisDialog(true)}
-                    disabled={runAnalysis.isPending}
+                    disabled={runAnalysis.isPending || analysisRunId !== null}
                     className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   >
-                    {runAnalysis.isPending ? 'Running Analysis...' : 'Run Analysis'}
+                    {runAnalysis.isPending || analysisRunId !== null ? 'Running Analysis...' : 'Run Analysis'}
                   </button>
                 )}
-                {runAnalysis.isPending && (
+                {(runAnalysis.isPending || analysisRunId !== null) && (
                   <p className="mt-4 text-sm text-muted-foreground">
                     Analysis is running in the background. Results will appear here when complete.
                   </p>

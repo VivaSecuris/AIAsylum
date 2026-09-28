@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 from vivasecuris.aiasylum.api.model_lineage import build_model_lineage
 from vivasecuris.aiasylum.database import InterpRun, TestRun as Run, WeightRun
 
@@ -18,6 +20,53 @@ def inventory(*items):
         "reason": None, "manifest": manifest, "size_bytes": 10,
         "history": {"test_runs": 0, "interp_runs": 0, "weight_runs": 0},
     } for ref, manifest in items]}
+
+
+@pytest.mark.parametrize("kind,parent_kind,field,path_field", [
+    ("induce", "probe", "probe_run_id", "probe_dir"),
+    ("hneuron_bake", "hneurons", "hneurons_run_id", "hneurons_dir"),
+])
+def test_resume_recovers_legacy_auxiliary_dependencies(tmp_path, test_db, kind, parent_kind, field, path_field):
+    direction_path = tmp_path / "direction"
+    direction_path.mkdir()
+    (direction_path / "direction.safetensors").write_bytes(b"direction")
+    parent_path = tmp_path / "auxiliary"
+    parent_path.mkdir()
+    test_db.add_all([
+        WeightRun(id=1, kind="direction", source_model="org/base", status="completed", out_dir=str(direction_path)),
+        WeightRun(id=2, kind=parent_kind, source_model="org/base", status="completed", out_dir=str(parent_path)),
+        WeightRun(id=3, kind=kind, source_model="org/base", status="completed", source_run_id=1,
+                  meta_data={path_field: str(parent_path), "options": {"n_questions": 64}}),
+    ])
+    test_db.commit()
+    graph = build_model_lineage(catalog=inventory(), project_root=tmp_path)
+    node = next(n for n in graph["nodes"] if n["run_id"] == 3)
+    options = json.loads(parse_qs(urlparse(node["links"]["resume"]).query)["options"][0])
+    assert options[field] == 2 and options["n_questions"] == 64
+    # Missing artifacts must not leave an apparently usable source selection.
+    parent_path.rmdir()
+    graph = build_model_lineage(catalog=inventory(), project_root=tmp_path)
+    node = next(n for n in graph["nodes"] if n["run_id"] == 3)
+    options = json.loads(parse_qs(urlparse(node["links"]["resume"]).query)["options"][0])
+    assert field not in options
+    assert "original dependency is unavailable" in node["settings"]["resume_note"]
+
+
+def test_resume_does_not_reuse_imported_auxiliary_ids(tmp_path, test_db):
+    parent_path = tmp_path / "neurons"
+    parent_path.mkdir()
+    test_db.add(WeightRun(id=1, kind="hneurons", source_model="org/base", status="completed", out_dir=str(parent_path)))
+    test_db.commit()
+    imports = export(tmp_path, {"origin": "another-server", "weight_runs": [
+        {"id": 1, "kind": "hneurons", "source_model": "org/base", "status": "completed", "out_dir": str(parent_path)},
+        {"id": 2, "kind": "hneuron_bake", "source_model": "org/base", "status": "completed",
+         "metadata": {"hneurons_dir": str(parent_path), "options": {"hneurons_run_id": 1}}},
+    ]})
+    graph = build_model_lineage(catalog=inventory(), project_root=tmp_path, imports_root=imports)
+    node = next(n for n in graph["nodes"] if n["kind"] == "hneuron_bake")
+    options = json.loads(parse_qs(urlparse(node["links"]["resume"]).query)["options"][0])
+    assert "hneurons_run_id" not in options
+    assert "original dependency is unavailable" in node["settings"]["resume_note"]
 
 
 def test_probe_remains_a_probe_in_history_and_retains_fork_options(tmp_path, test_db):

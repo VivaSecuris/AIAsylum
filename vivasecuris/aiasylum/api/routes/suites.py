@@ -11,7 +11,8 @@ from pydantic import BaseModel
 from vivasecuris.aiasylum.suites import SuiteRunner, ProgressTracker
 from vivasecuris.aiasylum.database import get_session, TestRun, TestSuite
 from vivasecuris.aiasylum.runner import TestRunner
-from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_COMPLETED, TEST_TYPE_ANALYSIS
+from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_COMPLETED, TEST_TYPE_ANALYSIS, TEST_TYPE_GROUP_THERAPY
+from vivasecuris.aiasylum.runner.run_config import normalize_test_config, validate_test_config
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class SuiteRequest(BaseModel):
     models: List[dict]  # [{"provider": "ollama", "model": "llama3.2"}, ...]
     test_config: Optional[dict] = None
     num_samples: Optional[int] = None
+    doctor: Optional[dict] = None  # {"provider", "model"}; default: each model is its own doctor
 
 
 class SuiteUpdate(BaseModel):
@@ -234,15 +236,29 @@ async def create_suite(request: SuiteRequest, background_tasks: BackgroundTasks)
                 detail=f"Model {i+1} must have both 'provider' and 'model' specified"
             )
 
+    if request.doctor is not None and not (request.doctor.get("provider") and request.doctor.get("model")):
+        raise HTTPException(status_code=400, detail="The doctor needs both 'provider' and 'model'")
+    if TEST_TYPE_GROUP_THERAPY in request.test_types and len(request.models) < 2:
+        raise HTTPException(status_code=400, detail="Group therapy needs at least two models: they join one session")
+    test_config = dict(request.test_config or {})
+    errors = validate_test_config(test_config)
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+    normalize_test_config(test_config)
+
     runner = SuiteRunner()
-    suite = runner.create_suite(
-        name=request.name,
-        test_types=request.test_types,
-        benchmarks=request.benchmarks,
-        models=request.models,
-        test_config=request.test_config,
-        num_samples=request.num_samples,
-    )
+    try:
+        suite = runner.create_suite(
+            name=request.name,
+            test_types=request.test_types,
+            benchmarks=request.benchmarks,
+            models=request.models,
+            test_config=test_config or None,
+            num_samples=request.num_samples,
+            doctor=request.doctor,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
     # Get suite ID before session closes
     suite_id = suite.id

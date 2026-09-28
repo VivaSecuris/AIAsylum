@@ -41,6 +41,9 @@ class ReACTReasoner:
         messages: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
         context: Optional[Dict] = None,
+        role: Optional[str] = None,
+        gen_overrides: Optional[Dict] = None,
+        speaker_role: Optional[str] = None,
     ) -> ModelResponse:
         """
         Generate a response using ReACT reasoning loop.
@@ -48,20 +51,26 @@ class ReACTReasoner:
         Args:
             prompt: The input prompt/question
             messages: Conversation history
-            system_prompt: System prompt for the model
-            context: Optional test context (temperature, seed)
+            system_prompt: System prompt for the model; skipped when ``messages``
+                already starts with a system message, so it is never sent twice
+            context: Optional test context (temperature, seed, per-role settings)
+            role: "doctor" or "patient", selecting ``context["roles"][role]``
+            gen_overrides: Per-call generation settings (one group-therapy patient)
+            speaker_role: Optional interview speaker identity for the output
+                instructions, independent of the generation-settings role.
             
         Returns:
             ModelResponse with the final answer and reasoning
         """
         from vivasecuris.aiasylum.utils import model_gen_kwargs_from_context
-        gen_kwargs = model_gen_kwargs_from_context(context)
+        gen_kwargs = model_gen_kwargs_from_context(context, role=role, overrides=gen_overrides)
         # Build the reasoning prompt
-        reasoning_prompt = self._build_reasoning_prompt(prompt)
+        reasoning_prompt = self._build_reasoning_prompt(prompt, speaker_role=speaker_role)
         
         # Build messages for reasoning
         reasoning_messages = []
-        if system_prompt:
+        has_system = bool(messages) and messages[0].get("role") == "system"
+        if system_prompt and not has_system:
             reasoning_messages.append({"role": "system", "content": system_prompt})
         
         if messages:
@@ -72,7 +81,11 @@ class ReACTReasoner:
             "content": reasoning_prompt
         })
         
-        # Generate response with reasoning
+        # Capture the exact system messages at this request boundary, including
+        # any per-turn strategy suffix already present in the supplied history.
+        request_system_prompts = [
+            m["content"] for m in reasoning_messages if m.get("role") == "system"
+        ]
         response = await self.model.generate(
             prompt="",
             messages=reasoning_messages,
@@ -82,23 +95,50 @@ class ReACTReasoner:
         # Extract final answer and reasoning
         final_answer, reasoning = self._parse_response(response.content)
         
-        # Create response with both reasoning and final answer
-        response_metadata = response.metadata or {}
+        # Create response with both reasoning and final answer. The provider's
+        # own trace (a reasoning model's <think> block, or a thinking field)
+        # may already be in the metadata; it is kept under its own keys rather
+        # than overwritten by the ReACT thought.
+        response_metadata = dict(response.metadata or {})
+        response_metadata.setdefault("request_system_prompts", request_system_prompts)
+        response_metadata.setdefault("request_system_prompts_source", "model_input")
+        for key in ("reasoning", "reasoning_source"):
+            if key in response_metadata:
+                response_metadata[f"native_{key}"] = response_metadata.pop(key)
         response_metadata.update({
             "reasoning": reasoning,
+            "reasoning_source": "react",
             "cot_enabled": True,
         })
         return ModelResponse(
             content=final_answer,
             model=response.model,
             provider=response.provider,
+            finish_reason=response.finish_reason,
             usage=response.usage,
             metadata=response_metadata,
         )
     
-    def _build_reasoning_prompt(self, prompt: str) -> str:
-        """Build a prompt that encourages ReACT-style reasoning."""
-        return f"""You are a helpful assistant. Use the following format to think through your response:
+    def _build_reasoning_prompt(self, prompt: str, *, speaker_role: Optional[str] = None) -> str:
+        """Keep interview output in the responding speaker's perspective."""
+        answer_instruction = "Your final response to the user"
+        begin = "Begin your reasoning:"
+        if speaker_role == "patient":
+            # Generic actions/observations encourage an interviewee to invent
+            # an examination of the other speaker. Keep every field about the
+            # responding model's own answer, not just the final-answer field.
+            return f"""Answer the interviewer as yourself, following your system instructions.
+
+{prompt}
+
+Use this response format:
+{self.thinking_prefix} What the interviewer is asking me and what I want to say about myself.
+{self.action_prefix} Choose my own answer.
+{self.observation_prefix} What I know about my own situation.
+{self.final_answer_prefix} My own spoken reply to the interviewer.
+"""
+        return f"""Follow the system instructions, persona, and conversation role already supplied.
+Use the following format to think through your response:
 
 {self.thinking_prefix} [Your reasoning process - think step by step about the question]
 {self.action_prefix} [What you should do or consider]
@@ -106,11 +146,11 @@ class ReACTReasoner:
 
 Repeat this process if needed, then provide your final answer:
 
-{self.final_answer_prefix} [Your final response to the user]
+{self.final_answer_prefix} [{answer_instruction}]
 
 Question: {prompt}
 
-Begin your reasoning:"""
+{begin}"""
     
     def _parse_response(self, response: str) -> Tuple[str, str]:
         """

@@ -68,6 +68,8 @@ export default function TestRunsPage() {
       const searchLower = filters.search.toLowerCase()
       filtered = filtered.filter(
         (r) =>
+          String(r.meta_data?.name || '').toLowerCase().includes(searchLower) ||
+          (r.suite_name || '').toLowerCase().includes(searchLower) ||
           r.doctor_model.toLowerCase().includes(searchLower) ||
           r.patient_model.toLowerCase().includes(searchLower) ||
           testRunModelRef(r).toLowerCase().includes(searchLower) ||

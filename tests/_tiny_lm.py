@@ -19,17 +19,37 @@ from vivasecuris.aiasylum.weights.train_data import TrainRow
 WORDS = ["[UNK]", "[PAD]", "[EOS]"] + [f"w{i}" for i in range(61)]
 
 
-def build_tokenizer(words=None):
+def build_tokenizer(words=None, with_bos: bool = False):
+    """The 64-word tokenizer; ``with_bos`` makes it insert a BOS token like a real one.
+
+    The default has no BOS at all, which is why the BOS defect in prompt
+    formatting was invisible to every fixture: ``add_special_tokens`` on or off
+    gave identical ids. ``with_bos`` adds ``[BOS]`` (id 3, vocab still 64) and a
+    post-processor that prepends it, so a test can count how many BOS tokens a
+    capture or generation path actually put in front of the prompt.
+    """
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
     from tokenizers.pre_tokenizers import Whitespace
 
-    words = list(words or WORDS)
+    if words is None:
+        words = (["[UNK]", "[PAD]", "[EOS]", "[BOS]"] + [f"w{i}" for i in range(60)]) if with_bos else list(WORDS)
+    else:
+        words = list(words)
     backend = Tokenizer(WordLevel({w: i for i, w in enumerate(words)}, unk_token="[UNK]"))
     backend.pre_tokenizer = Whitespace()
+    extra = {}
+    if with_bos:
+        from tokenizers.processors import TemplateProcessing
+
+        bos_id = words.index("[BOS]")
+        backend.post_processor = TemplateProcessing(
+            single="[BOS] $A", pair="[BOS] $A $B", special_tokens=[("[BOS]", bos_id)]
+        )
+        extra["bos_token"] = "[BOS]"
     return transformers.PreTrainedTokenizerFast(
         tokenizer_object=backend, unk_token="[UNK]", pad_token="[PAD]", eos_token="[EOS]",
-        model_input_names=["input_ids", "attention_mask"],
+        model_input_names=["input_ids", "attention_mask"], **extra,
     )
 
 

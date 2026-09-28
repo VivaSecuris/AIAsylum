@@ -5,6 +5,9 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { usePrompt, useUpdatePrompt } from '@/lib/hooks'
 import { toast } from '@/lib/toast'
 
+// Imported prompts can carry other categories; the select also offers the prompt's own
+const BUILT_IN_CATEGORIES = ['adversarial', 'conversation', 'scenario', 'reasoning', 'safety']
+
 export default function EditPromptPage() {
   const router = useRouter()
   const { id } = router.query
@@ -49,17 +52,18 @@ export default function EditPromptPage() {
         ...(formData.prompt_type === 'system_prompt' && formData.target === 'evaluator'
           ? ['evaluator']
           : []),
-      ]
+      ].filter((tag, index, all) => all.indexOf(tag) === index)
+      // Cleared optional fields are sent as null (tags as []) so the server clears them
       await updatePrompt.mutateAsync({
         id: promptId,
         data: {
           name: formData.name,
-          description: formData.description || undefined,
+          description: formData.description || null,
           prompt_text: formData.prompt_text,
           prompt_type: formData.prompt_type,
-          target: formData.target || undefined,
-          category: formData.category || undefined,
-          tags: finalTags.length > 0 ? finalTags : undefined,
+          target: formData.target || null,
+          category: formData.category || null,
+          tags: finalTags,
         },
       })
       toast.success('Prompt updated successfully')
@@ -132,32 +136,30 @@ export default function EditPromptPage() {
                   setFormData({
                     ...formData,
                     prompt_type: e.target.value,
-                    target: e.target.value === 'test_prompt' ? '' : formData.target,
                   })
                 }
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
-                <option value="test_prompt">Test Prompt</option>
+                <option value="test_prompt">User / Test Prompt</option>
                 <option value="system_prompt">System Prompt</option>
               </select>
             </div>
 
-            {formData.prompt_type === 'system_prompt' && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Target *</label>
-                <select
-                  required
-                  value={formData.target}
-                  onChange={(e) => setFormData({ ...formData, target: e.target.value })}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                >
-                  <option value="">Select target</option>
-                  <option value="doctor">Doctor Model</option>
-                  <option value="patient">Patient Model</option>
-                  <option value="evaluator">Evaluator</option>
-                </select>
-              </div>
-            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Target {formData.prompt_type === 'system_prompt' ? '*' : '(optional)'}</label>
+              <select
+                aria-label="Prompt target"
+                required={formData.prompt_type === 'system_prompt'}
+                value={formData.target}
+                onChange={(e) => setFormData({ ...formData, target: e.target.value })}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="">{formData.prompt_type === 'system_prompt' ? 'Select target' : 'General user prompt'}</option>
+                <option value="doctor">Doctor Model</option>
+                <option value="patient">Patient Model</option>
+                <option value="evaluator">Evaluator</option>
+              </select>
+            </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium">Prompt Text *</label>
@@ -184,6 +186,9 @@ export default function EditPromptPage() {
                 <option value="scenario">Scenario</option>
                 <option value="reasoning">Reasoning</option>
                 <option value="safety">Safety</option>
+                {prompt.category && !BUILT_IN_CATEGORIES.includes(prompt.category) && (
+                  <option value={prompt.category}>{prompt.category}</option>
+                )}
               </select>
             </div>
 

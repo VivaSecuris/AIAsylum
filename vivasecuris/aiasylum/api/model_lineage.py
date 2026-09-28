@@ -261,8 +261,33 @@ def build_model_lineage(*, catalog: dict[str, Any] | None = None, project_root: 
                 if checkpoint_id:
                     produced.add(checkpoint_id)
 
+            resume_options = dict(_object(metadata.get("options")))
+            # Earlier runs stored these dependencies only as artifact paths.
+            # Resolve against this history, never reinterpret an imported ID as
+            # an unrelated live run on the current server.
+            dependency = {
+                "induce": ("probe_run_id", "probe_dir", "probe"),
+                "hneuron_bake": ("hneurons_run_id", "hneurons_dir", "hneurons"),
+            }.get(kind)
+            if dependency:
+                field, path_field, expected_kind = dependency
+                dependency_row = by_output.get(metadata.get(path_field))
+                if dependency_row is None and resume_options.get(field) is not None:
+                    candidates = rows_by_id.get(str(resume_options[field]), [])
+                    dependency_row = candidates[0] if len(candidates) == 1 else None
+                if (group.get("local") and dependency_row and not dependency_row.get("archived")
+                        and dependency_row.get("kind") == expected_kind
+                        and dependency_row.get("status") == "completed"
+                        and dependency_row.get("out_dir") and Path(dependency_row["out_dir"]).is_dir()):
+                    resume_options[field] = dependency_row["id"]
+                else:
+                    resume_options.pop(field, None)
+                    node["settings"]["resume_note"] = (
+                        f"Choose a completed {expected_kind} run on this server before launching this branch; "
+                        "the original dependency is unavailable here."
+                    )
             resume = {"kind": kind, "source_model": node["source_model"], "method": row.get("method"),
-                      "objective": row.get("objective"), "options": json.dumps(_object(metadata.get("options")), separators=(",", ":")),
+                      "objective": row.get("objective"), "options": json.dumps(resume_options, separators=(",", ":")),
                       "lineage_parent": node_id}
             if isinstance(metadata.get("objective_config"), dict):
                 resume["objective_config"] = json.dumps(metadata["objective_config"], separators=(",", ":"))

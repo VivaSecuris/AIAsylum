@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import or_
 from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.database import get_session, PromptLibrary
@@ -116,11 +117,15 @@ async def list_prompts(
     tag: Optional[str] = None,
     prompt_type: Optional[str] = None,
     target: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    search: Optional[str] = Query(None, max_length=200),
+    limit: int = Query(100, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ):
-    """List prompts from the library.
+    """List prompts from the library, newest first.
     
+    ``search`` matches name, description and prompt text (case-insensitive), and
+    also the prompt ID when it is all digits.
+
     Note: Forbidden questions are completely excluded from this endpoint.
     They should only be used AFTER a jailbreak is achieved, not in general searches.
     Use /api/v1/prompts/forbidden-questions/list to access them in specific test contexts.
@@ -142,6 +147,18 @@ async def list_prompts(
         if target:
             query = query.filter(PromptLibrary.target == target)
         
+        term = (search or "").strip()
+        if term:
+            like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            matches = [
+                PromptLibrary.name.ilike(like, escape="\\"),
+                PromptLibrary.description.ilike(like, escape="\\"),
+                PromptLibrary.prompt_text.ilike(like, escape="\\"),
+            ]
+            if term.isdigit():
+                matches.append(PromptLibrary.id == int(term))
+            query = query.filter(or_(*matches))
+        
         # Get all prompts and filter in Python (SQLite JSON limitation)
         all_prompts = query.order_by(PromptLibrary.created_at.desc()).all()
         
@@ -155,6 +172,54 @@ async def list_prompts(
         return [PromptResponse.from_orm(p) for p in prompts]
     finally:
         session.close()
+
+
+@router.get("/defaults")
+async def get_prompt_defaults():
+    """The built-in system prompts each role falls back to when none is chosen.
+
+    Declared before ``/{prompt_id}`` so "defaults" is not parsed as an ID.
+    """
+    from vivasecuris.aiasylum.analysis.prompts import get_evaluation_system_prompt
+    from vivasecuris.aiasylum.doctor.doctor import ASSESSMENT_INSTRUCTIONS, DEFAULT_DOCTOR_SYSTEM_PROMPT
+    from vivasecuris.aiasylum.patient.patient import (
+        PATIENT_INTERVIEW_INPUT_FORMAT, PATIENT_INTERVIEW_TEMPLATE, PATIENT_QUESTION_TEMPLATE,
+    )
+
+    return {
+        "doctor": {
+            "system_prompt": DEFAULT_DOCTOR_SYSTEM_PROMPT,
+            "assessment_instructions": ASSESSMENT_INSTRUCTIONS,
+            "notes": [
+                "Used whenever no doctor system prompt is chosen.",
+                "The assessment instructions are sent after the transcript at the end of every test.",
+            ],
+        },
+        "patient": {
+            "system_prompt": None,
+            "user_message_template": PATIENT_QUESTION_TEMPLATE,
+            "interview_user_message_template": PATIENT_INTERVIEW_TEMPLATE,
+            "interview_input_format": PATIENT_INTERVIEW_INPUT_FORMAT,
+            "notes": [
+                "One-Shot and Multi-Shot use user_message_template only when no system prompt is selected.",
+                "Conversation and Group Therapy use interview_user_message_template even with a "
+                "selected custom or library system prompt; the selected system text remains unchanged.",
+                "The interview template's {prompt} is a JSON object with speaker='doctor' and "
+                "message containing the input text; quoting attributes the speaker without rewriting the input.",
+                "Explicitly disabling patient prompt framing skips both wrappers. Benchmarks use their own prompt format.",
+                "ReACT, when enabled, separately adds a requested reasoning text format in one model call; "
+                "it does not execute actions or observation tools.",
+            ],
+        },
+        "evaluator": {
+            "system_prompt": get_evaluation_system_prompt(),
+            "default_temperature": 0.3,
+            "notes": [
+                "Custom evaluator instructions are added after this prompt; the scoring "
+                "dimensions and JSON format are always kept.",
+            ],
+        },
+    }
 
 
 @router.get("/{prompt_id}", response_model=PromptResponse)
@@ -179,7 +244,9 @@ async def update_prompt(prompt_id: int, prompt_update: PromptUpdate):
         if not prompt:
             raise HTTPException(status_code=404, detail="Prompt not found")
         
-        # Update fields if provided
+        # Only fields present in the request change; an explicit null clears an
+        # optional field (description, target, category, tags, metadata).
+        provided = prompt_update.model_fields_set
         if prompt_update.name is not None:
             # Check if new name conflicts with existing prompt
             existing = session.query(PromptLibrary).filter(
@@ -190,26 +257,22 @@ async def update_prompt(prompt_id: int, prompt_update: PromptUpdate):
                 raise HTTPException(status_code=400, detail=f"Prompt with name '{prompt_update.name}' already exists")
             prompt.name = prompt_update.name
         
-        if prompt_update.description is not None:
-            prompt.description = prompt_update.description
-        
         if prompt_update.prompt_text is not None:
             prompt.prompt_text = prompt_update.prompt_text
         
         if prompt_update.prompt_type is not None:
             prompt.prompt_type = prompt_update.prompt_type
         
-        if prompt_update.target is not None:
-            prompt.target = prompt_update.target
+        for field in ("description", "target", "category"):
+            if field in provided:
+                value = getattr(prompt_update, field)
+                setattr(prompt, field, value if value not in ("",) else None)
         
-        if prompt_update.category is not None:
-            prompt.category = prompt_update.category
+        if "tags" in provided:
+            prompt.tags = prompt_update.tags or []
         
-        if prompt_update.tags is not None:
-            prompt.tags = prompt_update.tags
-        
-        if prompt_update.metadata is not None:
-            prompt.meta_data = prompt_update.metadata
+        if "metadata" in provided:
+            prompt.meta_data = prompt_update.metadata or {}
         
         session.commit()
         session.refresh(prompt)

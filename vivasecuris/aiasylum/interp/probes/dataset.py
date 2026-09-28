@@ -117,6 +117,69 @@ class ProbeDataset:
         }
 
 
+def build_contrast_dataset(
+    positive: Sequence[str],
+    negative: Sequence[str],
+    *,
+    near_miss: Optional[Sequence[str]] = None,
+    test_fraction: float = 0.3,
+    seed: int = 0,
+    source: str = "contrast",
+) -> "ProbeDataset":
+    """A probe dataset from two arbitrary prompt sets -- e.g. a refusal category.
+
+    ``positive`` are the prompts the gate should fire on (label 1); ``negative``
+    are the prompts it should not (label 0). When ``near_miss`` is given, those
+    same-topic-but-allowed prompts are folded into the negatives and tracked as
+    their own held-out group, so the reported number says whether the gate can
+    tell the behaviour apart from the topic. Split, hashed and surface-baselined
+    exactly like :func:`build_harmful_intent_dataset`.
+    """
+    rng = random.Random(seed)
+    pos = sorted({p.strip() for p in positive if p and p.strip()})
+    near = sorted({p.strip() for p in (near_miss or []) if p and p.strip()})
+    other_neg = sorted({p.strip() for p in negative if p and p.strip()} - set(near))
+    if set(pos) & (set(near) | set(other_neg)):
+        raise ValueError("Positive and negative prompt sets overlap; use disjoint contrasts.")
+    if min(len(pos), len(near) + len(other_neg)) < MIN_PER_CLASS:
+        raise ValueError(
+            f"Need at least {MIN_PER_CLASS} prompts per class; got {len(pos)} positive "
+            f"and {len(near) + len(other_neg)} negative."
+        )
+    for lst in (pos, near, other_neg):
+        rng.shuffle(lst)
+
+    def split(items):
+        k = max(2, int(round(len(items) * test_fraction))) if items else 0
+        return items[:k], items[k:]
+
+    pos_te, pos_tr = split(pos)
+    near_te, near_tr = split(near)
+    oth_te, oth_tr = split(other_neg)
+
+    train_prompts = pos_tr + near_tr + oth_tr
+    train_labels = [1] * len(pos_tr) + [0] * (len(near_tr) + len(oth_tr))
+    test_prompts = pos_te + near_te + oth_te
+    test_labels = [1] * len(pos_te) + [0] * (len(near_te) + len(oth_te))
+    test_groups = (["target"] * len(pos_te)
+                   + ["near_miss"] * len(near_te)
+                   + ["general"] * len(oth_te))
+
+    ds = ProbeDataset(
+        train_prompts=train_prompts, train_labels=train_labels,
+        test_prompts=test_prompts, test_labels=test_labels, test_groups=test_groups,
+        seed=seed,
+        source=f"{source}: pos={len(pos)} near_miss={len(near)} general={len(other_neg)}",
+        requested={"positive": len(pos), "near_miss": len(near), "general": len(other_neg)},
+        actual={"positive": len(pos), "near_miss": len(near), "general": len(other_neg)},
+    )
+    if set(ds.train_prompts) & set(ds.test_prompts):
+        raise ValueError("Probe dataset has overlapping training and evaluation prompts.")
+    ds.surface_baseline = surface_baseline_auroc(ds.test_prompts, ds.test_labels)
+    logger.info("Built contrast probe dataset %s: %s", ds.hash, ds.summary())
+    return ds
+
+
 def _jailbreak_rows(limit: Optional[int] = None) -> List[Tuple[str, str]]:
     """``(prompt, technique)`` for the adversarial category."""
     from vivasecuris.aiasylum.database.models import PromptLibrary

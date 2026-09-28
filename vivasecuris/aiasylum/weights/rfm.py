@@ -238,6 +238,8 @@ def derive_rfm_subspace(
     max_length: int = 512,
     layer_range: Optional[tuple] = None,
     progress: Optional[callable] = None,
+    thinking: bool = False,
+    allow_no_chat_template: bool = False,
 ):
     """Derive an RFM-AGOP refusal cone as a :class:`RefusalDirection`.
 
@@ -251,6 +253,7 @@ def derive_rfm_subspace(
     """
     import torch
 
+    from vivasecuris.aiasylum.weights.capture import has_chat_template
     from vivasecuris.aiasylum.weights.direction import (
         RefusalDirection,
         _auc,
@@ -265,6 +268,7 @@ def derive_rfm_subspace(
     directions, scores, caps = _score_layers(
         model, tokenizer, split, batch_size=batch_size, max_length=max_length,
         layer_range=layer_range, progress=progress, return_captures=True,
+        thinking=thinking, allow_no_chat_template=allow_no_chat_template,
     )
     ranked = _rank_layers(scores)
     candidates = [s.layer for s in ranked[: max(1, int(candidate_layers))] if s.layer in directions]
@@ -317,7 +321,9 @@ def derive_rfm_subspace(
         basis_layers=[layer] * int(basis.shape[0]),
         weights=weights,
         method="rfm_agop",
+        template_applied=has_chat_template(tokenizer),
         extra={
+            "thinking": bool(thinking),
             "rfm": {
                 "iterations": int(iterations),
                 "gamma": float(gamma),

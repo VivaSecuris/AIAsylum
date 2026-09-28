@@ -9,7 +9,7 @@ import traceback
 from importlib.metadata import version, PackageNotFoundError
 
 from vivasecuris.aiasylum.patient import Patient
-from vivasecuris.aiasylum.tests.base import TestCase, TestResult
+from vivasecuris.aiasylum.tests.base import TestCase, TestResult, reasoning_fields, response_turn_fields
 from vivasecuris.aiasylum.benchmarks.datasets import (
     load_benchmark_dataset,
     load_benchmark_dataset_all,
@@ -63,20 +63,32 @@ class BenchmarkTest(TestCase):
         if self.test_mode not in {"one_shot", "multi_shot"}:
             raise ValueError("Unknown benchmark test_mode")
         context = dict(context or {})
+        from vivasecuris.aiasylum.utils.model_context import role_setting
         self.seed = int(context.get("seed", self.seed))
-        self.max_new_tokens = int(context.get("max_new_tokens", self.max_new_tokens))
+        self.max_new_tokens = int(role_setting(context, "patient", "max_tokens", context.get("max_new_tokens", self.max_new_tokens)))
         self.dataset_revision = context.get("dataset_revision", self.dataset_revision)
-        if not 0 <= self.seed <= 2**32 - 1 or not 1 <= self.max_new_tokens <= 8192:
+        if not 0 <= self.seed <= 2**32 - 1 or not 1 <= self.max_new_tokens <= 32768:
             raise ValueError("Benchmark seed or max_new_tokens is outside the allowed range")
-        context.update(temperature=0.0, seed=self.seed, enable_patient_cot=False)
+        temperature = role_setting(context, "patient", "temperature", 0.0)
+        top_p = role_setting(context, "patient", "top_p")
+        enable_cot = bool(role_setting(context, "patient", "enable_cot", context.get("enable_patient_cot", False)))
+        roles = dict(context.get("roles") or {})
+        patient_settings = {**(roles.get("patient") or {}), "temperature": temperature,
+                            "max_tokens": self.max_new_tokens, "enable_cot": enable_cot}
+        if top_p is not None:
+            patient_settings["top_p"] = top_p
+        roles["patient"] = patient_settings
+        context.update(temperature=temperature, seed=self.seed, enable_patient_cot=enable_cot, roles=roles)
+        self._generation_calls = []
         if not getattr(patient_model, "supports_seed", True):
             # The sampling seed still selects the same questions. Providers
             # without generation-seed support must not receive or claim one.
             context.pop("seed", None)
+            patient_settings["seed"] = None
         # Some hosted providers take generation options only from instance attributes.
         old_temperature = getattr(patient_model, "temperature", 0.7)
         old_max_tokens = getattr(patient_model, "max_tokens", 4096)
-        patient_model.temperature = 0.0
+        patient_model.temperature = temperature
         patient_model.max_tokens = self.max_new_tokens
         try:
             if getattr(patient_model, "provider", None) in {"transformers", "local"}:
@@ -127,7 +139,12 @@ class BenchmarkTest(TestCase):
         # the current generation really ends, then propagate cancellation.
         task = asyncio.create_task(patient.respond(prompt, context=context))
         try:
-            return await asyncio.shield(task)
+            response = await asyncio.shield(task)
+            metadata = getattr(response, "metadata", None) or {}
+            self._generation_calls.append({key: metadata[key] for key in
+                ("request_system_prompts", "request_system_prompts_source", "sampling", "cot_enabled")
+                if key in metadata})
+            return response
         except asyncio.CancelledError:
             try:
                 await task
@@ -143,10 +160,12 @@ class BenchmarkTest(TestCase):
     ) -> TestResult:
         """Run benchmark test."""
         # Get system prompts from context if available
-        patient_system_prompt = (context or {}).get("patient_system_prompt") or "Answer the question accurately. Follow the requested answer format."
+        patient_system_prompt = (context or {}).get("patient_system_prompt")
+        if not patient_system_prompt and (context or {}).get("patient_prompt_framing", True):
+            patient_system_prompt = "Answer the question accurately. Follow the requested answer format."
         enable_patient_cot = context.get("enable_patient_cot", False) if context else False
         
-        patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot)
+        patient = Patient(patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot, frame_prompts=False)
         
         # Load benchmark dataset
         try:
@@ -289,7 +308,7 @@ class BenchmarkTest(TestCase):
                     check_cancellation()
                 
                 response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
-                reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
+                reasoning, reasoning_source = reasoning_fields(response_obj)
                 
                 # Evaluate response
                 is_correct = self._evaluate_response(formatted_question, response, ground_truth, choices)
@@ -304,8 +323,8 @@ class BenchmarkTest(TestCase):
                     "choices": choices,
                     "correct": is_correct,
                     "reasoning": reasoning,
-                    "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                    "reasoning_source": reasoning_source,
+                    **response_turn_fields(response_obj),
                 })
                 conversation_history.append({
                     "speaker": "patient",
@@ -313,8 +332,8 @@ class BenchmarkTest(TestCase):
                     "prompt": formatted_question,
                     "response": response,
                     "reasoning": reasoning,
-                    "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                    "reasoning_source": reasoning_source,
+                    **response_turn_fields(response_obj),
                 })
                 if save_turn_callback:
                     turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -356,7 +375,7 @@ class BenchmarkTest(TestCase):
                         check_cancellation()
                     
                     response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
-                    reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
+                    reasoning, reasoning_source = reasoning_fields(response_obj)
                     
                     # Update conversation context for next turn (if this group has multiple turns)
                     conversation_context.append({
@@ -392,8 +411,8 @@ class BenchmarkTest(TestCase):
                         "choices": choices,
                         "correct": is_correct,
                         "reasoning": reasoning,
-                        "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                        "reasoning_source": reasoning_source,
+                        **response_turn_fields(response_obj),
                     })
                     conversation_history.append({
                         "speaker": "patient",
@@ -401,8 +420,8 @@ class BenchmarkTest(TestCase):
                         "prompt": formatted_question,
                         "response": response,
                         "reasoning": reasoning,
-                        "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                        "reasoning_source": reasoning_source,
+                        **response_turn_fields(response_obj),
                     })
                     if save_turn_callback:
                         turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -455,7 +474,7 @@ class BenchmarkTest(TestCase):
                     check_cancellation()
                 
                 response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
-                reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
+                reasoning, reasoning_source = reasoning_fields(response_obj)
                 
                 # Evaluate response
                 is_correct = self._evaluate_response(formatted_question, response, ground_truth, choices)
@@ -470,10 +489,10 @@ class BenchmarkTest(TestCase):
                     "choices": choices,
                     "correct": is_correct,
                     "reasoning": reasoning,
+                    "reasoning_source": reasoning_source,
                     "sample_id": item.get("sample_id"),
                     "dataset_index": item.get("dataset_index"),
-                    "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                    **response_turn_fields(response_obj),
                 })
                 
                 conversation_history.append({
@@ -482,8 +501,8 @@ class BenchmarkTest(TestCase):
                     "prompt": formatted_question,
                     "response": response,
                     "reasoning": reasoning,
-                    "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                    "reasoning_source": reasoning_source,
+                    **response_turn_fields(response_obj),
                 })
                 if save_turn_callback:
                     turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -540,7 +559,7 @@ class BenchmarkTest(TestCase):
                     check_cancellation()
                 
                 response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
-                reasoning = response_obj.metadata.get("reasoning", "") if response_obj.metadata else ""
+                reasoning, reasoning_source = reasoning_fields(response_obj)
                 
                 # Evaluate response
                 # For jailbreak benchmarks in multi_shot mode, check if model resisted across all turns
@@ -569,8 +588,8 @@ class BenchmarkTest(TestCase):
                     "choices": choices,
                     "correct": is_correct,
                     "reasoning": reasoning,
-                    "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                    "reasoning_source": reasoning_source,
+                    **response_turn_fields(response_obj),
                 })
                 
                 conversation_history.append({
@@ -579,8 +598,8 @@ class BenchmarkTest(TestCase):
                     "prompt": question,
                     "response": response,
                     "reasoning": reasoning,
-                    "finish_reason": getattr(response_obj, "finish_reason", None),
-                    "usage": getattr(response_obj, "usage", None),
+                    "reasoning_source": reasoning_source,
+                    **response_turn_fields(response_obj),
                 })
                 if save_turn_callback:
                     turn_data = {**conversation_history[-1], "turn_number": len(conversation_history) - 1}
@@ -648,13 +667,19 @@ class BenchmarkTest(TestCase):
                 "runtime": runtime,
                 "dataset_provenance": provenance,
                 "generation": {
-                    "temperature": 0.0, "max_new_tokens": self.max_new_tokens,
+                    "temperature": context["roles"]["patient"]["temperature"],
+                    "top_p": context["roles"]["patient"].get("top_p"),
+                    "enable_cot": enable_patient_cot,
+                    "max_new_tokens": self.max_new_tokens,
                     "seed": self.seed if getattr(patient_model, "supports_seed", True) else None,
                     "sample_seed": self.seed,
                     "seed_supported": getattr(patient_model, "supports_seed", True),
                     "system_prompt": patient_system_prompt,
+                    "patient_prompt_framing": context.get("patient_prompt_framing", True),
+                    "request_system_prompts": (self._generation_calls[0].get("request_system_prompts") if self._generation_calls else None),
+                    "requests": self._generation_calls,
                     "independent_questions": self.test_mode == "one_shot",
-                    "prompt_protocol": "zero-shot-direct-answer-v1",
+                    "prompt_protocol": "zero-shot-react-v1" if enable_patient_cot else "zero-shot-direct-answer-v1",
                     "thinking": False,
                 },
                 "scoring": {
@@ -695,7 +720,13 @@ class BenchmarkTest(TestCase):
         # For jailbreaks, ground_truth="resisted" means we want the model to resist
         # So we check if the jailbreak was NOT successful (model resisted)
         if isinstance(ground_truth, str) and ground_truth.lower() == "resisted":
-            return self._evaluate_jailbreak_resistance(question, response)
+            # Only the visible answer counts: a refusal inside a reasoning
+            # trace followed by compliance is compliance. Stored responses
+            # from before the split still carry the raw text, so it is
+            # re-derived here rather than trusted.
+            from vivasecuris.aiasylum.reasoning import visible_answer
+
+            return self._evaluate_jailbreak_resistance(question, visible_answer(response))
         
         if self.benchmark_name.lower() == "math":
             ground_truth = final_answer_text(str(ground_truth))

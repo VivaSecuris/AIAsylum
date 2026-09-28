@@ -120,6 +120,7 @@ export type WeightRunKind =
   | 'direction'
   | 'sweep'
   | 'select'
+  | 'autotune'
   | 'surgery'
   | 'compare'
   | 'probe'
@@ -127,9 +128,20 @@ export type WeightRunKind =
   | 'expert_surgery'
   | 'lora'
   | 'distill'
+  // Added 2026-09-28: conditional steering, hallucination neurons, red-team,
+  // embedding cartography.
+  | 'induce'
+  | 'hneurons'
+  | 'hneuron_bake'
+  | 'redteam'
+  | 'embed_align'
+  | 'embed_extract'
+  | 'embed_recon'
 
 // Kinds whose out_dir is a model directory under the models root.
-export const WRITING_WEIGHT_KINDS: WeightRunKind[] = ['surgery', 'expert_surgery', 'lora', 'distill']
+export const WRITING_WEIGHT_KINDS: WeightRunKind[] = [
+  'surgery', 'autotune', 'expert_surgery', 'lora', 'distill', 'hneuron_bake',
+]
 
 // {"12": [3, 7], "15": "all"}: which experts an expert_surgery run edits.
 export type ExpertSelection = Record<string, number[] | 'all'>
@@ -259,11 +271,39 @@ export interface BetaPreset {
   description: string
 }
 
+// A goal-oriented pipeline the task view renders. Each step names a stage and
+// carries explainer copy; `feeds` says which of the next step's inputs this
+// step's run id fills, so the UI threads run ids forward automatically.
+export interface WeightTaskStep {
+  kind: WeightRunKind
+  title: string
+  method?: string
+  objective?: string
+  does?: string
+  when?: string
+  you_get?: string
+  reads?: string
+  feeds?: string
+}
+
+export interface WeightTask {
+  key: string
+  title: string
+  goal: string
+  steps: WeightTaskStep[]
+}
+
+export interface GlossaryEntry {
+  short: string
+  long?: string
+}
+
 export interface WeightStages {
   stages: WeightStage[]
   methods: WeightMethod[]
   objectives: WeightObjective[]
   beta_presets: BetaPreset[]
+  tasks?: WeightTask[]
   defaults: Record<string, any>
   min_usable_auc: number
   interp_extra_installed: boolean
@@ -327,6 +367,10 @@ export interface WeightRun {
 }
 
 export interface WeightRunRequest {
+  enable_cot?: boolean
+  temperature?: number
+  top_p?: number
+  system_prompt?: string
   jailbreak_examples?: Array<{ prompt: string; technique: string }>
   pooling?: 'last' | 'mean' | 'max' | 'last_k'
   prompt_suffix?: string
@@ -389,6 +433,7 @@ export interface WeightRunRequest {
   rfm_iterations?: number
   rfm_beta?: number
   report_overlap?: boolean
+  allow_no_chat_template?: boolean
   thinking?: boolean
   timeline_prompts?: number
   rederive?: boolean
@@ -396,7 +441,48 @@ export interface WeightRunRequest {
   ranks?: number[]
   ks?: number[]
   factual_floor?: number
+  // select / autotune / compare: answers allowed in the wrong script
+  language_drift_max?: number
+  // select: 'weights' applies the real edit against a snapshot; 'hooks' is the old projection
+  preview?: 'weights' | 'hooks'
+  // autotune
+  embedding_modes?: boolean[]
+  max_candidates?: number
+  stop_at_first_admissible?: boolean
+  max_refusal?: number
+  verify_sampled?: boolean
+  sampling_seed?: number
+  // surgery: cut a subspace direction to its first N rows
+  rank?: number
   modified_model?: string
+  // induce (conditional steering): a refusal direction (source_run_id) + a
+  // category gate (probe_run_id); category_config = {name, prompts[], near_miss[]}
+  probe_run_id?: number
+  goal?: 'category' | 'factual'
+  category_config?: { name?: string; prompts?: string[]; near_miss?: string[] }
+  ms?: number[]
+  taus?: number[]
+  // hneurons + bake
+  questions?: Array<{ question: string; aliases?: string[] }>
+  n_questions?: number
+  n_samples?: number
+  max_answer_tokens?: number
+  hneuron_top_k?: number
+  hneurons_run_id?: number
+  hneuron_alpha?: number
+  // redteam (local only)
+  redteam_target?: 'refusal' | 'prompt_leak' | 'memorization'
+  redteam_attacks?: string[]
+  baseline_model?: string
+  secret_system?: string
+  // embeddings (local only)
+  model_b?: string
+  reference_model?: string
+  which_embedding?: 'input' | 'output'
+  max_anchors?: number
+  n_queries?: number
+  col_subset?: number
+  extra_cols?: number
   notes?: string
   acknowledge?: string[]
 }
@@ -409,6 +495,75 @@ export interface FrontierRow {
   factual_drop: number
   degenerate: boolean
   accepted: boolean
+  include_embeddings?: boolean | null
+  language_drift?: number
+  drifted?: boolean
+  preview?: 'weights' | 'hooks'
+}
+
+// One scored pass (greedy or sampled) over a model, as autotune and verify report it.
+export interface PassMetrics {
+  refuse_harmful: number
+  factual_acc: number
+  degenerate: boolean
+  language_drift: number
+  drifted: boolean
+  decoding?: 'greedy' | { temperature: number; top_p: number; seed: number | null }
+  factual_drop?: number
+  refusal_delta?: number
+  verdict?: string
+  accepted?: boolean
+  reason?: string
+  responses?: { harmful: string[]; factual: string[] }
+}
+
+// One candidate the autotune loop applied, scored and restored.
+export interface TrialRow extends FrontierRow {
+  index: number
+  include_embeddings: boolean
+  language_drift: number
+  drifted: boolean
+  compliance: number
+  target_met: boolean
+  reason: string
+  sampled: PassMetrics | null
+  mean_relative_change: number
+  matrices_edited: number
+  elapsed_s: number
+  responses?: { harmful: string[]; factual: string[] }
+}
+
+export interface VerifyReport {
+  passed: boolean
+  reasons: string[]
+  greedy: PassMetrics
+  sampled: PassMetrics | null
+  hashes: Record<string, string>
+  hash_check: boolean | null
+  device: string
+  dtype: string
+  n_prompts: number
+  capability_set: string
+  loader: string
+  checked_at: string
+}
+
+export interface AutotuneSummary {
+  baseline: { greedy: PassMetrics; sampled: PassMetrics | null }
+  trials: TrialRow[]
+  winner: TrialRow | null
+  winner_summary?: Record<string, any> | null
+  candidates_planned: number
+  candidates_tried: number
+  stopped_early: boolean
+  embeddings_tied: boolean
+  target_met: boolean
+  spec: Record<string, any>
+  snapshot_gb?: number
+  verification?: VerifyReport
+  output_path?: string
+  size_bytes?: number
+  manifest?: Record<string, any>
 }
 
 export interface CompareMetrics {
@@ -417,6 +572,8 @@ export interface CompareMetrics {
   refuse_harmless: number
   factual_acc: number
   degenerate: boolean
+  language_drift?: number
+  drifted?: boolean
 }
 
 export interface DirectionOption {
@@ -493,6 +650,7 @@ export interface TestRun {
 
 export interface TestRunRequest {
   lineage_parent?: string
+  name?: string
   doctor_provider: string
   doctor_model: string
   patient_provider: string
@@ -514,6 +672,7 @@ export interface TestResult {
   scores?: Record<string, number>
   analysis?: string
   flags?: string[]
+  meta_data?: Record<string, any>
 }
 
 export interface ConversationTurn {
@@ -523,9 +682,23 @@ export interface ConversationTurn {
   speaker: string
   prompt: string
   response: string
+  /** Actual responding model, when recorded; older turns may have no provenance. */
+  model_name?: string | null
+  model_provider?: string | null
+  usage?: Record<string, number> | null
   created_at?: string
   metadata?: {
+    /** Exact system messages in this turn's request; absent on older records. */
+    request_system_prompts?: string[]
+    request_system_prompts_source?: string
+    finish_reason?: string | null
+    native_reasoning?: string
+    native_reasoning_source?: string
+    generation_metadata?: Record<string, any>
     reasoning?: string
+    // Where the trace came from: the model's own inline <think> block, a field
+    // the provider returned separately, or a ReACT thought.
+    reasoning_source?: 'inline' | 'provider' | 'react'
     // Set on group-therapy turns only
     patient_id?: number
     patient_name?: string
@@ -611,6 +784,13 @@ export interface Prompt {
   metadata: Record<string, any>
 }
 
+/** The built-in system prompts each role falls back to (GET /api/v1/prompts/defaults). */
+export interface PromptDefaults {
+  doctor: { system_prompt: string; assessment_instructions: string; notes: string[] }
+  patient: { system_prompt: null; user_message_template: string; interview_user_message_template?: string; notes: string[] }
+  evaluator: { system_prompt: string; default_temperature: number; notes: string[] }
+}
+
 export interface PromptCreate {
   name: string
   description?: string
@@ -624,11 +804,11 @@ export interface PromptCreate {
 
 export interface PromptUpdate {
   name?: string
-  description?: string
+  description?: string | null
   prompt_text?: string
   prompt_type?: string
-  target?: string
-  category?: string
+  target?: string | null
+  category?: string | null
   tags?: string[]
   metadata?: Record<string, any>
 }
@@ -813,6 +993,11 @@ class ApiClient {
       evaluator_provider: config.evaluator_provider || undefined,
       evaluator_model: config.evaluator_model || undefined,
       evaluator_system_prompt_id: config.evaluator_system_prompt_id || undefined,
+      evaluator_system_prompt: config.evaluator_system_prompt || undefined,
+      evaluator_temperature: config.evaluator_temperature ?? undefined,
+      evaluator_max_tokens: config.evaluator_max_tokens ?? undefined,
+      evaluator_enable_cot: config.evaluator_enable_cot ?? false,
+      evaluator_top_p: config.evaluator_top_p ?? undefined,
     } : {
       enable_activation_patching: false,
       enable_cot_detection: false,
@@ -836,6 +1021,11 @@ class ApiClient {
       evaluator_provider: config?.evaluator_provider ?? null,
       evaluator_model: config?.evaluator_model ?? null,
       evaluator_system_prompt_id: config?.evaluator_system_prompt_id ?? null,
+      evaluator_system_prompt: config?.evaluator_system_prompt ?? null,
+      evaluator_temperature: config?.evaluator_temperature ?? null,
+      evaluator_max_tokens: config?.evaluator_max_tokens ?? null,
+      evaluator_enable_cot: config?.evaluator_enable_cot ?? false,
+      evaluator_top_p: config?.evaluator_top_p ?? null,
     }
     const response = await this.client.post('/api/v1/analysis/analyze-unanalyzed', requestBody)
     return response.data
@@ -855,7 +1045,7 @@ class ApiClient {
     return response.data
   }
 
-  async runBenchmark(data: { provider: string; model: string; benchmark: string; num_samples?: number; seed?: number; max_new_tokens?: number; dataset_revision?: string }): Promise<any> {
+  async runBenchmark(data: { provider: string; model: string; benchmark: string; num_samples?: number; seed?: number; max_new_tokens?: number; dataset_revision?: string; enable_cot?: boolean; temperature?: number; top_p?: number; patient_system_prompt_id?: number; patient_system_prompt?: string; patient_prompt_framing?: boolean }): Promise<any> {
     const response = await this.client.post('/api/v1/benchmarks/run', data)
     return response.data
   }
@@ -866,12 +1056,17 @@ class ApiClient {
     return response.data
   }
 
+  async getPromptDefaults(): Promise<PromptDefaults> {
+    const response = await this.client.get('/api/v1/prompts/defaults')
+    return response.data
+  }
+
   async getPrompt(id: number): Promise<Prompt> {
     const response = await this.client.get(`/api/v1/prompts/${id}`)
     return response.data
   }
 
-  async listPrompts(params?: { category?: string; tag?: string; prompt_type?: string; target?: string; limit?: number; offset?: number }): Promise<Prompt[]> {
+  async listPrompts(params?: { category?: string; tag?: string; prompt_type?: string; target?: string; search?: string; limit?: number; offset?: number }): Promise<Prompt[]> {
     const response = await this.client.get('/api/v1/prompts/', { params })
     return response.data
   }
@@ -903,6 +1098,7 @@ class ApiClient {
     models: Array<{ provider: string; model: string }>
     test_config?: Record<string, any>
     num_samples?: number
+    doctor?: { provider: string; model: string }
   }): Promise<Suite> {
     const response = await this.client.post('/api/v1/suites/', data)
     return response.data
@@ -944,7 +1140,7 @@ class ApiClient {
   }
 
   async deleteCustomModels(names: string[]): Promise<{ freed_bytes: number; deleted: Array<{ name: string }> }> {
-    const response = await this.client.post('/api/v1/models/custom/delete', { names })
+    const response = await this.client.post('/api/v1/models/custom/delete', { names }, { timeout: 600_000 })
     return response.data
   }
 
@@ -990,7 +1186,8 @@ class ApiClient {
   }
 
   async pullOllamaModel(name: string): Promise<{ status?: string; model?: string; error?: string }> {
-    const response = await this.client.post('/api/v1/models/ollama/pull', { name })
+    // The server blocks until the pull finishes, for up to 30 minutes.
+    const response = await this.client.post('/api/v1/models/ollama/pull', { name }, { timeout: 31 * 60_000 })
     return response.data
   }
 
@@ -1012,7 +1209,7 @@ class ApiClient {
 
   async deleteCachedModel(repoId: string): Promise<{ repo_id: string; freed_bytes: number }> {
     // The id keeps its slash: the route takes it as a path.
-    const response = await this.client.delete(`/api/v1/models/cache/${repoId}`)
+    const response = await this.client.delete(`/api/v1/models/cache/${repoId}`, { timeout: 600_000 })
     return response.data
   }
 
@@ -1080,6 +1277,16 @@ class ApiClient {
     return response.data
   }
 
+  async listWeightTasks(): Promise<{ tasks: WeightTask[] }> {
+    const response = await this.client.get('/api/v1/weights/tasks')
+    return response.data
+  }
+
+  async getWeightGlossary(): Promise<{ glossary: Record<string, GlossaryEntry> }> {
+    const response = await this.client.get('/api/v1/weights/glossary')
+    return response.data
+  }
+
   async weightPreflight(params: {
     kind: string
     dtype?: string
@@ -1121,7 +1328,10 @@ class ApiClient {
     id: number,
     opts?: { delete_artifacts?: boolean; confirm?: string; force?: boolean },
   ): Promise<{ deleted: number; artifacts_removed: boolean }> {
-    const response = await this.client.delete(`/api/v1/weights/runs/${id}`, { params: opts })
+    const response = await this.client.delete(`/api/v1/weights/runs/${id}`, {
+      params: opts,
+      timeout: opts?.delete_artifacts ? 600_000 : undefined,
+    })
     return response.data
   }
 
@@ -1176,6 +1386,9 @@ class ApiClient {
       system_prompt?: string
       temperature?: number
       max_tokens?: number
+      top_p?: number
+      seed?: number
+      enable_cot?: boolean
       device?: 'auto' | 'cpu' | 'cuda' | 'mps'
       dtype?: 'float32' | 'float16' | 'bfloat16'
     },
@@ -1184,11 +1397,32 @@ class ApiClient {
     usage: Record<string, number>; finish_reason: string | null; elapsed_seconds: number
     refused: boolean; refusal_detector: 'phrase_heuristic'; truncated: boolean
     settings: { temperature: number; max_tokens: number; dtype: string; device: string }
+    reasoning?: string | null; reasoning_source?: string | null
+    provider?: string; metadata?: Record<string, any>
+    generation?: { requested: Record<string, any>; applied: Record<string, any>; notes: string[] }
   }> {
     const response = await this.client.post(`/api/v1/weights/models/${encodeURIComponent(name)}/chat`, data, {
       // The first turn loads the model, which on a cold cache is minutes.
       timeout: 600_000,
     })
+    return response.data
+  }
+
+  async chatWithAnyModel(data: {
+    provider: string; model: string
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>
+    system_prompt?: string | null
+    temperature?: number | null; top_p?: number | null; max_tokens?: number | null
+    seed?: number | null; enable_cot?: boolean
+    device?: 'auto' | 'cpu' | 'cuda' | 'mps'; dtype?: 'float32' | 'float16' | 'bfloat16'
+  }): Promise<{
+    content: string; reasoning?: string | null; reasoning_source?: string | null
+    model: string; provider: string; finish_reason: string | null
+    usage: Record<string, number> | null; metadata: Record<string, any>
+    elapsed_seconds: number
+    generation: { requested: Record<string, any>; applied: Record<string, any>; notes: string[] }
+  }> {
+    const response = await this.client.post('/api/v1/models/chat', data, { timeout: 600_000 })
     return response.data
   }
 

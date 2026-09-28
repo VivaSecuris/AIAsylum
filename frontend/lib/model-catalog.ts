@@ -7,6 +7,8 @@ export type ModelAvailability = 'ready' | 'missing' | 'incomplete' | 'download_r
 export interface ModelCatalogEntry {
   id: string
   model_ref: string
+  /** References the server has resolved to this exact checkpoint. */
+  aliases?: string[]
   name: string
   kind: 'base' | 'custom'
   gated?: boolean | string

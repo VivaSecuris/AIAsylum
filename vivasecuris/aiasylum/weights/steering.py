@@ -269,8 +269,8 @@ def generate_with_steering(
 
     from vivasecuris.aiasylum.weights.capture import format_prompts
 
-    text = format_prompts(tokenizer, [prompt], thinking=thinking)[0] if apply_template else prompt
-    inputs = tokenizer(text, return_tensors="pt", add_special_tokens=not apply_template).to(model.device)
+    texts, applied = format_prompts(tokenizer, [prompt], thinking=thinking) if apply_template else ([prompt], False)
+    inputs = tokenizer(texts[0], return_tensors="pt", add_special_tokens=not applied).to(model.device)
 
     def _run():
         with torch.no_grad():
@@ -368,11 +368,14 @@ def sweep_alpha(
         rate = refusal_rate(responses)
         logger.info("%s -> refusal rate %.1f%% (n=%d)", label, rate * 100, len(responses))
 
+        from vivasecuris.aiasylum.weights.evaluate import language_drift
+
         row = {
             "label": label,
             "refusal_rate": rate,
             "n": len(responses),
             "degenerate": _looks_degenerate(responses),
+            "language_drift": language_drift(responses),
             "samples": responses[:2],
         }
 
@@ -387,6 +390,7 @@ def sweep_alpha(
             ]
             row["factual_acc"] = factual_accuracy(factual_responses)
             row["degenerate"] = row["degenerate"] or _looks_degenerate(factual_responses)
+            row["language_drift"] = language_drift(responses + factual_responses)
             logger.info("%s -> factual accuracy %.1f%%", label, row["factual_acc"] * 100)
 
         return row
@@ -423,7 +427,9 @@ def sweep_subspace_rank(
     2607.02396) reports that larger models need three or more directions
     before compliance passes half; this is how that is measured here.
     """
-    from vivasecuris.aiasylum.weights.evaluate import capability_questions, factual_accuracy
+    from vivasecuris.aiasylum.weights.evaluate import (
+        capability_questions, factual_accuracy, language_drift,
+    )
 
     basis = direction.as_basis()
     max_rank = int(basis.shape[0])
@@ -441,13 +447,15 @@ def sweep_subspace_rank(
         row = {
             "label": label, "rank": rank, "k": float(k),
             "refusal_rate": rate, "compliance": 1.0 - rate, "n": len(responses),
-            "degenerate": _looks_degenerate(responses), "samples": responses[:2],
+            "degenerate": _looks_degenerate(responses), "language_drift": language_drift(responses),
+            "samples": responses[:2],
         }
         if factual_qs:
             fac = [generate_with_steering(model, tokenizer, q, vector=None, max_new_tokens=32, thinking=thinking)
                    for q in factual_qs]
             row["factual_acc"] = factual_accuracy(fac)
             row["degenerate"] = row["degenerate"] or _looks_degenerate(fac)
+            row["language_drift"] = language_drift(responses + fac)
         logger.info("%s -> refusal %.1f%%", label, rate * 100)
         return row
 
@@ -558,11 +566,19 @@ def summarize_sweep(rows: List[dict]) -> dict:
     return out
 
 
-def _looks_degenerate(responses: Iterable[str], threshold: float = 0.45) -> bool:
+def _looks_degenerate(
+    responses: Iterable[str], threshold: float = 0.45, bigram_threshold: float = 0.6,
+) -> bool:
     """Flag output that has collapsed into repetition.
 
     Without this, a perturbation that destroys the model registers as a refusal
     rate of zero and is easily mistaken for successful ablation.
+
+    ``threshold`` is the unique-token ratio below which a whitespace-tokenised
+    answer is repetitive. Answers with too few whitespace tokens to judge (CJK
+    text has none) are judged on character bigrams against ``bigram_threshold``
+    instead; fluent text of any script sits above 0.9 there, and a two-glyph
+    loop near 0.1.
     """
     responses = [r for r in responses if r and r.strip()]
     if not responses:
@@ -570,8 +586,18 @@ def _looks_degenerate(responses: Iterable[str], threshold: float = 0.45) -> bool
     flagged = 0
     for text in responses:
         tokens = text.split()
-        if len(tokens) < 8:
-            continue
-        if len(set(tokens)) / len(tokens) < threshold:
+        cutoff = threshold
+        if len(tokens) >= 8:
+            units = tokens
+        else:
+            cutoff = bigram_threshold
+            # Nothing to split on: a CJK answer, or one glyph repeated without
+            # spaces. Judge the same ratio over character bigrams instead, so a
+            # loop like 宽敞宽敞宽敞宽敞 is caught rather than skipped.
+            glyphs = [c for c in text if not c.isspace()]
+            if len(glyphs) < 16:
+                continue
+            units = [glyphs[i] + glyphs[i + 1] for i in range(len(glyphs) - 1)]
+        if len(set(units)) / len(units) < cutoff:
             flagged += 1
     return flagged > len(responses) / 2

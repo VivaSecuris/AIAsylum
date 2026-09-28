@@ -9,6 +9,8 @@ import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { CompareInInterpButton } from '@/components/weights/CompareInInterpButton'
 import { CompareTable } from '@/components/weights/CompareTable'
 import { FrontierChart } from '@/components/weights/FrontierChart'
+import { TrialLog } from '@/components/weights/TrialLog'
+import { VerificationCard } from '@/components/weights/VerificationCard'
 import { LayerScoreChart } from '@/components/weights/LayerScoreChart'
 import { ManifestCard, ProvenanceCard } from '@/components/weights/ManifestCard'
 import { SweepTable } from '@/components/weights/SweepTable'
@@ -17,6 +19,12 @@ import { RefusalTimelineChart } from '@/components/weights/RefusalTimelineChart'
 import { ProbeResults } from '@/components/weights/ProbeResults'
 import { RoutingHeatmap } from '@/components/weights/RoutingHeatmap'
 import { TrainingCurve } from '@/components/weights/TrainingCurve'
+import { ResultSummary } from '@/components/weights/ResultSummary'
+import { LiveStepView } from '@/components/weights/LiveStepView'
+import { InduceSection } from '@/components/weights/InduceSection'
+import { HNeuronResults } from '@/components/weights/HNeuronResults'
+import { RedteamLeakBars } from '@/components/weights/RedteamLeakBars'
+import { EmbedResults } from '@/components/weights/EmbedResults'
 import { WRITING_WEIGHT_KINDS } from '@/lib/api'
 import {
   useEditedModel,
@@ -36,7 +44,7 @@ export default function WeightRunDetailPage() {
   const { data: run, isLoading, error } = useWeightRun(runId, true)
   const stopRun = useStopWeightRun()
   const isActive = run?.status === 'running' || run?.status === 'pending'
-  const { progress, isConnected } = useWeightRunProgress(runId, isActive && runId > 0)
+  const { progress, history, isConnected } = useWeightRunProgress(runId, isActive && runId > 0)
 
   const summary = run?.metadata?.summary ?? {}
   const outName = run?.out_dir ? run.out_dir.split('/').filter(Boolean).pop() ?? '' : ''
@@ -93,6 +101,7 @@ export default function WeightRunDetailPage() {
                   direction: 'Direction',
                   sweep: 'Causal check',
                   select: 'Capability search',
+                  autotune: 'Verified edit',
                   surgery: 'Weight surgery',
                   compare: 'Measurement',
                   probe: 'Harmful-intent probe',
@@ -100,6 +109,13 @@ export default function WeightRunDetailPage() {
                   expert_surgery: 'Expert surgery',
                   lora: 'LoRA fine-tune',
                   distill: 'Distillation',
+                  induce: 'Add a targeted refusal',
+                  hneurons: 'Hallucination neurons',
+                  hneuron_bake: 'H-neuron bake',
+                  redteam: 'Red-team a control',
+                  embed_align: 'Align embeddings',
+                  embed_extract: 'Reverse-engineer embeddings',
+                  embed_recon: 'Reconstruct embeddings',
                 }[run.kind] ?? run.kind}{' '}
                 #{run.id}
               </h1>
@@ -132,35 +148,14 @@ export default function WeightRunDetailPage() {
         </div>
 
         {isActive && (
-          <div className="rounded-lg border bg-blue-50 p-4 dark:bg-blue-950">
-            <div className="mb-2 flex items-center gap-2">
-              <div
-                className={`h-2 w-2 rounded-full ${
-                  isConnected ? 'animate-pulse bg-green-500' : 'bg-gray-400'
-                }`}
-              />
-              <span className="text-sm font-medium">
-                {isConnected ? 'Live monitoring active' : 'Connecting…'}
-              </span>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {progress?.message ?? 'Waiting to start…'}
-            </p>
-            {training && progress?.data?.step != null && (
-              <p className="mt-1 font-mono text-xs text-muted-foreground">
-                {progress.data.phase === 'eval'
-                  ? `eval loss ${Number(progress.data.eval_loss).toFixed(4)} at step ${progress.data.step}`
-                  : `step ${progress.data.step}${progress.data.total ? `/${progress.data.total}` : ''}` +
-                    (progress.data.loss != null ? ` · loss ${Number(progress.data.loss).toFixed(4)}` : '') +
-                    (progress.data.lr != null ? ` · lr ${Number(progress.data.lr).toExponential(1)}` : '')}
-              </p>
-            )}
+          <>
+            <LiveStepView history={history} progress={progress} isConnected={isConnected} />
             {progress?.event_type === 'weights_queued' && (
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Only one model-heavy job runs at a time, so this is queued rather than stuck.
               </p>
             )}
-          </div>
+          </>
         )}
 
         {run.status === 'failed' && (
@@ -168,6 +163,16 @@ export default function WeightRunDetailPage() {
             <p className="mb-1 text-sm font-medium">Run failed</p>
             <p className="font-mono text-sm text-muted-foreground">{run.error}</p>
           </div>
+        )}
+
+        {/* Plain-language verdict before the charts, for every completed run. */}
+        {run.status === 'completed' && <ResultSummary kind={run.kind} summary={summary} />}
+
+        {run.status === 'completed' && run.kind === 'induce' && <InduceSection summary={summary} />}
+        {run.status === 'completed' && run.kind === 'hneurons' && <HNeuronResults summary={summary} />}
+        {run.status === 'completed' && run.kind === 'redteam' && <RedteamLeakBars summary={summary} />}
+        {run.status === 'completed' && (run.kind === 'embed_align' || run.kind === 'embed_extract' || run.kind === 'embed_recon') && (
+          <EmbedResults kind={run.kind} summary={summary} />
         )}
 
         {summary.evaluation && <div className="rounded-lg border bg-card p-4 text-sm">
@@ -336,10 +341,21 @@ export default function WeightRunDetailPage() {
             />
 
             <p className="text-sm text-muted-foreground">
-              Nothing here was written to disk. To keep a configuration, derive the subspace at
-              that rank so the basis matches, then run the surgery stage with that strength.
+              Nothing here was written to disk. To keep a configuration, run the surgery stage
+              with that rank and strength (the basis is cut to its first rows), or{' '}
+              <Link
+                href={{ pathname: '/weights', query: { kind: 'autotune', source_model: run.source_model, source_run_id: run.source_run_id ?? '' } }}
+                className="underline"
+              >
+                let the autotune stage
+              </Link>{' '}
+              write the best admissible edit and verify it from disk.
             </p>
           </>
+        )}
+
+        {run.kind === 'autotune' && summary.trials && (
+          <AutotuneSection summary={summary} />
         )}
 
         {run.status === 'completed' && run.kind === 'compare' && summary.metrics && (
@@ -348,6 +364,10 @@ export default function WeightRunDetailPage() {
             deltas={summary.deltas}
             responses={summary.responses}
             prompts={summary.prompts}
+            factualFloor={summary.factual_floor}
+            languageDriftMax={summary.language_drift_max}
+            generation={summary.generation}
+            verdict={summary.verdict}
           />
         )}
 
@@ -389,6 +409,12 @@ export default function WeightRunDetailPage() {
                 />
               ) : run.kind === 'surgery' ? (
                 <MetricCard title="Beta" value={summary.manifest?.beta ?? '—'} subtitle="0 removes, 1 no-op, 2 amplifies" />
+              ) : run.kind === 'autotune' ? (
+                <MetricCard
+                  title="Edit written"
+                  value={summary.winner ? `rank ${summary.winner.rank}, k ${Number(summary.winner.k).toFixed(2)}` : '—'}
+                  subtitle={summary.winner ? `embeddings ${summary.winner.include_embeddings ? 'edited' : 'untouched'}` : undefined}
+                />
               ) : (
                 <MetricCard title="Method" value={summary.manifest?.method ?? run.method ?? '—'} subtitle={summary.manifest?.extra?.distill?.teacher ? `from ${summary.manifest.extra.distill.teacher}` : undefined} />
               )}
@@ -539,6 +565,67 @@ function RoutingSection({
         Nothing here was written to a model. Pick experts in the table and edit exactly those; the
         result is a normal model directory whose manifest says the edit was partial.
       </p>
+    </>
+  )
+}
+
+
+/**
+ * The loop's own record: what it tried, what it kept, and whether the bytes on
+ * disk passed. Rendered for failed runs too, since a search that found nothing
+ * admissible is a result, and the trial log is the whole point of it.
+ */
+function AutotuneSection({ summary }: { summary: any }) {
+  const winner = summary.winner ?? null
+  const verification = summary.verification ?? null
+  const spec = summary.spec ?? {}
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <MetricCard
+          title="Kept"
+          value={winner ? `rank ${winner.rank}, k ${Number(winner.k).toFixed(2)}` : 'nothing'}
+          subtitle={
+            winner
+              ? `embeddings ${winner.include_embeddings ? 'edited' : 'untouched'} · refuses ${(winner.refuse_harmful * 100).toFixed(0)}%`
+              : 'no candidate cleared every gate'
+          }
+        />
+        <MetricCard
+          title="Candidates tried"
+          value={`${summary.candidates_tried ?? 0} / ${summary.candidates_planned ?? '—'}`}
+          subtitle={summary.stopped_early ? 'stopped at the first that met the target' : 'scored every candidate, then picked'}
+        />
+        <MetricCard
+          title="Verified from disk"
+          value={verification ? (verification.passed ? 'yes' : 'NO') : '—'}
+          subtitle={verification ? `${verification.n_prompts} prompts, ${verification.sampled ? 'greedy + sampled' : 'greedy only'}` : 'not reached'}
+        />
+        <MetricCard
+          title="Refusal target"
+          value={summary.target_met ? 'met' : 'not met'}
+          subtitle={`≤ ${((spec.max_refusal ?? 0.1) * 100).toFixed(0)}% on held-out prompts`}
+        />
+      </div>
+
+      {summary.embeddings_tied && (
+        <p className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+          This model ties its output layer to the embedding table, so candidates that edit the
+          embeddings also rewrite the unembedding. The loop tried the untouched-embeddings edit
+          first for that reason.
+        </p>
+      )}
+
+      <FrontierChart
+        baseline={summary.baseline?.greedy}
+        frontier={summary.trials ?? []}
+        best={winner}
+        factualFloor={spec.factual_floor ?? 0.05}
+      />
+
+      <TrialLog trials={summary.trials ?? []} winner={winner} maxRefusal={spec.max_refusal} />
+
+      {verification && <VerificationCard report={verification} />}
     </>
   )
 }

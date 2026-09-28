@@ -5,8 +5,9 @@ import { ModelSelector } from '@/components/forms/ModelSelector'
 import { getSettings, saveSettings, DEFAULT_SETTINGS, AppSettings } from '@/lib/settings'
 import { toast } from '@/lib/toast'
 import { apiClient } from '@/lib/api'
-import { usePrompts } from '@/lib/hooks'
-import { getPromptDisplayName } from '@/lib/utils'
+import { GenerationSettings } from '@/components/forms/create-test/GenerationSettings'
+import { SystemPromptPicker } from '@/components/forms/create-test/SystemPromptPicker'
+import { settingsPromptChoice } from '@/lib/create-test-config'
 
 interface ApiKeyState {
   value: string
@@ -24,10 +25,6 @@ export default function SettingsPage() {
   const [openaiKey, setOpenaiKey] = useState<ApiKeyState>(EMPTY_KEY_STATE)
   const [anthropicKey, setAnthropicKey] = useState<ApiKeyState>(EMPTY_KEY_STATE)
   const [googleKey, setGoogleKey] = useState<ApiKeyState>(EMPTY_KEY_STATE)
-
-  const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' } as any)
-  const { data: patientSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'patient' } as any)
-  const { data: evaluatorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'evaluator' } as any)
 
   useEffect(() => {
     setSettings(getSettings())
@@ -66,6 +63,19 @@ export default function SettingsPage() {
   }
 
   function handleSave() {
+    for (const [role, generation] of [
+      ['Patient', settings.defaultPatientGeneration], ['Doctor', settings.defaultDoctorGeneration],
+      ['Evaluator', settings.defaultEvaluatorGeneration],
+    ] as const) {
+      const valid = (value: string, check: (n: number) => boolean) => value.trim() === ''
+        || (Number.isFinite(Number(value)) && check(Number(value)))
+      if (!valid(generation.temperature, (n) => n >= 0 && n <= 2)
+        || !valid(generation.top_p, (n) => n > 0 && n <= 1)
+        || !valid(generation.max_tokens, (n) => Number.isInteger(n) && n >= (role === 'Evaluator' ? 512 : 1) && n <= 32768)) {
+        toast.error(`${role}: enter valid generation values before saving.`)
+        return
+      }
+    }
     saveSettings(settings)
     setSaved(true)
     toast.success('Settings saved')
@@ -88,8 +98,7 @@ export default function SettingsPage() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold">Settings</h1>
           <p className="mt-2 text-muted-foreground">
-            Configure default models and analysis options. These pre-fill new test runs and analysis dialogs so you
-            don&apos;t have to repeat yourself.
+            Save models, system prompts, generation options, and analysis checks for new workflows. Explicit run settings and replayed configurations take precedence; changing these defaults never changes an existing run.
           </p>
         </div>
 
@@ -170,31 +179,17 @@ export default function SettingsPage() {
                   label="Default Doctor Model"
                   provider={settings.defaultDoctorProvider}
                   model={settings.defaultDoctorModel}
-                  onProviderChange={(v) => update('defaultDoctorProvider', v)}
+                  onProviderChange={(v) => setSettings((current) => ({ ...current, defaultDoctorProvider: v, defaultDoctorModel: '' }))}
                   onModelChange={(v) => update('defaultDoctorModel', v)}
                 />
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Default Doctor System Prompt
-                  </label>
-                  <select
-                    value={settings.defaultDoctorSystemPromptId ?? ''}
-                    onChange={(e) =>
-                      update(
-                        'defaultDoctorSystemPromptId',
-                        e.target.value ? Number(e.target.value) : null
-                      )
-                    }
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <option value="">Use built-in default</option>
-                    {doctorSystemPrompts.map((prompt) => (
-                      <option key={prompt.id} value={prompt.id}>
-                        {getPromptDisplayName(prompt)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <SystemPromptPicker role="doctor" value={settingsPromptChoice(settings, 'doctor')}
+                onChange={(choice) => setSettings((previous) => ({ ...previous,
+                  defaultDoctorSystemPromptId: choice.mode === 'library' ? choice.id : null,
+                  defaultDoctorSystemPromptText: choice.mode === 'custom' ? choice.text : '',
+                }))} />
+              <GenerationSettings value={settings.defaultDoctorGeneration}
+                onChange={(generation) => update('defaultDoctorGeneration', generation)}
+                showStrategies />
               </div>
 
               {/* Patient defaults */}
@@ -203,31 +198,17 @@ export default function SettingsPage() {
                   label="Default Patient Model"
                   provider={settings.defaultPatientProvider}
                   model={settings.defaultPatientModel}
-                  onProviderChange={(v) => update('defaultPatientProvider', v)}
+                  onProviderChange={(v) => setSettings((current) => ({ ...current, defaultPatientProvider: v, defaultPatientModel: '' }))}
                   onModelChange={(v) => update('defaultPatientModel', v)}
                 />
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    Default Patient System Prompt
-                  </label>
-                  <select
-                    value={settings.defaultPatientSystemPromptId ?? ''}
-                    onChange={(e) =>
-                      update(
-                        'defaultPatientSystemPromptId',
-                        e.target.value ? Number(e.target.value) : null
-                      )
-                    }
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <option value="">No system prompt (default behavior)</option>
-                    {patientSystemPrompts.map((prompt) => (
-                      <option key={prompt.id} value={prompt.id}>
-                        {getPromptDisplayName(prompt)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <SystemPromptPicker role="patient" value={settingsPromptChoice(settings, 'patient')}
+                onChange={(choice) => setSettings((previous) => ({ ...previous,
+                  defaultPatientSystemPromptId: choice.mode === 'library' ? choice.id : null,
+                  defaultPatientSystemPromptText: choice.mode === 'custom' ? choice.text : '',
+                }))} />
+              <GenerationSettings value={settings.defaultPatientGeneration}
+                onChange={(generation) => update('defaultPatientGeneration', generation)}
+                 />
               </div>
             </div>
           </section>
@@ -245,37 +226,30 @@ export default function SettingsPage() {
                 label="Evaluator Model"
                 provider={settings.defaultEvaluatorProvider}
                 model={settings.defaultEvaluatorModel}
-                onProviderChange={(v) => update('defaultEvaluatorProvider', v)}
+                onProviderChange={(v) => setSettings((current) => ({ ...current, defaultEvaluatorProvider: v, defaultEvaluatorModel: '' }))}
                 onModelChange={(v) => update('defaultEvaluatorModel', v)}
               />
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Default Evaluator System Prompt
-                </label>
-                <select
-                  value={settings.defaultEvaluatorSystemPromptId ?? ''}
-                  onChange={(e) =>
-                    update(
-                      'defaultEvaluatorSystemPromptId',
-                      e.target.value ? Number(e.target.value) : null
-                    )
-                  }
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <option value="">Use standard evaluator instructions</option>
-                  {evaluatorSystemPrompts.map((prompt) => (
-                    <option key={prompt.id} value={prompt.id}>
-                      {getPromptDisplayName(prompt)}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <SystemPromptPicker role="evaluator" value={settingsPromptChoice(settings, 'evaluator')}
+                onChange={(choice) => setSettings((previous) => ({ ...previous,
+                  defaultEvaluatorSystemPromptId: choice.mode === 'library' ? choice.id : null,
+                  defaultEvaluatorSystemPromptText: choice.mode === 'custom' ? choice.text : '',
+                }))} />
+              <GenerationSettings value={settings.defaultEvaluatorGeneration}
+                onChange={(generation) => update('defaultEvaluatorGeneration', generation)}
+                defaultTemperature={0.3} minTokens={512} />
             </div>
           </section>
+
+          <p className="text-sm text-muted-foreground">Blank generation numbers use the workflow default: temperature 0.7 for interviews, 0 for benchmarks, and 0.3 for evaluation. Benchmarks retain their standard answer format alongside your selected system prompt. ReACT requests generated reasoning; detection analyzes reasoning already in a transcript.</p>
 
           {/* Default Analysis Options */}
           <section className="rounded-lg border bg-card p-6">
             <h2 className="mb-1 text-lg font-semibold">Default Analysis Options</h2>
+            <label className="my-4 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={settings.defaultAutoAnalysis}
+                onChange={(e) => update('defaultAutoAnalysis', e.target.checked)} />
+              Analyze new tests automatically when they complete
+            </label>
             <p className="mb-6 text-sm text-muted-foreground">
               These options are pre-selected whenever you configure analysis for a test run.
             </p>

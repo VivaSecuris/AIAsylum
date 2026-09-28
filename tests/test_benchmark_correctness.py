@@ -140,7 +140,7 @@ class FakeModel:
 
 
 @pytest.mark.asyncio
-async def test_one_shot_is_independent_greedy_and_records_provenance(fake_dataset):
+async def test_one_shot_is_independent_and_records_selected_sampling_provenance(fake_dataset):
     model = FakeModel()
     result = await BenchmarkTest(benchmark_name='mmlu', num_samples=3).run(
         model, context={'seed': 7, 'max_new_tokens': 16, 'temperature': 0.9})
@@ -148,13 +148,14 @@ async def test_one_shot_is_independent_greedy_and_records_provenance(fake_datase
     for call, temperature, budget in model.calls:
         assert [m['role'] for m in call['messages']] == ['system', 'user']
         assert 'doctor' not in call['messages'][-1]['content'].lower()
-        assert call['temperature'] == temperature == 0.0
+        assert call['temperature'] == temperature == 0.9
         assert call['seed'] == 7 and budget == 16
     assert model.temperature == 0.7 and model.max_tokens == 4096
     assert result.metadata['dataset_provenance']['actual_count'] == 3
     assert result.metadata['scoring'] == {'version': 'final-answer-v4', 'method': 'mcq_final_answer'}
     assert len({r['sample_id'] for r in result.metadata['results']}) == 3
     assert result.metadata['generation']['prompt_protocol'] == 'zero-shot-direct-answer-v1'
+    assert result.metadata['generation']['temperature'] == 0.9
 
 
 @pytest.mark.asyncio
@@ -189,11 +190,12 @@ async def test_local_cancellation_does_not_release_gpu_while_generation_runs(mon
 
 def test_run_request_validates_sample_seed_and_budget():
     from vivasecuris.aiasylum.api.routes.benchmarks import BenchmarkRequest
-    for invalid in ({'num_samples': 0}, {'seed': -1}, {'max_new_tokens': 0}, {'max_new_tokens': 8193}):
+    for invalid in ({'num_samples': 0}, {'seed': -1}, {'max_new_tokens': 0}, {'max_new_tokens': 32769}):
         with pytest.raises(ValidationError):
             BenchmarkRequest(provider='transformers', model='example/model', benchmark='mmlu', **invalid)
     valid = BenchmarkRequest(provider='transformers', model='example/model', benchmark='mmlu')
     assert (valid.num_samples, valid.seed, valid.max_new_tokens) == (100, 0, 512)
+    assert BenchmarkRequest(provider='transformers', model='example/model', benchmark='mmlu', max_new_tokens=32768).max_new_tokens == 32768
 
 
 @pytest.mark.asyncio

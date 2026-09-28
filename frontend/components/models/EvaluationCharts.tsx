@@ -5,6 +5,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { DataTable } from '@/components/common/DataTable'
 import { useTestRuns } from '@/lib/hooks'
 import { apiClient, Assessment } from '@/lib/api'
+import { ModelChatLink } from '@/components/models/ModelChatLink'
 import { testRunModelRef } from '@/lib/test-run-display'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, ComposedChart, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
 
@@ -293,7 +294,7 @@ export function EvaluationCharts({ modelRefs, displayNames = {} }: EvaluationCha
   }))
 
   const columns = [
-    { key: 'model', header: 'Model', render: (stat: typeof modelStats[0]) => <span title={stat.model}>{modelLabel(stat.model)}</span> },
+    { key: 'model', header: 'Model', render: (stat: typeof modelStats[0]) => <ModelChatLink provider={stat.provider} model={stat.model}>{modelLabel(stat.model)}</ModelChatLink> },
     { key: 'provider', header: 'Provider' },
     { key: 'testCount', header: 'Total Tests' },
     { key: 'completedCount', header: 'Completed' },

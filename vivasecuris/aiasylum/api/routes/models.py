@@ -1,10 +1,12 @@
 """API routes for model management (e.g. Ollama list/pull)."""
 
 import logging
-from typing import List
+import asyncio
+import time
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.api.model_downloads import get_manager
 from vivasecuris.aiasylum.models.ollama import OllamaProvider
@@ -13,6 +15,91 @@ from vivasecuris.aiasylum.models.registry import list_providers
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class ModelChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=32000)
+
+
+class ModelChatRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    provider: str = Field(min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=2048)
+    messages: List[ModelChatMessage] = Field(max_length=100)
+    system_prompt: Optional[str] = Field(None, max_length=32000)
+    temperature: Optional[float] = Field(None, ge=0, le=2)
+    top_p: Optional[float] = Field(None, gt=0, le=1)
+    max_tokens: Optional[int] = Field(None, ge=1, le=32768)
+    seed: Optional[int] = Field(None, ge=0, le=2**32 - 1)
+    enable_cot: bool = False
+    device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+
+
+@router.post("/chat")
+async def chat_with_model(request: ModelChatRequest):
+    """One stateless turn through any registered provider, with optional ReACT."""
+    from vivasecuris.aiasylum.api.model_chat import chat_response, close_chat_model, generate_chat, validate_chat
+    from vivasecuris.aiasylum.api.model_jobs import hold
+    from vivasecuris.aiasylum.models import get_provider
+    from vivasecuris.aiasylum.models.registry import get_provider_info
+
+    provider_name, model_name = request.provider.strip().lower(), request.model.strip()
+    info = get_provider_info(provider_name)
+    if info is None or not model_name:
+        raise HTTPException(status_code=400, detail="A registered provider and nonempty model are required.")
+    history = [m.model_dump() for m in request.messages]
+    validate_chat(history, request.system_prompt)
+
+    async def turn():
+        started = time.perf_counter()
+        provider = model = None
+        try:
+            provider = get_provider(provider_name)
+            options = {key: getattr(request, key) for key in ("temperature", "max_tokens") if getattr(request, key) is not None}
+            if info.name == "transformers":
+                options.update(device=request.device, dtype=request.dtype)
+            model = provider.create_model(model_name, **options)
+            response, generation = await generate_chat(model, history, request)
+            return chat_response(response, time.perf_counter() - started, generation)
+        finally:
+            await close_chat_model(model, provider)
+            if info.name == "transformers":
+                from vivasecuris.aiasylum.models.transformers_local import clear_cache
+                clear_cache()
+
+    try:
+        if info.kind != "local":
+            return await turn()
+        # Cancellation cannot release the shared accelerator lease while the
+        # blocking worker is still generating.
+        async with hold(f"chat with {model_name}"):
+            worker = asyncio.create_task(asyncio.to_thread(lambda: asyncio.run(turn())))
+            cancelled = False
+            while True:
+                try:
+                    result = await asyncio.shield(worker)
+                    break
+                except asyncio.CancelledError:
+                    if worker.cancelled():
+                        raise
+                    cancelled = True
+                except Exception:
+                    if cancelled:
+                        raise asyncio.CancelledError()
+                    raise
+            if cancelled:
+                raise asyncio.CancelledError()
+            return result
+    except ImportError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Chat failed for %s/%s", provider_name, model_name)
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 class PullModelRequest(BaseModel):
@@ -109,11 +196,15 @@ async def list_model_providers():
 
 
 @router.get("/ollama", response_model=List[str])
-async def list_ollama_models():
-    """List Ollama models currently installed (from Ollama /api/tags)."""
+async def list_ollama_models(chat_only: bool = True):
+    """List installed Ollama models (from /api/tags).
+
+    By default only models that can chat: every picker that uses this list sends
+    chat requests, and an embedding model there fails the run.
+    """
     try:
         provider = OllamaProvider()
-        models = await provider.list_available_models()
+        models = await provider.list_available_models(chat_only=chat_only)
         return models
     except Exception as e:
         logger.warning(f"Failed to list Ollama models: {e}")

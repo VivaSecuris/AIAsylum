@@ -4,17 +4,53 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+# Serving defaults. Every provider samples at these unless a caller overrides
+# them, and the weight-surgery evaluators read them from here so a checkpoint is
+# gated under the same decoding the test harness will actually use.
+DEFAULT_TEMPERATURE = 0.7
+DEFAULT_TOP_P = 0.95
+
 
 @dataclass
 class ModelResponse:
-    """Response from a model."""
-    
+    """Response from a model.
+
+    ``content`` is the *visible answer* -- the text a user would have seen --
+    by construction: an inline reasoning block (``<think>...</think>``) is
+    split off here, when the response is built, and kept in
+    ``metadata["reasoning"]`` with ``metadata["reasoning_source"] = "inline"``.
+    Providers that receive reasoning separately set the same two keys with
+    source ``"provider"``. Every refusal detector, harm classifier, judge
+    prompt and judge-output parser reads ``content``, so the invariant holds
+    for all of them at once rather than one call site at a time. A response
+    built with plain content is untouched (``metadata`` stays ``None``).
+    """
+
     content: str
     model: str
     provider: str
     finish_reason: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        if not self.content or "<" not in self.content:
+            return
+        from vivasecuris.aiasylum.reasoning import split_reasoning
+
+        answer, reasoning = split_reasoning(self.content)
+        if reasoning is None:
+            return
+        self.content = answer
+        meta = dict(self.metadata or {})
+        if "reasoning" in meta:
+            # A provider already delivered reasoning separately and a tag still
+            # reached the text: keep the provider's, and keep the inline trace.
+            meta["reasoning_inline"] = reasoning
+        else:
+            meta["reasoning"] = reasoning
+            meta["reasoning_source"] = "inline"
+        self.metadata = meta
 
 
 class BaseModel(ABC):
@@ -24,7 +60,7 @@ class BaseModel(ABC):
         self,
         model_name: str,
         provider: str,
-        temperature: float = 0.7,
+        temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = 4096,
         **kwargs
     ):

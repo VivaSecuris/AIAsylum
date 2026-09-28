@@ -71,6 +71,9 @@ const invalidPatch = parseInterpPrefill({ options: JSON.stringify({ patch_compon
 assert(invalidPatch.warnings.length === 2);
 assert.equal(invalidPatch.patch.units, '');
 assert.equal(parseInterpPrefill({ prompt: 'alias', prompt_a: 'explicit' }).promptA, 'explicit');
+assert.equal(parseInterpPrefill({}, '/models/saved-default').modelA, '/models/saved-default');
+assert.equal(parseInterpPrefill({ model_a: '/models/selected' }, '/models/saved-default').modelA, '/models/selected');
+assert.equal(parseInterpPrefill({ options: JSON.stringify({ model_a: '/models/restored' }) }, '/models/saved-default').modelA, '/models/restored');
 """
     subprocess.run(
         [node, "-e", script, str(typescript), str(ROOT / "frontend/lib/interp-prefill.ts")],

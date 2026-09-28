@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from vivasecuris.aiasylum.api.model_catalog import checkpoint_readiness
+from vivasecuris.aiasylum.api.model_jobs import slot_status, try_process_lock
+from vivasecuris.aiasylum.database import InterpRun, TestRun, WeightRun, get_session
 
 # A Hub repository is ``namespace/name``; both halves are filesystem-safe by
 # Hub policy, and the check here keeps them that way before they become a
@@ -174,6 +176,7 @@ class DownloadManager:
         self._log_dir = log_dir
         self._spawn = spawn or _default_spawn
         self._lock = threading.Lock()
+        self._cache_mutation_lock = threading.Lock()
         self._records: Dict[str, Download] = {}
         self._procs: Dict[str, Any] = {}
 
@@ -221,6 +224,12 @@ class DownloadManager:
         return None
 
     def start(self, repo_id: str, revision: str = "main") -> Dict[str, Any]:
+        # Starting a download and deleting its repository must not pass their
+        # respective active-download checks concurrently.
+        with self._cache_mutation_lock:
+            return self._start(repo_id, revision)
+
+    def _start(self, repo_id: str, revision: str) -> Dict[str, Any]:
         repo_id = (repo_id or "").strip()
         revision = (revision or "main").strip() or "main"
         validate(repo_id, revision)
@@ -274,19 +283,41 @@ class DownloadManager:
         return record.as_dict(self.cache)
 
     def delete_cached(self, repo_id: str) -> Dict[str, Any]:
-        """Remove a repository from the cache. Refuses while it is being downloaded."""
+        """Remove cached weights only while no queued or active job can use them."""
         validate(repo_id, "main")
+        with self._cache_mutation_lock:
+            return self._delete_cached(repo_id)
+
+    def _delete_cached(self, repo_id: str) -> Dict[str, Any]:
         if self.active_for(repo_id) is not None:
             raise RuntimeError(f"{repo_id} is being downloaded; cancel that first.")
-        cache = self.cache.resolve()
-        repo = repo_dir(cache, repo_id)
-        if repo.is_symlink() or not repo.is_dir():
-            raise LookupError(f"{repo_id} is not in the cache at {cache}.")
-        if repo.resolve().parent != cache:
-            raise ValueError("Refusing to delete outside the cache directory.")
-        freed = blob_bytes(repo)
-        shutil.rmtree(repo)
-        return {"repo_id": repo_id, "freed_bytes": freed}
+        lease = try_process_lock()
+        if lease is None:
+            raise RuntimeError("A model job is using the server. Wait for it to finish before deleting checkpoints.")
+        try:
+            # The process lease covers loading and cleanup; queued rows cover
+            # jobs that have pinned a checkpoint but have not acquired it yet.
+            status = slot_status()
+            if status["held_by"] or status["waiting"]:
+                raise RuntimeError("Finish or cancel queued and active runs before deleting checkpoints.")
+            session = get_session()
+            try:
+                for cls in (TestRun, InterpRun, WeightRun):
+                    if session.query(cls.id).filter(cls.status.in_(["pending", "running", "queued", "paused"])).first():
+                        raise RuntimeError("Finish or cancel queued and active runs before deleting checkpoints.")
+            finally:
+                session.close()
+            cache = self.cache.resolve()
+            repo = repo_dir(cache, repo_id)
+            if repo.is_symlink() or not repo.is_dir():
+                raise LookupError(f"{repo_id} is not in the cache at {cache}.")
+            if repo.resolve().parent != cache:
+                raise ValueError("Refusing to delete outside the cache directory.")
+            freed = blob_bytes(repo)
+            shutil.rmtree(repo)
+            return {"repo_id": repo_id, "freed_bytes": freed}
+        finally:
+            lease.close()
 
     # -- internals -----------------------------------------------------------
 

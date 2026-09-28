@@ -16,7 +16,13 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
+
+# JSON metadata that tracks top-level key changes: without this, code that writes
+# ``row.meta_data["name"] = ...`` is silently never saved. Nested edits still need
+# the dict (or the nested value) reassigned.
+MetaJSON = MutableDict.as_mutable(JSON)
 
 Base = declarative_base()
 
@@ -50,7 +56,7 @@ class TestRun(Base):
     assessments = relationship("Assessment", back_populates="test_run", cascade="all, delete-orphan")
     
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     def __repr__(self) -> str:
         return f"<TestRun(id={self.id}, test_type={self.test_type}, status={self.status})>"
@@ -85,7 +91,7 @@ class TestResult(Base):
     flags = Column(JSON)  # List of flags (e.g., ["harmful", "jailbreak_attempt"])
     
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     test_run = relationship("TestRun", back_populates="results")
     
@@ -118,7 +124,7 @@ class ConversationTurn(Base):
     usage = Column(JSON)  # Token usage, etc.
     
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     test_run = relationship("TestRun", back_populates="conversations")
     
@@ -151,7 +157,7 @@ class Assessment(Base):
     recommendations = Column(Text)
     
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     test_run = relationship("TestRun", back_populates="assessments")
     
@@ -184,7 +190,7 @@ class BenchmarkResult(Base):
     # Details
     results = Column(JSON)  # Detailed results per sample
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     def __repr__(self):
         return f"<BenchmarkResult(id={self.id}, benchmark={self.benchmark_name}, score={self.score})>"
@@ -216,7 +222,7 @@ class PromptLibrary(Base):
     usage_count = Column(Integer, default=0)  # Number of times used in test runs
     
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     def __repr__(self):
         return f"<PromptLibrary(id={self.id}, name={self.name}, type={self.prompt_type}, target={self.target})>"
@@ -245,7 +251,7 @@ class TestSuite(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Metadata (renamed to avoid SQLAlchemy conflict)
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
     
     # Relationship to test runs
     test_runs = relationship("TestRun", back_populates="suite", cascade="all, delete-orphan")
@@ -302,7 +308,7 @@ class Conversation(Base):
     visibility = Column(String(32), default="private", nullable=False)
 
     # Free-form metadata about the conversation
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
 
     # Relationships with cascade so deleting a conversation removes all related data
     messages = relationship(
@@ -345,7 +351,7 @@ class Message(Base):
     model_name = Column(String(100), nullable=True)
     usage = Column(JSON, nullable=True)
 
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
 
     conversation = relationship("Conversation", back_populates="messages")
     safety_events = relationship(
@@ -388,7 +394,7 @@ class SafetyEvent(Base):
     # Sharing scope for this event: private, aggregated_only, full_opt_in
     share_scope = Column(String(32), default="aggregated_only", nullable=False, index=True)
 
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
 
     conversation = relationship(
         "Conversation",
@@ -422,7 +428,7 @@ class AnalysisArtifact(Base):
     # Sharing scope: private, aggregated_only, full_opt_in
     share_scope = Column(String(32), default="aggregated_only", nullable=False, index=True)
 
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
 
     conversation = relationship(
         "Conversation",
@@ -473,7 +479,7 @@ class InterpRun(Base):
     completed_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
 
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
 
     def __repr__(self) -> str:
         return f"<InterpRun(id={self.id}, mode={self.mode}, status={self.status})>"
@@ -535,7 +541,7 @@ class WeightRun(Base):
     completed_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
 
-    meta_data = Column("metadata", JSON, default=dict)
+    meta_data = Column("metadata", MetaJSON, default=dict)
 
     def __repr__(self) -> str:
         return f"<WeightRun(id={self.id}, kind={self.kind}, status={self.status})>"

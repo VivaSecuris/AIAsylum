@@ -25,7 +25,10 @@ class FactualityAnalyzer:
         """
         self.model = evaluator_model
         self.use_react_verification = use_react_verification
-        self.react_reasoner = ReACTReasoner(evaluator_model, max_iterations=5) if use_react_verification else None
+        self.react_reasoner = (
+            evaluator_model if getattr(evaluator_model, "framework_cot_enabled", False)
+            else ReACTReasoner(evaluator_model, max_iterations=5)
+        ) if use_react_verification else None
     
     async def analyze_factuality(
         self,

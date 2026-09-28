@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+# Stdlib-only at import time (torch is imported inside its functions).
+from vivasecuris.aiasylum.weights.capture import PROMPT_FORMAT_VERSION
+
 logger = logging.getLogger(__name__)
 
 # Below this held-out AUROC the probe is not separating the classes well enough
@@ -64,6 +67,10 @@ class ProbeSet:
     dataset_summary: dict = field(default_factory=dict)
     # AUROC reachable from prompt length alone on the same held-out rows.
     surface_baseline: Dict[str, float] = field(default_factory=dict)
+    # The prompt-formatting contract the captures were taken under; see
+    # ``weights.direction.RefusalDirection`` for the same two fields.
+    format_version: int = PROMPT_FORMAT_VERSION
+    template_applied: Optional[bool] = None
 
     @property
     def best(self) -> LayerProbe:
@@ -114,6 +121,8 @@ class ProbeSet:
             "beats_surface": self.beats_surface,
             "usable": self.usable,
             "min_usable_auroc": MIN_USABLE_AUROC,
+            "format_version": int(self.format_version),
+            "template_applied": self.template_applied,
             "claim": "descriptive",
             "detector": "logistic regression on raw residual activations",
             "note": (
@@ -196,6 +205,8 @@ class ProbeSet:
             group_auroc=meta.get("group_auroc", {}),
             dataset_summary=meta.get("dataset", {}),
             surface_baseline=meta.get("surface_baseline", {}),
+            format_version=int(meta.get("format_version", 1)),
+            template_applied=meta.get("template_applied"),
         )
 
 
@@ -252,6 +263,7 @@ def train_probes(
     n_perm: int = 20,
     seed: int = 0,
     progress: Optional[callable] = None,
+    template_applied: Optional[bool] = None,
 ) -> ProbeSet:
     """Fit one probe per layer on ``[n_layers+1, n, d]`` captures.
 
@@ -336,6 +348,7 @@ def train_probes(
         surface_baseline=dict(
             surface_baseline or (dataset_summary or {}).get("surface_baseline") or {}
         ),
+        template_applied=template_applied,
     )
     logger.info(
         "Best probe: layer %d, held-out AUROC %.3f (null p95 %.3f), ECE %.3f",

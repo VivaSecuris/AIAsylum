@@ -27,13 +27,59 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from vivasecuris.aiasylum.exceptions import ModelProviderError
-from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
+from vivasecuris.aiasylum.models.base import (
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    BaseModel,
+    ModelResponse,
+)
 from vivasecuris.aiasylum.models.providers import ModelProvider
 
 logger = logging.getLogger(__name__)
 
 _CACHE: Dict[Tuple[str, str, str], Tuple[Any, Any]] = {}
 _CACHE_LOCK = threading.Lock()
+
+
+def _chat_messages(prompt, system_prompt, messages) -> List[Dict[str, str]]:
+    """Copy the ordered messages used for formatting and request provenance."""
+    chat: List[Dict[str, str]] = []
+    if system_prompt:
+        chat.append({"role": "system", "content": system_prompt})
+    if messages:
+        chat.extend(dict(message) for message in messages)
+    if prompt:
+        chat.append({"role": "user", "content": prompt})
+    if not chat:
+        raise ModelProviderError("No prompt or messages supplied")
+    return chat
+
+
+def generation_kwargs(
+    temperature: Optional[float],
+    max_new_tokens: int,
+    pad_token_id: Optional[int],
+    top_p: float = DEFAULT_TOP_P,
+) -> Dict[str, Any]:
+    """The ``model.generate`` keyword arguments this provider serves with.
+
+    One builder for both the blocking and streaming paths, and for the
+    weight-surgery evaluators: a checkpoint that is gated with these exact
+    settings is gated under the decoding the test harness will use. Torch-free
+    so it can be unit-tested and imported anywhere.
+
+    ``temperature`` of 0 (or None) means greedy: HF rejects it as a sampling
+    temperature, so it is expressed as ``do_sample=False`` instead.
+    """
+    gen: Dict[str, Any] = {
+        "max_new_tokens": int(max_new_tokens),
+        "pad_token_id": pad_token_id,
+    }
+    if temperature and temperature > 0:
+        gen.update(do_sample=True, temperature=float(temperature), top_p=float(top_p))
+    else:
+        gen.update(do_sample=False)
+    return gen
 
 
 def _get_cached(model_path: str, device: str, dtype: str) -> Tuple[Any, Any]:
@@ -128,7 +174,7 @@ class TransformersModel(BaseModel):
     def __init__(
         self,
         model_name: str,
-        temperature: float = 0.7,
+        temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = 4096,
         device: str = "auto",
         dtype: str = "bfloat16",
@@ -156,38 +202,32 @@ class TransformersModel(BaseModel):
         except Exception:
             return {"surgery": None}
 
-    def _build_prompt(self, tokenizer, prompt, system_prompt, messages) -> str:
-        """Render messages through the model's chat template.
+    def _build_prompt(self, tokenizer, prompt, system_prompt, messages) -> "tuple[str, bool]":
+        """Render messages through the shared formatter: ``(text, template_applied)``.
 
-        Must match the formatting used during activation capture, or a derived
-        direction refers to positions this path never produces.
+        Delegates to ``weights.capture.format_chat`` -- the same code activation
+        capture uses -- so a derived direction cannot refer to positions this
+        path never produces. The caller must tokenize with
+        ``add_special_tokens=not template_applied``.
         """
-        chat: List[Dict[str, str]] = []
-        if system_prompt:
-            chat.append({"role": "system", "content": system_prompt})
-        if messages:
-            chat.extend(messages)
-        if prompt:
-            chat.append({"role": "user", "content": prompt})
-        if not chat:
-            raise ModelProviderError("No prompt or messages supplied")
+        from vivasecuris.aiasylum.weights.capture import format_chat
 
-        if getattr(tokenizer, "chat_template", None) is None:
-            return "\n\n".join(m.get("content", "") for m in chat)
-        from vivasecuris.aiasylum.weights.capture import render_chat
-
-        return render_chat(tokenizer, chat)
+        return format_chat(tokenizer, _chat_messages(prompt, system_prompt, messages))
 
     def _generate_sync(self, prompt, system_prompt, messages, **kwargs) -> ModelResponse:
         import torch
 
         model, tokenizer = _get_cached(self.model_name, self.device, self.dtype)
+        chat = _chat_messages(prompt, system_prompt, messages)
+        request_system_prompts = [msg.get("content", "") for msg in chat if msg.get("role") == "system"]
         if os.environ.get("AIASYLUM_BENCHMARK_RUNTIME") == "1":
             from vivasecuris.aiasylum.models.benchmark_loader import prepare_benchmark_inputs
-            inputs = prepare_benchmark_inputs(tokenizer, prompt, system_prompt, messages, model.device)
+            inputs = prepare_benchmark_inputs(tokenizer, "", None, chat, model.device)
         else:
-            text = self._build_prompt(tokenizer, prompt, system_prompt, messages)
-            inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(model.device)
+            from vivasecuris.aiasylum.weights.capture import format_chat
+
+            text, applied = format_chat(tokenizer, chat)
+            inputs = tokenizer(text, return_tensors="pt", add_special_tokens=not applied).to(model.device)
         prompt_tokens = int(inputs["input_ids"].shape[1])
 
         temperature = kwargs.get("temperature", self.temperature)
@@ -196,15 +236,10 @@ class TransformersModel(BaseModel):
         if seed is not None:
             torch.manual_seed(int(seed))
 
-        gen: Dict[str, Any] = {
-            "max_new_tokens": max_new,
-            "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
-        }
-        # temperature=0 means greedy; HF rejects it as a sampling temperature.
-        if temperature and temperature > 0:
-            gen.update(do_sample=True, temperature=float(temperature), top_p=kwargs.get("top_p", 0.95))
-        else:
-            gen.update(do_sample=False)
+        gen = generation_kwargs(
+            temperature, max_new, tokenizer.pad_token_id or tokenizer.eos_token_id,
+            top_p=kwargs.get("top_p", DEFAULT_TOP_P),
+        )
 
         with torch.no_grad():
             out = model.generate(**inputs, **gen)
@@ -215,7 +250,9 @@ class TransformersModel(BaseModel):
 
         metadata = dict(self._manifest_meta)
         metadata.update(device=str(model.device), dtype=str(self.dtype),
-                        model_revision=getattr(model.config, "_commit_hash", None))
+                        model_revision=getattr(model.config, "_commit_hash", None),
+                        request_system_prompts=request_system_prompts,
+                        request_system_prompts_source="provider")
 
         return ModelResponse(
             content=content,
@@ -271,23 +308,19 @@ class TransformersModel(BaseModel):
 
         try:
             model, tokenizer = _get_cached(self.model_name, self.device, self.dtype)
-            text = self._build_prompt(tokenizer, prompt, system_prompt, messages)
-            inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(model.device)
+            text, applied = self._build_prompt(tokenizer, prompt, system_prompt, messages)
+            inputs = tokenizer(text, return_tensors="pt", add_special_tokens=not applied).to(model.device)
 
             temperature = kwargs.get("temperature", self.temperature)
             seed = kwargs.get("seed")
             if seed is not None:
                 torch.manual_seed(int(seed))
 
-            gen: Dict[str, Any] = {
-                "max_new_tokens": int(kwargs.get("max_tokens", self.max_tokens)),
-                "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
-            }
-            if temperature and temperature > 0:
-                gen.update(do_sample=True, temperature=float(temperature),
-                           top_p=kwargs.get("top_p", 0.95))
-            else:
-                gen.update(do_sample=False)
+            gen = generation_kwargs(
+                temperature, int(kwargs.get("max_tokens", self.max_tokens)),
+                tokenizer.pad_token_id or tokenizer.eos_token_id,
+                top_p=kwargs.get("top_p", DEFAULT_TOP_P),
+            )
 
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             # generate() blocks until the whole completion is done, so it runs on
@@ -358,7 +391,7 @@ class TransformersProvider(ModelProvider):
     def create_model(
         self,
         model_name: str,
-        temperature: float = 0.7,
+        temperature: float = DEFAULT_TEMPERATURE,
         max_tokens: int = 4096,
         **kwargs,
     ) -> BaseModel:

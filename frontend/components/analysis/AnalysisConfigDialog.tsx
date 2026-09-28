@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { ModelSelector } from '@/components/forms/ModelSelector'
 import { getSettings } from '@/lib/settings'
-import { usePrompts } from '@/lib/hooks'
-import { getPromptDisplayName } from '@/lib/utils'
+import { SystemPromptPicker } from '@/components/forms/create-test/SystemPromptPicker'
+import type { SystemPromptChoice } from '@/lib/create-test-config'
+import { DEFAULT_EVALUATOR_TEMPERATURE, initialEvaluatorState, buildAnalysisConfig } from '@/lib/create-test-config'
+import { GenerationSettings } from '@/components/forms/create-test/GenerationSettings'
 
 interface AnalysisConfigDialogProps {
   isOpen: boolean
@@ -21,7 +23,13 @@ export interface AnalysisConfig {
   cot_analysis_mode: 'full' | 'partial' | 'none'
   enable_factuality_check: boolean
   enable_manipulation_analysis: boolean
-   evaluator_system_prompt_id?: number
+  evaluator_system_prompt_id?: number
+  /** Extra instructions added after the built-in scoring prompt (an ID wins over this). */
+  evaluator_system_prompt?: string
+  evaluator_temperature?: number
+  evaluator_max_tokens?: number
+  evaluator_top_p?: number
+  evaluator_enable_cot?: boolean
 }
 
 export function AnalysisConfigDialog({
@@ -33,47 +41,38 @@ export function AnalysisConfigDialog({
   doctorModel,
   isLoading = false,
 }: AnalysisConfigDialogProps) {
-  const savedSettings = getSettings()
-  // Prefer explicit defaultConfig, then global Settings defaults. Empty both fields means "use the
-  // test's doctor model" on the backend — we no longer clear evaluator when doctor is present, so
-  // Settings → default evaluator is honored when opening analysis from a test run page.
-  const [evaluatorProvider, setEvaluatorProvider] = useState(
-    defaultConfig?.evaluator_provider ?? savedSettings.defaultEvaluatorProvider ?? ''
-  )
-  const [evaluatorModel, setEvaluatorModel] = useState(
-    defaultConfig?.evaluator_model ?? savedSettings.defaultEvaluatorModel ?? ''
-  )
-  const [evaluatorSystemPromptId, setEvaluatorSystemPromptId] = useState<number | undefined>(
-    defaultConfig?.evaluator_system_prompt_id ?? savedSettings.defaultEvaluatorSystemPromptId ?? undefined
-  )
-  const [enableCotDetection, setEnableCotDetection] = useState(
-    defaultConfig?.enable_cot_detection ?? savedSettings.defaultEnableCotDetection
-  )
-  const [cotAnalysisMode, setCotAnalysisMode] = useState<'full' | 'partial' | 'none'>(
-    defaultConfig?.cot_analysis_mode ?? savedSettings.defaultCotAnalysisMode
-  )
-  const [enableFactualityCheck, setEnableFactualityCheck] = useState(
-    defaultConfig?.enable_factuality_check ?? savedSettings.defaultEnableFactualityCheck
-  )
-  const [enableManipulationAnalysis, setEnableManipulationAnalysis] = useState(
-    defaultConfig?.enable_manipulation_analysis ?? savedSettings.defaultEnableManipulationAnalysis
-  )
-
-  const { data: evaluatorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'evaluator' } as any)
+  const [initial] = useState(() => initialEvaluatorState(getSettings(), defaultConfig))
+  const [evaluatorProvider, setEvaluatorProvider] = useState(initial.provider)
+  const [evaluatorModel, setEvaluatorModel] = useState(initial.model)
+  const [evaluatorPrompt, setEvaluatorPrompt] = useState<SystemPromptChoice>(initial.systemPrompt)
+  const [generation, setGeneration] = useState({
+    temperature: initial.temperature, top_p: initial.top_p, max_tokens: initial.max_tokens,
+    enable_cot: initial.enable_cot, use_dynamic_strategies: false,
+  })
+  const [enableCotDetection, setEnableCotDetection] = useState(initial.enable_cot_detection)
+  const [cotAnalysisMode, setCotAnalysisMode] = useState(initial.cot_analysis_mode)
+  const [enableFactualityCheck, setEnableFactualityCheck] = useState(initial.enable_factuality_check)
+  const [enableManipulationAnalysis, setEnableManipulationAnalysis] = useState(initial.enable_manipulation_analysis)
+  const generationInvalid = [
+    [generation.temperature, (n: number) => n >= 0 && n <= 2],
+    [generation.top_p, (n: number) => n > 0 && n <= 1],
+    [generation.max_tokens, (n: number) => Number.isInteger(n) && n >= 512 && n <= 32768],
+  ].some(([value, valid]) => typeof value === 'string' && value.trim() !== ''
+    && (typeof valid !== 'function' || !Number.isFinite(Number(value)) || !valid(Number(value))))
+  const invalid = generationInvalid || (!!evaluatorProvider !== !!evaluatorModel.trim())
+    || (evaluatorPrompt.mode === 'custom' && !evaluatorPrompt.text.trim())
 
   if (!isOpen) return null
 
   const handleConfirm = () => {
-    const config = {
-      evaluator_provider: evaluatorProvider || undefined,
-      evaluator_model: evaluatorModel || undefined,
-      enable_cot_detection: enableCotDetection,
+    if (invalid) return
+    const config = buildAnalysisConfig({
+      ...initial, ...generation, provider: evaluatorProvider, model: evaluatorModel,
+      systemPrompt: evaluatorPrompt, enable_cot_detection: enableCotDetection,
       cot_analysis_mode: cotAnalysisMode,
       enable_factuality_check: enableFactualityCheck,
       enable_manipulation_analysis: enableManipulationAnalysis,
-      evaluator_system_prompt_id: evaluatorSystemPromptId,
-    }
-    console.log('AnalysisConfigDialog: Confirming with config:', config)
+    }) as AnalysisConfig
     onConfirm(config)
     onClose()
   }
@@ -118,29 +117,20 @@ export function AnalysisConfigDialog({
               label=""
               provider={evaluatorProvider}
               model={evaluatorModel}
-              onProviderChange={setEvaluatorProvider}
+              onProviderChange={(provider) => { setEvaluatorProvider(provider); setEvaluatorModel('') }}
               onModelChange={setEvaluatorModel}
             />
             <p className="mt-2 text-xs text-muted-foreground">
               Leave empty to use the doctor model as the evaluator
             </p>
 
-            <div className="mt-4 space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">Evaluator System Prompt (Optional)</label>
-              <select
-                value={evaluatorSystemPromptId ?? ''}
-                onChange={(e) =>
-                  setEvaluatorSystemPromptId(e.target.value ? Number(e.target.value) : undefined)
-                }
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              >
-                <option value="">Use standard evaluator instructions</option>
-                {evaluatorSystemPrompts.map((prompt) => (
-                  <option key={prompt.id} value={prompt.id}>
-                    {getPromptDisplayName(prompt)}
-                  </option>
-                ))}
-              </select>
+            <div className="mt-4">
+              <SystemPromptPicker role="evaluator" value={evaluatorPrompt} onChange={setEvaluatorPrompt} />
+            </div>
+            <div className="mt-4">
+              <GenerationSettings value={generation} onChange={setGeneration}
+                defaultTemperature={DEFAULT_EVALUATOR_TEMPERATURE} minTokens={512} />
+              <p className="mt-2 text-xs text-muted-foreground">Request reasoning controls the evaluator’s output format. Detection below analyzes the recorded transcript separately.</p>
             </div>
           </div>
 
@@ -227,6 +217,7 @@ export function AnalysisConfigDialog({
           </div>
         </div>
 
+        {invalid && <p className="px-6 pb-3 text-sm text-destructive">Choose both evaluator fields or leave both blank, use a nonempty custom prompt, and enter valid sampling values (temperature 0–2, top-p above 0 through 1, max tokens 512–32768).</p>}
         {/* Footer - Fixed */}
         <div className="px-6 py-4 border-t flex justify-end gap-3 flex-shrink-0">
           <button
@@ -242,7 +233,7 @@ export function AnalysisConfigDialog({
               console.log('Dialog: Run Analysis button clicked')
               handleConfirm()
             }}
-            disabled={isLoading}
+            disabled={isLoading || invalid}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isLoading ? 'Starting...' : 'Run Analysis'}

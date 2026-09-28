@@ -160,7 +160,7 @@ def test_dim_subspace_honors_capture_limit_and_saves_exact_partition(monkeypatch
 
 def test_chat_request_bounds():
     from pydantic import ValidationError
-    for extra in ({'max_tokens':0}, {'max_tokens':4097}, {'temperature':-1}, {'temperature':float('nan')},
+    for extra in ({'max_tokens':0}, {'max_tokens':32769}, {'temperature':-1}, {'temperature':float('nan')},
                   {'dtype':'int4'}, {'messages':[{'role':'system','content':'x'}]}):
         with pytest.raises(ValidationError):
             routes.ChatRequest.model_validate({'messages':[{'role':'user','content':'hello'}], **extra})

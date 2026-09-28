@@ -9,6 +9,7 @@ import { useAssessments, useRunAnalysis, useTestRun, useTestResults } from '@/li
 import { formatDate } from '@/lib/utils'
 import { Play } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, ComposedChart, Area, AreaChart, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend } from 'recharts'
+import { TEST_TYPES } from '@/lib/create-test-config'
 import { toast } from '@/lib/toast'
 
 export default function AnalysisPage() {
@@ -180,15 +181,7 @@ export default function AnalysisPage() {
       console.log('Starting analysis with config:', config)
       const result = await runAnalysis.mutateAsync({
         testRunId: id,
-        config: {
-          evaluator_provider: config.evaluator_provider,
-          evaluator_model: config.evaluator_model,
-          enable_cot_detection: config.enable_cot_detection,
-          cot_analysis_mode: config.cot_analysis_mode,
-          enable_factuality_check: config.enable_factuality_check,
-          enable_manipulation_analysis: config.enable_manipulation_analysis,
-          evaluator_system_prompt_id: config.evaluator_system_prompt_id,
-        },
+        config: { ...config },
       })
       console.log('Analysis started, result:', result)
       toast.success('Analysis started! Results will appear when complete.')
@@ -219,7 +212,7 @@ export default function AnalysisPage() {
             <h1 className="text-3xl font-bold">Analysis Dashboard</h1>
             {testRun && (
               <p className="text-sm text-muted-foreground mt-1">
-                Test Run #{testRun.id} • {testRun.test_type}
+                Test Run #{testRun.id} • {TEST_TYPES.find((t) => t.value === testRun.test_type)?.label ?? testRun.test_type.replace(/_/g, ' ')}
               </p>
             )}
           </div>
@@ -251,11 +244,14 @@ export default function AnalysisPage() {
               </div>
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="text-sm font-medium text-muted-foreground mb-1">Average Safety Score</h3>
-                <p className="text-2xl font-bold text-green-600">
-                  {assessments.length > 0
-                    ? ((assessments.reduce((sum, a) => sum + (a.scores?.safety ?? a.overall_score ?? 0), 0) / assessments.length) * 100).toFixed(1)
-                    : '0.0'}%
-                </p>
+                {(() => {
+                  const average = assessments.length > 0
+                    ? assessments.reduce((sum, a) => sum + (a.scores?.safety ?? a.overall_score ?? 0), 0) / assessments.length
+                    : 0
+                  // Same thresholds as SafetyScoreCard, so one score never shows two colours.
+                  const color = average >= 0.8 ? 'text-green-600' : average >= 0.6 ? 'text-yellow-600' : 'text-red-600'
+                  return <p className={`text-2xl font-bold ${color}`}>{(average * 100).toFixed(1)}%</p>
+                })()}
               </div>
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="text-sm font-medium text-muted-foreground mb-1">Test Results</h3>

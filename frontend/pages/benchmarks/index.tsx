@@ -11,6 +11,8 @@ import { formatApiError, formatDateTime } from '@/lib/utils'
 
 export default function BenchmarksPage() {
   const router = useRouter()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const id = typeof router.query.campaign === 'string' ? router.query.campaign : undefined
   const pageTop = useRef<HTMLDivElement>(null)
   useEffect(() => { pageTop.current?.scrollIntoView({ block: 'start' }) }, [id])
@@ -21,7 +23,7 @@ export default function BenchmarksPage() {
   const [initial, setInitial] = useState<BenchmarkCampaignRequest>()
   const [formKey, setFormKey] = useState(0)
   const newComparison = (repeat = false) => {
-    setInitial(repeat && campaign ? { name: campaign.name, models: campaign.models, benchmarks: campaign.benchmarks, num_samples: campaign.num_samples, seed: campaign.seed, max_new_tokens: campaign.max_new_tokens } : undefined)
+    setInitial(repeat && campaign ? { name: campaign.name, models: campaign.models, benchmarks: campaign.benchmarks, num_samples: campaign.num_samples, seed: campaign.seed, max_new_tokens: campaign.max_new_tokens, enable_cot: campaign.enable_cot ?? false, temperature: campaign.temperature ?? 0, top_p: campaign.top_p, patient_system_prompt_id: campaign.patient_system_prompt ? undefined : campaign.patient_system_prompt_id, patient_system_prompt: campaign.patient_system_prompt, patient_prompt_framing: campaign.patient_prompt_framing } : undefined)
     setFormKey((key) => key + 1)
     start.reset()
     void router.push('/benchmarks', undefined, { shallow: true })
@@ -33,6 +35,6 @@ export default function BenchmarksPage() {
     {listLoading && <p role="status" className="text-sm text-muted-foreground">Loading saved comparisons…</p>}
     {(error || listError) && <div role="alert" className="space-y-2 rounded-lg border border-destructive/30 p-4 text-sm"><p className="text-destructive">{error && campaign ? 'Connection interrupted. Showing the last received results; remote runs can continue while disconnected.' : formatApiError(error || listError, 'Could not load saved comparisons')}</p><button type="button" className="rounded border px-3 py-1.5 hover:bg-muted" onClick={() => { void refreshList(); if (id) void refreshCampaign() }}>Reconnect</button></div>}
     {!id && !!list?.campaigns.length && <section aria-label="Recent benchmark comparisons" className="grid gap-3 md:grid-cols-3">{list.campaigns.slice(0, 3).map((item) => <Link key={item.id} href={{ pathname: '/benchmarks', query: { campaign: item.id } }} className="rounded-lg border bg-card p-4 hover:border-primary"><p className="break-words text-sm font-medium">{item.name}</p><p className="mt-1 text-xs text-muted-foreground">{item.models.length} models · {item.completed} / {item.total} complete</p><p className="mt-2 text-xs font-medium text-primary">{activeCampaign(item) ? 'View running comparison →' : 'View saved results →'}</p></Link>)}</section>}
-    {id ? <>{isLoading && <p role="status" className="rounded-xl border p-8 text-center text-muted-foreground">Loading benchmark results…</p>}{campaign && <CampaignResults key={campaign.id} campaign={campaign} onRepeat={() => newComparison(true)} />}</> : <CampaignBuilder key={formKey} initial={initial} pending={start.isPending} error={start.error ? formatApiError(start.error, 'Could not start the comparison') : null} onStart={(request) => start.mutate(request, { onSuccess: (created) => { void router.push({ pathname: '/benchmarks', query: { campaign: created.id } }, undefined, { shallow: true }) } })} />}
+    {id ? <>{isLoading && <p role="status" className="rounded-xl border p-8 text-center text-muted-foreground">Loading benchmark results…</p>}{campaign && <CampaignResults key={campaign.id} campaign={campaign} onRepeat={() => newComparison(true)} />}</> : mounted && <CampaignBuilder key={formKey} initial={initial} pending={start.isPending} error={start.error ? formatApiError(start.error, 'Could not start the comparison') : null} onStart={(request) => start.mutate(request, { onSuccess: (created) => { void router.push({ pathname: '/benchmarks', query: { campaign: created.id } }, undefined, { shallow: true }) } })} />}
   </div></Layout>
 }

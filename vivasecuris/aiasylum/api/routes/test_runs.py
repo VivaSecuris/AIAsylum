@@ -16,6 +16,7 @@ from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_RUNNING, STATU
 from vivasecuris.aiasylum.api.progress_events import progress_event_manager
 from vivasecuris.aiasylum.api.cancellation import cancellation_manager
 from vivasecuris.aiasylum.exceptions import TestExecutionError
+from vivasecuris.aiasylum.runner.run_config import normalize_test_config, validate_test_config, validate_patient_prompt_selection
 
 router = APIRouter()
 
@@ -32,6 +33,7 @@ class TestRunRequest(BaseModel):
     prompt_id: Optional[int] = None  # Optional prompt from library
     variables: Optional[dict] = None  # Variable values for prompt substitution (e.g., {"country": "France"})
     suite_id: Optional[int] = None  # Optional suite ID to link test run to a suite
+    name: Optional[str] = Field(None, max_length=200)  # Optional display name
 
 
 class TestRunUpdate(BaseModel):
@@ -58,6 +60,22 @@ class TestRunResponse(BaseModel):
         from_attributes = True
 
 
+def _visible_response_metadata(value, *, expose_reasoning: bool):
+    """Apply the transcript's reasoning policy to copied nested evidence too."""
+    if isinstance(value, list):
+        return [_visible_response_metadata(item, expose_reasoning=expose_reasoning) for item in value]
+    if not isinstance(value, dict):
+        return value
+    visible = {
+        key: _visible_response_metadata(item, expose_reasoning=expose_reasoning)
+        for key, item in value.items()
+    }
+    if not expose_reasoning and value.get("reasoning_source") not in ("inline", "provider"):
+        visible.pop("reasoning", None)
+        visible.pop("reasoning_source", None)
+    return visible
+
+
 class ConversationTurnResponse(BaseModel):
     """Conversation turn response."""
     id: int
@@ -66,11 +84,15 @@ class ConversationTurnResponse(BaseModel):
     speaker: str
     prompt: str
     response: str
+    model_name: Optional[str] = None
+    model_provider: Optional[str] = None
+    usage: Optional[dict] = None
     created_at: Optional[datetime] = None
     metadata: Optional[dict] = None
     
     class Config:
         from_attributes = True
+        protected_namespaces = ()
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None
         }
@@ -78,11 +100,14 @@ class ConversationTurnResponse(BaseModel):
     @classmethod
     def from_orm(cls, obj, *, expose_reasoning: bool = False):
         """Create response from SQLAlchemy model, handling metadata conflict."""
-        # Reasoning is internal chain-of-thought. Only return it when the test
-        # was explicitly configured with CoT enabled (see get_conversation).
-        safe_metadata = dict(obj.meta_data or {})
-        if not expose_reasoning:
-            safe_metadata.pop("reasoning", None)
+        # A ReACT thought is framework-internal chain-of-thought and is only
+        # returned when the test was configured with CoT enabled (see
+        # get_conversation). A model's *own* trace -- an inline <think> block or
+        # a field the provider returned -- is part of what the model produced
+        # and is always returned, labelled by its source.
+        safe_metadata = _visible_response_metadata(
+            obj.meta_data or {}, expose_reasoning=expose_reasoning,
+        )
         return cls(
             id=obj.id,
             test_run_id=obj.test_run_id,
@@ -90,6 +115,9 @@ class ConversationTurnResponse(BaseModel):
             speaker=obj.speaker,
             prompt=obj.prompt,
             response=obj.response,
+            model_name=getattr(obj, "model_name", None),
+            model_provider=getattr(obj, "model_provider", None),
+            usage=getattr(obj, "usage", None),
             created_at=obj.created_at,
             metadata=safe_metadata,
         )
@@ -199,6 +227,14 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
             test_config["prompt_id"] = request.prompt_id
         if request.variables:
             test_config["variables"] = request.variables
+        errors = validate_test_config(test_config)
+        if errors:
+            raise HTTPException(status_code=422, detail="; ".join(errors))
+        normalize_test_config(test_config)
+        try:
+            validate_patient_prompt_selection(session, request.test_type, test_config)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         
         # Validate group_therapy test type
         if request.test_type == TEST_TYPE_GROUP_THERAPY:
@@ -230,7 +266,8 @@ async def create_test_run(request: TestRunRequest, background_tasks: BackgroundT
             status=STATUS_PENDING,
             suite_id=request.suite_id,
             meta_data={"test_config": test_config, "lineage_parent": request.lineage_parent,
-                       "lineage_id": uuid4().hex},
+                       "lineage_id": uuid4().hex,
+                       **({"name": request.name.strip()} if request.name and request.name.strip() else {})},
         )
         session.add(test_run)
         session.commit()

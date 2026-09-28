@@ -18,6 +18,10 @@ interface FrontierRow {
   factual_drop: number
   degenerate: boolean
   accepted: boolean
+  include_embeddings?: boolean | null
+  language_drift?: number
+  drifted?: boolean
+  preview?: string
 }
 
 interface Props {
@@ -51,16 +55,21 @@ export function FrontierChart({ baseline, frontier, best, factualFloor = 0.05 }:
   const mark = (r: FrontierRow) => ({ ...r, x: r.factual_acc, y: r.refuse_harmful })
 
   const accepted = frontier.filter((r) => r.accepted).map(mark)
-  const rejected = frontier.filter((r) => !r.accepted && !r.degenerate).map(mark)
+  const drifted = frontier.filter((r) => !r.accepted && !r.degenerate && r.drifted).map(mark)
+  const rejected = frontier.filter((r) => !r.accepted && !r.degenerate && !r.drifted).map(mark)
   const degenerate = frontier.filter((r) => r.degenerate).map(mark)
   const bestPoint = best ? [mark(best as FrontierRow)] : []
+  const hooks = frontier.some((r) => r.preview === 'hooks')
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-sm">
       <h2 className="text-lg font-semibold">What compliance costs</h2>
       <p className="mb-4 text-sm text-muted-foreground">
-        Each point is one subspace rank at one removal strength, previewed at inference time.
-        Up is more compliant; right is more capable. Nothing here was written to disk.
+        Each point is one subspace rank at one removal strength,{' '}
+        {hooks
+          ? 'previewed with inference-time hooks (which never touch a tied lm_head)'
+          : 'applied to the real weights in memory and restored'}
+        . Up is more compliant; right is more capable.
       </p>
 
       <ResponsiveContainer width="100%" height={340}>
@@ -110,15 +119,19 @@ export function FrontierChart({ baseline, frontier, best, factualFloor = 0.05 }:
                 <div className="rounded-md border bg-background px-3 py-2 text-xs shadow-sm">
                   <div className="font-medium">
                     rank {p.rank} · k {p.k.toFixed(2)}
+                    {p.include_embeddings != null ? ` · embeddings ${p.include_embeddings ? 'edited' : 'untouched'}` : ''}
                   </div>
                   <div>refusal {pct(p.refuse_harmful)}</div>
                   <div>factual {pct(p.factual_acc)}</div>
+                  {p.language_drift != null && <div>language drift {pct(p.language_drift)}</div>}
                   <div className="mt-1">
                     {p.degenerate
                       ? 'degenerate — output collapsed'
-                      : p.accepted
-                        ? 'holds the capability floor'
-                        : 'below the capability floor'}
+                      : p.drifted
+                        ? 'answers in the wrong language'
+                        : p.accepted
+                          ? 'holds the capability floor'
+                          : 'below the capability floor'}
                   </div>
                 </div>
               )
@@ -126,6 +139,7 @@ export function FrontierChart({ baseline, frontier, best, factualFloor = 0.05 }:
           />
 
           <Scatter name="rejected" data={rejected} fill="#94a3b8" fillOpacity={0.5} />
+          <Scatter name="language drift" data={drifted} fill="#a855f7" />
           <Scatter name="degenerate" data={degenerate} fill="#f59e0b" />
           <Scatter name="admissible" data={accepted} fill="#3b82f6" />
           <Scatter name="recommended" data={bestPoint} fill="#10b981" shape="star" />
@@ -136,6 +150,7 @@ export function FrontierChart({ baseline, frontier, best, factualFloor = 0.05 }:
         <Key color="#10b981" label="recommended" />
         <Key color="#3b82f6" label="holds the floor" />
         <Key color="#94a3b8" label="costs too much capability" />
+        <Key color="#a855f7" label="answers in the wrong language" />
         <Key color="#f59e0b" label="degenerate" />
       </div>
 
@@ -147,17 +162,20 @@ export function FrontierChart({ baseline, frontier, best, factualFloor = 0.05 }:
           <p className="text-muted-foreground">
             Refuses {pct(best.refuse_harmful)} of harmful prompts while holding factual
             accuracy at {pct(best.factual_acc)} — a drop of{' '}
-            {(best.factual_drop * 100).toFixed(1)} points. Derive the subspace at exactly
-            this rank so the basis matches, then write it with that strength.
+            {(best.factual_drop * 100).toFixed(1)} points
+            {best.include_embeddings != null ? `, embeddings ${best.include_embeddings ? 'edited' : 'untouched'}` : ''}.
+            Write it with the surgery stage at this rank and strength (the basis is cut to its
+            first rows), or let the autotune stage write and verify it.
           </p>
         </div>
       ) : (
         <div className="mt-4 rounded-lg border border-yellow-500/50 bg-yellow-50 p-4 text-sm dark:bg-yellow-950">
-          <p className="font-medium">No configuration cleared the capability floor</p>
+          <p className="font-medium">No configuration cleared every gate</p>
           <p className="text-muted-foreground">
-            On this model the remaining refusals look entangled with general capability:
-            reaching them costs more factual accuracy than the floor allows. Raise the floor
-            knowingly, or accept the single-direction edit.
+            Every candidate either cost more factual accuracy than the floor allows, collapsed
+            into repetition, or drifted into another language. Try smaller ranks and strengths,
+            leave the embedding table untouched, or derive a better direction before raising
+            the floor.
           </p>
         </div>
       )}
@@ -183,27 +201,32 @@ function FrontierTable({ frontier, best }: { frontier: FrontierRow[]; best?: Fro
         <tr className="border-b text-left text-xs text-muted-foreground">
           <th className="py-1 font-medium">rank</th>
           <th className="py-1 font-medium">k</th>
+          <th className="py-1 font-medium">emb</th>
           <th className="py-1 font-medium">refusal</th>
           <th className="py-1 font-medium">factual</th>
+          <th className="py-1 font-medium">drift</th>
           <th className="py-1 font-medium">verdict</th>
         </tr>
       </thead>
       <tbody>
         {frontier.map((r, i) => {
           const isBest = best && r.rank === best.rank && r.k === best.k
+            && (best.include_embeddings ?? null) === (r.include_embeddings ?? null)
           return (
             <tr
               key={i}
               className={[
                 'border-b last:border-0',
                 r.degenerate ? 'bg-amber-50/60 dark:bg-amber-950/30' : '',
+                r.drifted ? 'bg-purple-50/60 dark:bg-purple-950/30' : '',
                 isBest ? 'font-medium' : '',
               ].join(' ')}
             >
               <td className="py-1 font-mono">{r.rank}</td>
               <td className="py-1 font-mono">{r.k.toFixed(2)}</td>
+              <td className="py-1 text-xs">{r.include_embeddings == null ? '—' : r.include_embeddings ? 'yes' : 'no'}</td>
               <td className="py-1 font-mono">
-                {r.degenerate ? (
+                {r.degenerate || r.drifted ? (
                   <span className="text-muted-foreground line-through">
                     {pct(r.refuse_harmful)}
                   </span>
@@ -212,10 +235,15 @@ function FrontierTable({ frontier, best }: { frontier: FrontierRow[]; best?: Fro
                 )}
               </td>
               <td className="py-1 font-mono">{pct(r.factual_acc)}</td>
+              <td className="py-1 font-mono">{r.language_drift == null ? '—' : pct(r.language_drift)}</td>
               <td className="py-1 text-xs">
                 {r.degenerate ? (
                   <span className="text-amber-700 dark:text-amber-300">
                     degenerate — this refusal number is meaningless
+                  </span>
+                ) : r.drifted ? (
+                  <span className="text-purple-700 dark:text-purple-300">
+                    answers in the wrong language — this refusal number is meaningless
                   </span>
                 ) : r.accepted ? (
                   <span className="text-emerald-700 dark:text-emerald-300">

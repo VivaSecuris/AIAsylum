@@ -102,6 +102,19 @@ def test_rfm_direction_run_records_its_options(client, roots, no_preflight, no_e
     assert body["metadata"]["options"]["rfm_iterations"] == 4
 
 
+def test_allow_no_chat_template_is_off_by_default_and_recorded(client, roots, no_preflight, no_execute):
+    """The base-model override is an explicit choice, and the run remembers it."""
+    r = client.post("/api/v1/weights/runs", json={"kind": "direction", "source_model": "m"})
+    assert r.status_code == 200, r.text
+    assert r.json()["metadata"]["options"]["allow_no_chat_template"] is False
+
+    r = client.post("/api/v1/weights/runs", json={
+        "kind": "probe", "source_model": "m", "allow_no_chat_template": True,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["metadata"]["options"]["allow_no_chat_template"] is True
+
+
 def test_rfm_rank_and_iterations_are_validated(client, roots, no_preflight, no_execute):
     r = client.post("/api/v1/weights/runs", json={
         "kind": "direction", "source_model": "m", "method": "rfm_agop", "rfm_rank": 0})
@@ -159,10 +172,13 @@ def test_over_refusal_objective_needs_both_prompt_lists():
 def test_compare_extras_flags_are_recorded(client, roots, no_preflight, no_execute):
     r = client.post("/api/v1/weights/runs", json={
         "kind": "compare", "source_model": "m", "modified_model": "m-edited",
-        "method": "compare_rederive", "rederive": True, "misalignment_control": True})
+        "method": "compare_rederive", "rederive": True, "misalignment_control": True,
+        "enable_cot": True, "temperature": 0, "top_p": 0.65, "system_prompt": "Exact comparison prompt."})
     assert r.status_code == 200, r.text
     opts = r.json()["metadata"]["options"]
     assert opts["rederive"] is True and opts["misalignment_control"] is True
+    assert opts["enable_cot"] is True and opts["temperature"] == 0
+    assert opts["top_p"] == 0.65 and opts["system_prompt"] == "Exact comparison prompt."
 
 
 def test_headlines_carry_the_new_numbers():

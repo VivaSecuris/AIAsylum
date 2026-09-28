@@ -10,7 +10,14 @@ import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { DirectionPicker } from '@/components/weights/DirectionPicker'
 import { ExpertSelectionInput, formatExpertSelection, parseExpertSelection } from '@/components/weights/ExpertSelectionInput'
 import { PreflightPanel } from '@/components/weights/PreflightPanel'
+import { NewKindForms } from '@/components/weights/NewKindForms'
+import { NEW_KINDS, newKindRequest, restoreNewKindState, type NewKindState } from '@/lib/weight-kind-config'
+import { PipelineMap, type StepStatus } from '@/components/weights/PipelineMap'
+import { StepExplainer } from '@/components/weights/StepExplainer'
+import { Glossary } from '@/components/weights/Glossary'
 import { ModelPicker } from '@/components/models/ModelPicker'
+import { getSettings, getRoleGenerationDefaults } from '@/lib/settings'
+import { apiClient } from '@/lib/api'
 import { useModelCatalog } from '@/lib/model-catalog'
 import {
   useCreateWeightRun,
@@ -23,6 +30,17 @@ import {
   useWeightStages,
 } from '@/lib/hooks'
 import { WRITING_WEIGHT_KINDS } from '@/lib/api'
+
+type EmbeddingsMode = 'auto' | 'no' | 'yes' | 'both'
+// What the API's `embedding_modes` receives; `auto` lets the engine decide by whether lm_head is tied.
+const EMBEDDING_MODES: Record<EmbeddingsMode, boolean[] | undefined> = {
+  auto: undefined, no: [false], yes: [true], both: [false, true],
+}
+function embeddingsModeOf(modes: boolean[]): EmbeddingsMode {
+  const set = new Set(modes)
+  if (set.size === 2) return 'both'
+  return set.has(true) ? 'yes' : 'no'
+}
 import type { WeightRunKind, WeightRunRequest } from '@/lib/api'
 import { toast } from '@/lib/toast'
 import { formatApiError, formatDateTime } from '@/lib/utils'
@@ -108,6 +126,12 @@ export default function WeightsIndexPage() {
   const [subspaceRank, setSubspaceRank] = useState(1)
   const [rfmIterations, setRfmIterations] = useState(5)
   const [thinking, setThinking] = useState(false)
+  const [enableCot, setEnableCot] = useState(false)
+  const [temperature, setTemperature] = useState(0)
+  const [topP, setTopP] = useState(0.9)
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [promptError, setPromptError] = useState('')
+  const [promptLoading, setPromptLoading] = useState(false)
   const [timelinePrompts, setTimelinePrompts] = useState(0)
   const [rederive, setRederive] = useState(false)
   const [misalignmentControl, setMisalignmentControl] = useState(false)
@@ -116,6 +140,14 @@ export default function WeightsIndexPage() {
   const [factualFloor, setFactualFloor] = useState(0.05)
   const [ranksText, setRanksText] = useState('1,2,3,4,6,8')
   const [ksText, setKsText] = useState('1.0,1.25,1.5')
+  // autotune
+  const [embeddingsMode, setEmbeddingsMode] = useState<EmbeddingsMode>('auto')
+  const [maxCandidates, setMaxCandidates] = useState(16)
+  const [stopAtFirst, setStopAtFirst] = useState(false)
+  const [maxRefusal, setMaxRefusal] = useState(0.1)
+  const [languageDriftMax, setLanguageDriftMax] = useState(0.1)
+  const [verifySampled, setVerifySampled] = useState(true)
+  const [samplingSeed, setSamplingSeed] = useState(0)
   const [modifiedModel, setModifiedModel] = useState('')
   const [acknowledged, setAcknowledged] = useState<string[]>([])
   const [pooling, setPooling] = useState<'last' | 'mean' | 'max' | 'last_k'>('mean')
@@ -152,10 +184,25 @@ export default function WeightsIndexPage() {
   const [distillTemperature, setDistillTemperature] = useState(2)
   const [ceWeight, setCeWeight] = useState(0.5)
   const [teacherMaxNewTokens, setTeacherMaxNewTokens] = useState(256)
+  const [nk, setNk] = useState<NewKindState>(() => restoreNewKindState())
 
   useEffect(() => {
     if (!router.isReady) return
     const query = router.query
+    const defaults = getSettings()
+    setSourceModel(['transformers', 'local'].includes(defaults.defaultPatientProvider) && defaults.defaultPatientModel
+      ? defaults.defaultPatientModel : 'Qwen/Qwen2.5-0.5B-Instruct')
+    const generation = getRoleGenerationDefaults(defaults, 'patient')
+    let active = true
+    let suppliedSystemPrompt = false
+    setEnableCot(generation.enable_cot)
+    setTemperature(generation.temperature === '' ? 0 : Number(generation.temperature))
+    setTopP(generation.top_p === '' ? 0.9 : Number(generation.top_p))
+    setSystemPrompt(defaults.defaultPatientSystemPromptText || '')
+    setPromptError('')
+    setPromptLoading(false)
+    setNk(restoreNewKindState())
+    setForkOptions({})
     setDirectionId(null)
     setOutputName('')
     setModifiedModel('')
@@ -175,6 +222,13 @@ export default function WeightsIndexPage() {
     setFactualFloor(0.05)
     setRanksText('1,2,3,4,6,8')
     setKsText('1.0,1.25,1.5')
+    setEmbeddingsMode('auto')
+    setMaxCandidates(16)
+    setStopAtFirst(false)
+    setMaxRefusal(0.1)
+    setLanguageDriftMax(0.1)
+    setVerifySampled(true)
+    setSamplingSeed(0)
     setThinking(false)
     setTimelinePrompts(0)
     setRederive(false)
@@ -188,7 +242,7 @@ export default function WeightsIndexPage() {
     setPromptSuffix('')
     setElicitingSuffix(false)
     setMaxLength(512)
-    setMaxNewTokens(64)
+    setMaxNewTokens(generation.max_tokens !== '' ? Number(generation.max_tokens) : 64)
     setSeed(0)
     setDtype('bfloat16')
     setBatchSize(8)
@@ -211,7 +265,7 @@ export default function WeightsIndexPage() {
     setDistillTemperature(2)
     setCeWeight(0.5)
     setTeacherMaxNewTokens(256)
-    if (typeof query.kind === 'string' && ['direction', 'sweep', 'select', 'surgery', 'compare', 'probe', 'routing', 'expert_surgery', 'lora', 'distill'].includes(query.kind)) setKind(query.kind as WeightRunKind)
+    if (typeof query.kind === 'string' && ['direction', 'sweep', 'select', 'autotune', 'surgery', 'compare', 'probe', 'routing', 'expert_surgery', 'lora', 'distill', 'induce', 'hneurons', 'hneuron_bake', 'redteam', 'embed_align', 'embed_extract', 'embed_recon'].includes(query.kind)) setKind(query.kind as WeightRunKind)
     if (typeof query.expert_selection === 'string') {
       try {
         const picked = JSON.parse(query.expert_selection)
@@ -240,8 +294,19 @@ export default function WeightsIndexPage() {
       try {
         const opts = JSON.parse(query.options)
         if (opts && typeof opts === 'object' && !Array.isArray(opts)) {
+          // A recorded comparison is a complete protocol. Fields introduced
+          // later use the legacy values, never today's browser defaults.
+          if (query.kind === 'compare') {
+            setEnableCot(false)
+            setTemperature(0)
+            setTopP(0.9)
+            setSystemPrompt('')
+            setMaxNewTokens(64)
+            suppliedSystemPrompt = true
+          }
           const { source_model: _source, source_run_id: _run, output_name: _out, acknowledge: _ack, lineage_parent: _parent, ...settings } = opts
           setForkOptions(settings)
+          setNk(restoreNewKindState(opts))
           if (['last', 'mean', 'max', 'last_k'].includes(opts.pooling)) setPooling(opts.pooling)
           if (typeof opts.n_direct === 'number') setNDirect(opts.n_direct)
           if (typeof opts.n_jailbreak === 'number') setNJailbreak(opts.n_jailbreak)
@@ -265,7 +330,21 @@ export default function WeightsIndexPage() {
           if (typeof opts.factual_floor === 'number') setFactualFloor(opts.factual_floor)
           if (Array.isArray(opts.ranks)) setRanksText(opts.ranks.join(','))
           if (Array.isArray(opts.ks)) setKsText(opts.ks.join(','))
+          if (Array.isArray(opts.embedding_modes)) setEmbeddingsMode(embeddingsModeOf(opts.embedding_modes))
+          if (typeof opts.max_candidates === 'number') setMaxCandidates(opts.max_candidates)
+          if (typeof opts.stop_at_first_admissible === 'boolean') setStopAtFirst(opts.stop_at_first_admissible)
+          if (typeof opts.max_refusal === 'number') setMaxRefusal(opts.max_refusal)
+          if (typeof opts.language_drift_max === 'number') setLanguageDriftMax(opts.language_drift_max)
+          if (typeof opts.verify_sampled === 'boolean') setVerifySampled(opts.verify_sampled)
+          if (typeof opts.sampling_seed === 'number') setSamplingSeed(opts.sampling_seed)
           if (typeof opts.thinking === 'boolean') setThinking(opts.thinking)
+          if (typeof opts.enable_cot === 'boolean') setEnableCot(opts.enable_cot)
+          if (typeof opts.temperature === 'number') setTemperature(opts.temperature)
+          if (typeof opts.top_p === 'number') setTopP(opts.top_p)
+          if (typeof opts.system_prompt === 'string' || opts.system_prompt === null) {
+            suppliedSystemPrompt = true
+            setSystemPrompt(opts.system_prompt || '')
+          }
           if (typeof opts.timeline_prompts === 'number') setTimelinePrompts(opts.timeline_prompts)
           if (typeof opts.rederive === 'boolean') setRederive(opts.rederive)
           if (typeof opts.misalignment_control === 'boolean') setMisalignmentControl(opts.misalignment_control)
@@ -292,7 +371,20 @@ export default function WeightsIndexPage() {
         }
       } catch { setForkOptions({}) }
     } else setForkOptions({})
+    if (!suppliedSystemPrompt && defaults.defaultPatientSystemPromptId != null) {
+      setPromptLoading(true)
+      apiClient.getPrompt(defaults.defaultPatientSystemPromptId).then((prompt) => {
+        if (!active) return
+        if (prompt.prompt_type !== 'system_prompt' || prompt.target !== 'patient') {
+          setPromptError('The saved patient system prompt is unavailable for this role. Choose a prompt before running the comparison.')
+          return
+        }
+        setSystemPrompt(prompt.prompt_text)
+      }).catch(() => { if (active) setPromptError('Could not load the saved patient system prompt. Enter a system prompt or explicitly clear it before continuing.') })
+        .finally(() => { if (active) setPromptLoading(false) })
+    }
     setAcknowledged([])
+    return () => { active = false }
   }, [router.isReady, router.query.kind, router.query.source_model, router.query.modified_model, router.query.source_run_id, router.query.method, router.query.objective, router.query.objective_config, router.query.options, router.query.expert_selection])
 
   const { selection: expertSelection, errors: expertErrors } = useMemo(
@@ -325,6 +417,13 @@ export default function WeightsIndexPage() {
   })
 
   const stageSpec = stages?.stages.find((s) => s.name === kind)
+  // The loop's defaults are a smaller grid than the report-only search.
+  useEffect(() => {
+    if (kind !== 'autotune') return
+    if (ranksText === '1,2,3,4,6,8') setRanksText('1,2,3,4')
+    if (ksText === '1.0,1.25,1.5') setKsText('1.0,1.25')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind])
   const needs = (field: string) => stageSpec?.needs.includes(field) ?? false
 
   // Methods relevant to this stage, permanent ones separated from reversible
@@ -371,6 +470,11 @@ export default function WeightsIndexPage() {
   const tooFewPrompts =
     narrowed && selectedCount != null && selectedCount < (objectives?.min_per_class ?? 8)
 
+  const patchNk = (patch: Partial<NewKindState>) => setNk((prev) => ({ ...prev, ...patch }))
+  const [taskKey, setTaskKey] = useState<string | null>(null)
+  const [glossaryOpen, setGlossaryOpen] = useState(false)
+  const isNewKind = NEW_KINDS.includes(kind)
+
   async function launch() {
     try {
       const examples = kind === 'probe' && jailbreakExamples.trim() ? JSON.parse(jailbreakExamples) : undefined
@@ -384,12 +488,16 @@ export default function WeightsIndexPage() {
         objective: training ? (kind === 'distill' && datasetMode === 'objective' ? objective : 'dataset') : objective,
         max_length: maxLength,
         max_new_tokens: maxNewTokens,
+        enable_cot: kind === 'compare' ? enableCot : undefined,
+        temperature: kind === 'compare' ? temperature : undefined,
+        top_p: kind === 'compare' ? topP : undefined,
+        system_prompt: kind === 'compare' ? systemPrompt : undefined,
         seed, dtype, batch_size: batchSize,
         jailbreak_examples: examples,
         pooling: kind === 'probe' ? pooling : undefined,
         n_direct: kind === 'probe' ? nDirect : undefined,
         n_jailbreak: kind === 'probe' ? nJailbreak : undefined,
-        n_benign: kind === 'probe' ? nBenign : undefined,
+        n_benign: kind === 'probe' ? nBenign : kind === 'induce' ? forkOptions.n_benign : undefined,
         holdout_techniques: kind === 'probe' ? holdoutTechniques : undefined,
         prompt_suffix: kind === 'probe' ? promptSuffix.trim() || undefined : undefined,
         use_eliciting_suffix: kind === 'probe' ? elicitingSuffix : undefined,
@@ -436,11 +544,21 @@ export default function WeightsIndexPage() {
         timeline_prompts: kind === 'sweep' ? timelinePrompts : undefined,
         rederive: kind === 'compare' ? rederive || method === 'compare_rederive' : undefined,
         misalignment_control: kind === 'compare' ? misalignmentControl : undefined,
-        n_prompts: kind === 'sweep' || kind === 'select' || kind === 'compare' ? nPrompts : undefined,
-        ranks: kind === 'select' ? parseNums(ranksText).map(Math.round) : undefined,
-        ks: kind === 'select' ? parseNums(ksText) : undefined,
-        factual_floor: kind === 'select' ? factualFloor : undefined,
+        n_prompts: kind === 'sweep' || kind === 'select' || kind === 'compare' || kind === 'autotune' ? nPrompts : kind === 'induce' ? forkOptions.n_prompts : undefined,
+        ranks: kind === 'select' || kind === 'autotune' ? parseNums(ranksText).map(Math.round) : undefined,
+        ks: kind === 'select' || kind === 'autotune' ? parseNums(ksText) : undefined,
+        factual_floor: kind === 'select' || kind === 'autotune' ? factualFloor : undefined,
+        language_drift_max: kind === 'select' || kind === 'autotune' || kind === 'compare' ? languageDriftMax : undefined,
+        embedding_modes: kind === 'autotune' ? EMBEDDING_MODES[embeddingsMode] : undefined,
+        max_candidates: kind === 'autotune' ? maxCandidates : undefined,
+        stop_at_first_admissible: kind === 'autotune' ? stopAtFirst : undefined,
+        max_refusal: kind === 'autotune' ? maxRefusal : undefined,
+        // Induce also consumes these shared controls, but does not show the
+        // autotune editor. Keep its recorded choice, including explicit false.
+        verify_sampled: kind === 'autotune' ? verifySampled : kind === 'induce' ? forkOptions.verify_sampled : undefined,
+        sampling_seed: kind === 'autotune' ? samplingSeed : undefined,
         modified_model: kind === 'compare' ? modifiedModel.trim() : undefined,
+        ...newKindRequest(kind, nk),
         acknowledge: acknowledged,
       })
       toast.success(`Started ${stageSpec?.label.toLowerCase() ?? kind}`)
@@ -461,7 +579,7 @@ export default function WeightsIndexPage() {
         <div className="flex items-center gap-3">
           <Scissors className="h-7 w-7" />
           <div>
-            <h1 className="text-3xl font-bold">Weight Surgery</h1>
+            <h1 className="text-3xl font-bold">Neurosurgery</h1>
             <p className="text-sm text-muted-foreground">
               Derive a behavioural direction, prove it moves behaviour, then write it
               permanently into the weights.
@@ -522,9 +640,67 @@ export default function WeightsIndexPage() {
               <LoadingSpinner />
             ) : (
               <div className="space-y-6">
-                {/* The three stages, each independently launchable rather than
-                    a wizard hiding where you are in the chain. */}
-                <div className="grid gap-3 md:grid-cols-3">
+                {/* Goal-oriented tasks: pick what you want to do, then walk its
+                    pipeline. The flat stage list stays under "Advanced". */}
+                {(() => {
+                  const tasks = stages?.tasks ?? []
+                  const activeTask = tasks.find((t) => t.key === taskKey) ?? null
+                  return (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-medium">{activeTask ? activeTask.goal : 'What do you want to do?'}</p>
+                        <button type="button" onClick={() => setGlossaryOpen(true)} className="text-xs text-primary hover:underline">
+                          ? Glossary
+                        </button>
+                      </div>
+                      {!activeTask && tasks.length > 0 && (
+                        <div className="grid gap-3 md:grid-cols-3">
+                          {tasks.map((t) => (
+                            <button
+                              key={t.key}
+                              type="button"
+                              onClick={() => { setTaskKey(t.key); const s0 = t.steps[0]; setKind(s0.kind); if (s0.method) setMethod(s0.method); if (s0.objective) setObjective(s0.objective) }}
+                              className="rounded-lg border p-4 text-left transition-colors hover:bg-muted/50"
+                            >
+                              <p className="text-sm font-semibold">{t.title}</p>
+                              <p className="mt-1 text-xs text-muted-foreground">{t.goal}</p>
+                              <p className="mt-2 text-[11px] text-muted-foreground">{t.steps.map((s) => s.title).join(' → ')}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {activeTask && (
+                        <div className="space-y-3 rounded-lg border bg-card p-4">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-semibold">{activeTask.title}</p>
+                            <button type="button" onClick={() => setTaskKey(null)} className="text-xs text-muted-foreground hover:underline">← all tasks</button>
+                          </div>
+                          <PipelineMap
+                            steps={activeTask.steps}
+                            activeIndex={Math.max(0, activeTask.steps.findIndex((s) => s.kind === kind))}
+                            statuses={activeTask.steps.map((s): StepStatus => {
+                              if (s.kind === kind) return 'current'
+                              const st = stages?.stages.find((x) => x.name === s.kind)
+                              if (st?.needs.includes('source_run_id') && directions.length === 0) return 'locked'
+                              return 'available'
+                            })}
+                            onSelect={(i) => { const st = activeTask.steps[i]; setKind(st.kind); if (st.method) setMethod(st.method); if (st.objective) setObjective(st.objective) }}
+                          />
+                          {(() => {
+                            const step = activeTask.steps.find((s) => s.kind === kind)
+                            const stage = stages?.stages.find((s) => s.name === kind)
+                            return step ? <StepExplainer step={step} stage={stage} /> : null
+                          })()}
+                        </div>
+                      )}
+                    </>
+                  )
+                })()}
+
+                {/* Advanced: every stage, independently launchable. */}
+                <details open={!taskKey}>
+                  <summary className="cursor-pointer text-sm font-medium text-muted-foreground">Advanced: run a single stage</summary>
+                  <div className="mt-3 grid gap-3 md:grid-cols-3">
                   {stages?.stages.map((s) => {
                     const needsDirection = s.needs.includes('source_run_id')
                     const blocked = needsDirection && directions.length === 0
@@ -553,7 +729,8 @@ export default function WeightsIndexPage() {
                       </button>
                     )
                   })}
-                </div>
+                  </div>
+                </details>
 
                 <div className="rounded-lg border bg-card p-6 shadow-sm">
                   <div className="space-y-5">
@@ -801,8 +978,10 @@ export default function WeightsIndexPage() {
 
                     {/* 4. Inputs */}
                     <div>
-                      <ModelPicker id="weight-source-model" label={kind === 'compare' ? 'Original model (baseline)' : 'Source model'} value={sourceModel} onChange={setSourceModel} />
+                      <ModelPicker id="weight-source-model" label={kind === 'compare' ? 'Original model (baseline)' : (kind === 'embed_align' || kind === 'embed_extract' || kind === 'embed_recon') ? 'Model (local)' : 'Source model'} value={sourceModel} onChange={setSourceModel} />
                     </div>
+
+                    {isNewKind && <NewKindForms kind={kind} value={nk} onChange={patchNk} />}
 
                     {(needs('source_run_id') || (kind === 'expert_surgery' && method === 'expert_direction_scale')) && (
                       <div>
@@ -1032,23 +1211,124 @@ export default function WeightsIndexPage() {
                               parseNums(ksText).length *
                               (nPrompts + 12)}
                           </span>{' '}
-                          generations. Every candidate is previewed at inference time; nothing is
-                          written to disk.
+                          generations. Every candidate is applied to the real weights in memory and
+                          restored; nothing is written to disk.
+                        </div>
+                      </div>
+                    )}
+
+                    {kind === 'autotune' && (
+                      <div className="space-y-4">
+                        <div className="grid gap-4 sm:grid-cols-3">
+                          <div>
+                            <label className="text-xs font-medium">Ranks to try</label>
+                            <input value={ranksText} onChange={(e) => setRanksText(e.target.value)} className={INPUT} />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Strengths (k)</label>
+                            <input value={ksText} onChange={(e) => setKsText(e.target.value)} className={INPUT} />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Prompts per candidate</label>
+                            <input type="number" value={nPrompts} onChange={(e) => setNPrompts(parseInt(e.target.value) || 1)} className={INPUT} />
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 sm:grid-cols-3">
+                          <div>
+                            <label className="text-xs font-medium">Embedding table</label>
+                            <select value={embeddingsMode} onChange={(e) => setEmbeddingsMode(e.target.value as EmbeddingsMode)} className={INPUT}>
+                              <option value="auto">auto — untouched first when lm_head is tied</option>
+                              <option value="no">leave untouched</option>
+                              <option value="yes">edit it too</option>
+                              <option value="both">try both</option>
+                            </select>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              On Qwen2.5 0.5B–3B the unembedding shares the embedding table, so editing it also
+                              rewrites the output layer — the usual way an ablated model ends up answering in Chinese.
+                            </p>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Candidate budget</label>
+                            <input type="number" min={1} value={maxCandidates} onChange={(e) => setMaxCandidates(Math.max(1, parseInt(e.target.value) || 1))} className={INPUT} />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Refusal target</label>
+                            <input type="number" step="0.01" min={0} max={1} value={maxRefusal} onChange={(e) => setMaxRefusal(parseFloat(e.target.value) || 0)} className={INPUT} />
+                            <p className="mt-1 text-xs text-muted-foreground">Reported as met or not; never a gate.</p>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 sm:grid-cols-3">
+                          <div>
+                            <label className="text-xs font-medium">Capability floor — allowed drop in factual accuracy</label>
+                            <input type="number" step="0.01" value={factualFloor} onChange={(e) => setFactualFloor(parseFloat(e.target.value) || 0)} className={INPUT} />
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Language drift allowed</label>
+                            <input type="number" step="0.01" min={0} max={1} value={languageDriftMax} onChange={(e) => setLanguageDriftMax(parseFloat(e.target.value) || 0)} className={INPUT} />
+                            <p className="mt-1 text-xs text-muted-foreground">Share of answers that may be mostly outside the Latin script.</p>
+                          </div>
+                          <div>
+                            <label className="text-xs font-medium">Sampling seed</label>
+                            <input type="number" value={samplingSeed} onChange={(e) => setSamplingSeed(parseInt(e.target.value) || 0)} className={INPUT} />
+                          </div>
+                        </div>
+
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <label className="flex items-start gap-2 text-sm">
+                            <input type="checkbox" checked={!stopAtFirst} onChange={(e) => setStopAtFirst(!e.target.checked)} className="mt-1" />
+                            <span>
+                              Score every candidate, then pick
+                              <span className="block text-xs text-muted-foreground">
+                                Off: stop at the first candidate that clears every gate and meets the refusal target.
+                              </span>
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 text-sm">
+                            <input type="checkbox" checked={verifySampled} onChange={(e) => setVerifySampled(e.target.checked)} className="mt-1" />
+                            <span>
+                              Re-check under the serving sampling
+                              <span className="block text-xs text-muted-foreground">
+                                The winner and the written checkpoint are scored again at the provider&apos;s
+                                temperature and top-p, seeded. Greedy alone hides language drift.
+                              </span>
+                            </span>
+                          </label>
+                        </div>
+
+                        <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+                          Loop: apply a candidate to the real weights, score it on {nPrompts} held-out prompts plus
+                          the capability control, restore, next — least destructive first over{' '}
+                          {parseNums(ranksText).length} ranks × {parseNums(ksText).length} strengths ×{' '}
+                          {embeddingsMode === 'both' || embeddingsMode === 'auto' ? 2 : 1} embedding choice
+                          {embeddingsMode === 'both' || embeddingsMode === 'auto' ? 's' : ''} (
+                          {Math.min(maxCandidates, parseNums(ranksText).length * parseNums(ksText).length * (embeddingsMode === 'both' || embeddingsMode === 'auto' ? 2 : 1))}{' '}
+                          within the budget). The best admissible edit is written, reloaded from disk and gated
+                          again before it appears in Models. A run that finds nothing writes nothing and keeps its trial log.
                         </div>
                       </div>
                     )}
 
                     {kind === 'compare' && (
-                      <div>
+                      <div className="space-y-3">
                         <ModelPicker id="weight-modified-model" label="Custom model to evaluate" value={modifiedModel} onChange={(ref) => {
                           setModifiedModel(ref)
                           const original = catalog?.models.find((model) => model.model_ref === ref)?.source_model
                           if (original) setSourceModel(original)
                         }} />
                         <p className="mt-1 text-xs text-muted-foreground">
-                          Both models run through the identical loader and decoding, so the
-                          weights are the only variable.
+                          Both models use the same prompts, CoT setting, and decoding options. Changes in tokenizers and templates may also affect their answers.
                         </p>
+                        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enableCot} onChange={(e) => setEnableCot(e.target.checked)} />CoT (ReACT) for both models</label>
+                        <p className="text-xs text-muted-foreground">ReACT adds reasoning instructions to each question; only the final answer is scored. Increase the token budget to allow room for reasoning.</p>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="text-sm">Temperature<input type="number" min={0} max={2} step={0.1} value={temperature} onChange={(e) => setTemperature(Number(e.target.value))} className={INPUT} /></label>
+                          <label className="text-sm">Top-p<input type="number" min={0.01} max={1} step={0.05} value={topP} onChange={(e) => setTopP(Number(e.target.value))} className={INPUT} /></label>
+                        </div>
+                        <label className="block text-sm">System prompt for both models<textarea rows={3} maxLength={32000} disabled={promptLoading} value={systemPrompt} onChange={(e) => { setSystemPrompt(e.target.value); setPromptError('') }} className={INPUT} /></label>
+                        {promptLoading && <p role="status" className="text-xs">Loading saved system prompt…</p>}
+                        {promptError && <div role="alert" className="text-sm text-destructive">{promptError}<button type="button" className="ml-2 underline" onClick={() => { setPromptError(''); setSystemPrompt('') }}>Use no application system prompt</button></div>}
                       </div>
                     )}
 
@@ -1248,7 +1528,9 @@ export default function WeightsIndexPage() {
                                 : `at β=${beta} inside the chosen experts`
                             : kind === 'surgery'
                               ? useSubspace ? `removing the subspace at k=${kStrength}` : `at β=${beta}`
-                              : 'after training'}.
+                              : kind === 'autotune'
+                                ? 'with the best edit the search finds, once it passes verification from disk'
+                                : 'after training'}.
                         </p>
                         {kind === 'expert_surgery' && (
                           <p className="mt-1 text-muted-foreground">
@@ -1266,7 +1548,7 @@ export default function WeightsIndexPage() {
                         createRun.isPending ||
                         tooFewPrompts ||
                         customTooFew ||
-                        (kind === 'compare' && !modifiedModel.trim()) ||
+                        (kind === 'compare' && (!modifiedModel.trim() || !!promptError || promptLoading)) ||
                         (kind === 'expert_surgery' && !expertSelectionReady) ||
                         (needsOutputName && !outputName.trim()) ||
                         !datasetReady ||
@@ -1321,6 +1603,15 @@ export default function WeightsIndexPage() {
                         ? `rank ${s.best.rank}, k ${Number(s.best.k).toFixed(2)}`
                         : s.frontier
                           ? 'none admissible'
+                          : '—'
+                    } else if (r.kind === 'autotune') {
+                      const w = s.winner
+                      result = w
+                        ? `rank ${w.rank}, k ${Number(w.k).toFixed(2)}, emb ${w.include_embeddings ? 'yes' : 'no'} · ${
+                            s.verification?.passed ? 'verified' : s.verification ? 'FAILED verification' : 'unverified'
+                          }`
+                        : s.trials
+                          ? `none admissible (${s.trials.length} tried)`
                           : '—'
                     } else if (r.kind === 'compare' && s.deltas) {
                       const d = s.deltas
@@ -1441,6 +1732,7 @@ export default function WeightsIndexPage() {
           </Tabs.Content>
         </Tabs.Root>
       </div>
+      <Glossary open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
     </Layout>
   )
 }

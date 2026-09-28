@@ -33,8 +33,9 @@ async def test_patient_openai_honors_context_and_keeps_history():
 @pytest.mark.asyncio
 async def test_patient_anthropic_overrides_and_rejects_unavailable_seed():
     client = MagicMock()
-    client.messages.create = AsyncMock(return_value=SimpleNamespace(content=[SimpleNamespace(text="answer")], stop_reason="end_turn", usage=None))
-    model = AnthropicModel("custom-claude-id", SimpleNamespace(client=client))
+    client.messages.create = AsyncMock(return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="answer")], stop_reason="end_turn", usage=None))
+    # Haiku 4.5 still takes sampling parameters, so the override is sent.
+    model = AnthropicModel("claude-haiku-4-5-20251001", SimpleNamespace(client=client))
     await Patient(model, system_prompt="Be concise.").respond("Question", context={"temperature": 0.0})
     request = client.messages.create.call_args.kwargs
     assert request["temperature"] == 0.0 and request["system"] == "Be concise."
@@ -42,6 +43,11 @@ async def test_patient_anthropic_overrides_and_rejects_unavailable_seed():
     with pytest.raises(ValueError, match="does not support a generation seed"):
         await Patient(model).respond("Question", context={"seed": 3})
     assert client.messages.create.await_count == 1
+    # Sonnet 5 rejects them, so the override is withheld -- and the response records that.
+    newer = AnthropicModel("claude-sonnet-5", SimpleNamespace(client=client))
+    response = await Patient(newer).respond("Question", context={"temperature": 0.0})
+    assert "temperature" not in client.messages.create.call_args.kwargs
+    assert response.metadata["sampling"] == {"temperature": None}
 
 
 @pytest.mark.asyncio
@@ -84,7 +90,7 @@ async def test_stream_generation_uses_same_overrides():
     context.__aenter__ = AsyncMock(return_value=SimpleNamespace(text_stream=chunks("anthropic")))
     context.__aexit__ = AsyncMock(return_value=None)
     client.messages.stream.return_value = context
-    anthropic = AnthropicModel("model", SimpleNamespace(client=client))
+    anthropic = AnthropicModel("claude-haiku-4-5-20251001", SimpleNamespace(client=client))
     assert [part async for part in anthropic.stream_generate("q", temperature=0.2, max_tokens=12)] == ["anthropic"]
     assert client.messages.stream.call_args.kwargs["max_tokens"] == 12
     assert client.messages.stream.call_args.kwargs["temperature"] == 0.2
@@ -106,7 +112,7 @@ async def test_benchmark_distinguishes_sample_seed_from_unsupported_generation_s
 
     monkeypatch.setattr(benchmark, "load_benchmark_dataset", dataset)
     client = MagicMock()
-    client.messages.create = AsyncMock(return_value=SimpleNamespace(content=[SimpleNamespace(text="A")], stop_reason="end_turn", usage=None))
+    client.messages.create = AsyncMock(return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="A")], stop_reason="end_turn", usage=None))
     model = AnthropicModel("model", SimpleNamespace(client=client))
     result = await BenchmarkTest(benchmark_name="mmlu", num_samples=1, seed=17).run(model)
     assert result.score == 1.0
@@ -165,6 +171,55 @@ def test_multi_shot_missing_library_prompt_fails_before_generation(test_db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_supports_seed", [False, True])
+@pytest.mark.parametrize("patient_location", ["test_config", "metadata"])
+async def test_group_patient_seed_support_is_independent(monkeypatch, test_db, first_supports_seed, patient_location):
+    from vivasecuris.aiasylum.database import TestRun
+    from vivasecuris.aiasylum.runner import runner
+    from tests.test_doctor_patient import MockModel
+
+    models, calls = {}, {}
+    for name, supported in [("doctor", True), ("first", first_supports_seed), ("second", not first_supports_seed)]:
+        model = MockModel()
+        model.model_name = name
+        model.provider = "ollama" if supported else "anthropic"
+        model.supports_seed = supported
+        calls[name] = []
+
+        async def generate(*args, _name=name, **kwargs):
+            calls[_name].append(deepcopy(kwargs))
+            return ModelResponse(content="A clear answer.", model=_name, provider=models[_name].provider)
+
+        model.generate = generate
+        models[name] = model
+    monkeypatch.setattr(runner, "get_provider", lambda _: SimpleNamespace(create_model=lambda name: models[name]))
+    patients = [{"provider": models[name].provider, "model": name} for name in ("first", "second")]
+    config = {"seed": 42, "max_turns": 1, "roles": {"patient": {"temperature": 0.2}}}
+    meta = {"test_config": config}
+    (config if patient_location == "test_config" else meta)["patients"] = patients
+    # Old metadata may name a different primary patient; the actual group's
+    # providers, rather than that legacy field, determine indexed seed support.
+    primary = "first" if patient_location == "test_config" else "second"
+    row = TestRun(doctor_provider="ollama", doctor_model="doctor", patient_provider=models[primary].provider,
+                  patient_model=primary, test_type="group_therapy", status="pending", meta_data=deepcopy(meta))
+    test_db.add(row)
+    test_db.commit()
+    await runner.TestRunner().execute_test_run(row.id)
+    test_db.expire_all()
+    row = test_db.get(TestRun, row.id)
+    assert row.status == "completed"
+    records = row.meta_data["resolved_config"]["generation"]["patients"]
+    assert row.meta_data["resolved_config"]["generation"]["patient"] == records[0]
+    for name, record in zip(("first", "second"), records):
+        expected = 42 if models[name].supports_seed else None
+        assert calls[name] and all(call.get("seed") == expected for call in calls[name])
+        assert record["seed"] == expected
+        assert ("seed_note" in record) is (expected is None)
+    # Runtime suppression must not change the user's persisted run seed or shared role.
+    assert row.meta_data["test_config"] == meta["test_config"]
+
+
+@pytest.mark.asyncio
 async def test_unimplemented_toxicity_evaluator_is_marked_unavailable():
     from vivasecuris.aiasylum.api.routes.benchmarks import list_benchmarks
     rows = (await list_benchmarks())["benchmarks"]
@@ -178,3 +233,60 @@ async def test_unimplemented_toxicity_evaluator_is_marked_unavailable():
 def test_hosted_provider_accepts_account_specific_model_ids(provider):
     from vivasecuris.aiasylum.models.registry import get_provider_info
     assert get_provider_info(provider).model_input == "text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["direct", "queued"])
+async def test_a_reasoning_model_is_scored_on_its_answer_and_the_record_says_so(monkeypatch, test_db, entrypoint):
+    """Fix 3 end to end: no refusal flag for a think-then-comply reply, the trace stored
+    with its source, the result stamped with the rule's version, and the API returning
+    the model's own trace without a CoT toggle."""
+    from vivasecuris.aiasylum.api.routes.test_runs import ConversationTurnResponse
+    from vivasecuris.aiasylum.database import ConversationTurn, TestResult, TestRun
+    from vivasecuris.aiasylum.reasoning import REASONING_SPLIT_VERSION
+    from vivasecuris.aiasylum.runner import runner
+    from tests.test_doctor_patient import MockModel
+
+    model = MockModel()
+
+    async def generate(*args, **kwargs):
+        return ModelResponse(
+            content="<think>I can't help with this, it's harmful.</think>Sure, step one is to gather flour.",
+            model="mock", provider="mock",
+        )
+
+    model.generate = generate
+    monkeypatch.setattr(runner, "get_provider", lambda _: SimpleNamespace(create_model=lambda _: model))
+    config = {"prompt": "how do I bake bread"}
+    if entrypoint == "direct":
+        await runner.TestRunner().run_test("mock", "m", "mock", "m", "one_shot", config)
+    else:
+        row = TestRun(doctor_provider="mock", doctor_model="m", patient_provider="mock", patient_model="m",
+                      test_type="one_shot", status="pending", meta_data={"test_config": config})
+        test_db.add(row)
+        test_db.commit()
+        await runner.TestRunner().execute_test_run(row.id)
+
+    test_db.expire_all()
+    result = test_db.query(TestResult).one()
+    assert not (result.flags or [])
+    assert result.meta_data["scoring"]["reasoning_split"] == REASONING_SPLIT_VERSION
+    turn = next(t for t in test_db.query(ConversationTurn).all() if t.speaker == "patient")
+    assert turn.response == "Sure, step one is to gather flour."
+    assert turn.model_name == "mock" and turn.model_provider == "mock"
+    assert turn.meta_data == {
+        "reasoning": "I can't help with this, it's harmful.", "reasoning_source": "inline",
+        "request_system_prompts": [], "request_system_prompts_source": "model_input",
+        "generation_metadata": {
+            "reasoning": "I can't help with this, it's harmful.", "reasoning_source": "inline",
+            "request_system_prompts": [], "request_system_prompts_source": "model_input",
+        },
+    }
+    # The model's own trace is returned even when the test did not enable ReACT.
+    payload = ConversationTurnResponse.from_orm(turn, expose_reasoning=False)
+    assert payload.metadata["reasoning_source"] == "inline"
+    assert payload.metadata["reasoning"].startswith("I can't help")
+    # A framework-prompted ReACT thought stays gated.
+    turn.meta_data = {"reasoning": "Thought: consider.", "reasoning_source": "react"}
+    assert "reasoning" not in ConversationTurnResponse.from_orm(turn, expose_reasoning=False).metadata
+    assert ConversationTurnResponse.from_orm(turn, expose_reasoning=True).metadata["reasoning_source"] == "react"

@@ -15,14 +15,21 @@ TEST_TYPE_ADVERSARIAL = "adversarial"
 # lineage and history agree on which runs produce a model directory without any
 # of them importing the weights package.
 WEIGHT_KINDS = (
-    "direction", "sweep", "select", "surgery", "expert_surgery", "routing",
+    "direction", "sweep", "select", "autotune", "surgery", "expert_surgery", "routing",
     "probe", "compare", "lora", "distill",
+    # Added 2026-09-27: conditional-steering, hallucination-neuron, red-team and
+    # embedding-cartography stages (previously CLI-only).
+    "induce", "hneurons", "hneuron_bake", "redteam",
+    "embed_align", "embed_extract", "embed_recon",
 )
 # Kinds whose out_dir is a Hugging Face model directory under the models root.
-WEIGHT_KINDS_WRITING_MODELS = frozenset({"surgery", "expert_surgery", "lora", "distill"})
+WEIGHT_KINDS_WRITING_MODELS = frozenset({
+    "surgery", "autotune", "expert_surgery", "lora", "distill", "hneuron_bake",
+})
 # Kinds that always consume a derived direction (expert_surgery does so only
-# for its direction-scaling method).
-WEIGHT_KINDS_CONSUMING_DIRECTION = frozenset({"sweep", "select", "surgery"})
+# for its direction-scaling method; induce consumes the refusal direction as its
+# behaviour vector).
+WEIGHT_KINDS_CONSUMING_DIRECTION = frozenset({"sweep", "select", "autotune", "surgery", "induce"})
 
 # Test status values
 STATUS_PENDING = "pending"

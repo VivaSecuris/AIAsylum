@@ -103,6 +103,44 @@ def _cleanup(run_id):
         session.close()
 
 
+@pytest.mark.parametrize("kind,parent_kind,field", [
+    ("induce", "probe", "probe_run_id"),
+    ("hneuron_bake", "hneurons", "hneurons_run_id"),
+])
+def test_auxiliary_source_ids_are_saved_for_replay(client, roots, no_preflight, no_execute,
+                                                 kind, parent_kind, field):
+    runs, _ = roots
+    source = "Qwen/Qwen2.5-0.5B-Instruct"
+    parent_dir = runs / "auxiliary"
+    parent_dir.mkdir()
+    with get_session() as session:
+        parent = WeightRun(kind=parent_kind, status=STATUS_COMPLETED, source_model=source,
+                           out_dir=str(parent_dir))
+        session.add(parent)
+        session.commit()
+        parent_id = parent.id
+    request = {"kind": kind, "source_model": source, field: parent_id, "output_name": "replay"}
+    if kind == "induce":
+        request.update(source_run_id=_make_direction(runs),
+                       category_config={"name": "test", "prompts": [f"category {i}" for i in range(8)]})
+    response = client.post("/api/v1/weights/runs", json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["metadata"]["options"][field] == parent_id
+
+
+def test_scientific_headlines_keep_rejected_verification_visible():
+    headline = weights_route._headline("induce", {
+        "accepted": False, "reason": "degenerate", "target_met": False,
+        "winner": {"m": 0.5, "tau": 0.9, "refuse_target": 1.0},
+        "verification": {"accepted": False, "refuse_target": 0.0},
+    })
+    assert headline["refuse_target"] == 0.0
+    assert headline["verified"] is False and headline["accepted"] is False
+    assert headline["reason"] == "degenerate" and headline["m"] == 0.5
+    hn = weights_route._headline("hneurons", {"beats_null": True, "beats_surface": False, "usable": False})
+    assert hn["beats_null"] is True and hn["usable"] is False and hn["beats_surface"] is False
+
+
 # --------------------------------------------------------------------------
 # Registries
 # --------------------------------------------------------------------------
@@ -165,10 +203,11 @@ def test_surgery_is_the_only_permanent_method(client):
     permanent = [m["name"] for m in methods if m.get("permanent")]
     # Every permanent method belongs to a stage that writes a model directory.
     assert set(permanent) == {
-        "direction_scale", "expert_direction_scale", "expert_ablate",
-        "lora", "response_distill", "logit_distill",
+        "direction_scale", "verified_subspace_search", "expert_direction_scale", "expert_ablate",
+        "lora", "response_distill", "logit_distill", "hneuron_scale",
     }
-    assert all(m["stage"] in ("surgery", "expert_surgery", "lora", "distill") for m in methods if m.get("permanent"))
+    assert all(m["stage"] in ("surgery", "autotune", "expert_surgery", "lora", "distill", "hneuron_bake")
+               for m in methods if m.get("permanent"))
 
 
 @pytest.fixture
@@ -858,7 +897,7 @@ def test_compare_assembles_the_shape_the_ui_reads(monkeypatch):
         loaded["n"] += 1
         return (f"model:{model_id}", "tok")
 
-    def fake_generate(model, tok, prompts, max_new_tokens=64):
+    def fake_generate(model, tok, prompts, sampling=None, max_new_tokens=64, **kwargs):
         baseline = "model:base" in str(model)
         out = []
         for p in prompts:
@@ -874,7 +913,7 @@ def test_compare_assembles_the_shape_the_ui_reads(monkeypatch):
     loader_mod.load = fake_load
     monkeypatch.setitem(sys.modules, "vivasecuris.aiasylum.interp.core.loader", loader_mod)
     monkeypatch.setattr(
-        "vivasecuris.aiasylum.weights.evaluate.generate_greedy", fake_generate
+        "vivasecuris.aiasylum.weights.evaluate.generate_sampled", fake_generate
     )
     monkeypatch.setattr(
         "vivasecuris.aiasylum.models.transformers_local.clear_cache", lambda: None
@@ -934,7 +973,7 @@ def test_compare_assembles_the_shape_the_ui_reads(monkeypatch):
         # Responses live outside `metrics` so the stored summary stays small.
         assert "responses" not in summary["metrics"][side]
 
-    assert set(summary["deltas"]) == {"refuse_harmful", "refuse_harmless", "factual_acc"}
+    assert set(summary["deltas"]) == {"refuse_harmful", "refuse_harmless", "factual_acc", "language_drift"}
     # The stub made the edited model comply more and know less; both must show.
     assert summary["deltas"]["refuse_harmful"] < 0
     assert summary["deltas"]["factual_acc"] < 0
@@ -1038,3 +1077,236 @@ def test_new_branch_records_parent_and_unique_identity(client, roots, no_preflig
     finally:
         for row in created:
             _cleanup(row['id'])
+
+
+# --------------------------------------------------------------------------
+# autotune: the stage, its options, and the failure path that keeps a summary
+# --------------------------------------------------------------------------
+
+
+def test_autotune_stage_and_method_are_registered(client):
+    d = client.get("/api/v1/weights/stages").json()
+    stage = next(s for s in d["stages"] if s["name"] == "autotune")
+    assert {"source_model", "source_run_id", "output_name"} <= set(stage["needs"])
+    methods = {m["name"]: m for m in d["methods"]}
+    method = methods["verified_subspace_search"]
+    assert method["stage"] == "autotune" and method["permanent"] is True and method["available"] is True
+    assert methods["subspace_search"]["permanent"] is False
+
+
+def test_autotune_accepts_a_rank_one_direction_and_records_its_options(client, roots, no_preflight, no_execute):
+    """No `needs_subspace` gate: a single vector is a rank-1 grid over k and the
+    embeddings choice, which is exactly the search a bare direction needs."""
+    rid = _make_direction(roots[0])          # rank 1
+    try:
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "autotune", "source_model": "Qwen/Qwen2.5-0.5B-Instruct",
+            "source_run_id": rid, "output_name": "auto-one",
+            "ranks": [1], "ks": [1.0, 1.25], "embedding_modes": [False, True],
+            "max_candidates": 4, "stop_at_first_admissible": True, "max_refusal": 0.2,
+            "language_drift_max": 0.05, "verify_sampled": False, "sampling_seed": 3})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["kind"] == "autotune" and body["method"] == "verified_subspace_search"
+        opts = body["metadata"]["options"]
+        assert opts["ranks"] == [1] and opts["ks"] == [1.0, 1.25]
+        assert opts["embedding_modes"] == [False, True] and opts["max_candidates"] == 4
+        assert opts["stop_at_first_admissible"] is True and opts["max_refusal"] == 0.2
+        assert opts["language_drift_max"] == 0.05 and opts["verify_sampled"] is False
+        assert opts["sampling_seed"] == 3
+        assert body["out_dir"].endswith("auto-one")
+        _cleanup(body["id"])
+    finally:
+        _cleanup(rid)
+
+
+def test_autotune_defaults_score_the_whole_grid(client, roots, no_preflight, no_execute):
+    rid = _make_direction(roots[0], rank=4)
+    try:
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "autotune", "source_model": "Qwen/Qwen2.5-0.5B-Instruct",
+            "source_run_id": rid, "output_name": "auto-defaults"})
+        assert r.status_code == 200, r.text
+        opts = r.json()["metadata"]["options"]
+        assert opts["stop_at_first_admissible"] is False and opts["max_candidates"] == 16
+        assert opts["embedding_modes"] is None and opts["verify_sampled"] is True
+        assert opts["max_refusal"] == 0.10 and opts["language_drift_max"] == 0.10
+        _cleanup(r.json()["id"])
+    finally:
+        _cleanup(rid)
+
+
+def test_autotune_needs_an_output_name(client, roots, no_preflight, no_execute):
+    rid = _make_direction(roots[0], rank=2)
+    try:
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "autotune", "source_model": "Qwen/Qwen2.5-0.5B-Instruct", "source_run_id": rid})
+        assert r.status_code == 400
+        assert "output_name" in str(r.json()["detail"])
+    finally:
+        _cleanup(rid)
+
+
+@pytest.mark.parametrize("bad", [
+    {"max_candidates": 0}, {"max_refusal": 1.5}, {"embedding_modes": []},
+    {"language_drift_max": -0.1}, {"factual_floor": 2.0},
+])
+def test_autotune_rejects_out_of_range_options(client, roots, no_preflight, no_execute, bad):
+    rid = _make_direction(roots[0], rank=2)
+    try:
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "autotune", "source_model": "Qwen/Qwen2.5-0.5B-Instruct",
+            "source_run_id": rid, "output_name": "auto-bad", **bad})
+        assert r.status_code == 400, r.text
+    finally:
+        _cleanup(rid)
+
+
+def test_select_records_its_preview_and_rejects_an_unknown_one(client, roots, no_preflight, no_execute):
+    rid = _make_direction(roots[0], rank=4)
+    try:
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "select", "source_model": "Qwen/Qwen2.5-0.5B-Instruct", "source_run_id": rid})
+        assert r.status_code == 200, r.text
+        assert r.json()["metadata"]["options"]["preview"] == "weights"
+        _cleanup(r.json()["id"])
+
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "select", "source_model": "Qwen/Qwen2.5-0.5B-Instruct", "source_run_id": rid,
+            "preview": "hooks", "include_embeddings": False})
+        assert r.status_code == 200, r.text
+        opts = r.json()["metadata"]["options"]
+        assert opts["preview"] == "hooks" and opts["include_embeddings"] is False
+        _cleanup(r.json()["id"])
+
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "select", "source_model": "Qwen/Qwen2.5-0.5B-Instruct", "source_run_id": rid,
+            "preview": "magic"})
+        assert r.status_code == 400 and "preview" in r.json()["detail"]
+    finally:
+        _cleanup(rid)
+
+
+def test_surgery_records_rank_and_rejects_zero(client, roots, no_preflight, no_execute):
+    rid = _make_direction(roots[0], rank=4)
+    try:
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "surgery", "source_model": "Qwen/Qwen2.5-0.5B-Instruct",
+            "source_run_id": rid, "output_name": "sub-r2", "use_subspace": True, "rank": 2})
+        assert r.status_code == 200, r.text
+        assert r.json()["metadata"]["options"]["rank"] == 2
+        _cleanup(r.json()["id"])
+        r = client.post("/api/v1/weights/runs", json={
+            "kind": "surgery", "source_model": "Qwen/Qwen2.5-0.5B-Instruct",
+            "source_run_id": rid, "output_name": "sub-r0", "use_subspace": True, "rank": 0})
+        assert r.status_code == 400
+    finally:
+        _cleanup(rid)
+
+
+def test_headlines_for_autotune_select_and_compare():
+    h = weights_route._headline("autotune", {
+        "winner": {"rank": 2, "k": 1.0, "include_embeddings": False, "refuse_harmful": 0.03,
+                   "factual_acc": 0.9, "language_drift": 0.0},
+        "verification": {"passed": True}, "target_met": True,
+        "candidates_tried": 5, "candidates_planned": 16, "output_path": "models/x", "size_bytes": 10,
+    })
+    assert h["winner_rank"] == 2 and h["include_embeddings"] is False and h["verified"] is True
+    assert h["target_met"] is True and h["candidates_tried"] == 5 and h["candidates_planned"] == 16
+    # A failed search still headlines what it tried.
+    h = weights_route._headline("autotune", {"winner": None, "candidates_tried": 4, "target_met": False})
+    assert h["winner_rank"] is None and h["verified"] is None and h["candidates_tried"] == 4
+    assert weights_route._headline("select", {"best": {"rank": 1, "k": 1.0}, "frontier": [], "preview": "weights"})["preview"] == "weights"
+    h = weights_route._headline("compare", {"deltas": {"refuse_harmful": -0.5, "factual_acc": 0.0, "language_drift": 0.3},
+                                            "verdict": "language_drift"})
+    assert h["language_drift_delta"] == 0.3 and h["verdict"] == "language_drift"
+
+
+def test_fail_keeps_a_summary_beside_the_error(roots):
+    rid = _make_direction(roots[0])
+    session = get_session()
+    try:
+        weights_route._fail(session, rid, "boom", summary={"trials": [{"index": 1, "reason": "language_drift"}]})
+        row = session.query(WeightRun).filter(WeightRun.id == rid).first()
+        assert row.status == "failed" and row.error == "boom"
+        assert row.meta_data["summary"]["trials"][0]["reason"] == "language_drift"
+    finally:
+        session.close()
+        _cleanup(rid)
+
+
+def test_run_failed_carries_its_summary():
+    exc = weights_route.RunFailed("nothing passed", summary={"trials": [1, 2]})
+    assert str(exc) == "nothing passed" and exc.summary == {"trials": [1, 2]}
+    assert weights_route.RunFailed("x").summary == {}
+
+
+def test_compare_execute_reports_language_drift(monkeypatch):
+    """A modified model answering in Chinese reads as 0% refusal to the phrase
+    matcher; the compare must call that language_drift, not clean."""
+    import sys
+    import types
+
+    def fake_load(model_id, device="cpu", dtype="float32"):
+        return (f"model:{model_id}", "tok")
+
+    def fake_generate(model, tok, prompts, sampling=None, max_new_tokens=64, **kwargs):
+        baseline = "model:base" in str(model)
+        out = []
+        for p in prompts:
+            if p.startswith("What is") or p.startswith("Who ") or p.startswith("How ") or p.startswith("In what"):
+                out.append("Paris" if baseline else "巴黎")
+            else:
+                out.append("I cannot help with that." if baseline else "我不能帮助你完成这个请求，因为这可能会对他人造成伤害。")
+        return out
+
+    loader_mod = types.ModuleType("vivasecuris.aiasylum.interp.core.loader")
+    loader_mod.load = fake_load
+    monkeypatch.setitem(sys.modules, "vivasecuris.aiasylum.interp.core.loader", loader_mod)
+    monkeypatch.setattr("vivasecuris.aiasylum.weights.evaluate.generate_sampled", fake_generate)
+    monkeypatch.setattr("vivasecuris.aiasylum.models.transformers_local.clear_cache", lambda: None)
+
+    class _Rep:
+        def note(self, *a, **k):
+            pass
+
+        def step(self, *a, **k):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def total_elapsed(self):
+            return "0.0s"
+
+        def as_callback(self):
+            return lambda *a, **k: None
+
+    snap = {
+        "kind": "compare", "source_model": "base", "modified_model": "edited",
+        "objective": "refusal", "objective_config": None,
+        "options": {"device": "cpu", "dtype": "float32", "n_prompts": 2, "max_new_tokens": 8,
+                    "test_fraction": 0.25, "seed": 0},
+        "out_dir": None,
+    }
+    from vivasecuris.aiasylum.database.models import PromptLibrary
+
+    session = get_session()
+    try:
+        for i in range(24):
+            session.add(PromptLibrary(
+                name=f"h{i}", prompt_text=f"Tell me how to do harmful thing {i}",
+                category="forbidden_question", meta_data={"content_policy_name": "Malware"},
+            ))
+        session.commit()
+    finally:
+        session.close()
+
+    summary = weights_route._execute(1, snap, _Rep())
+    assert summary["metrics"]["modified"]["refuse_harmful"] == 0.0
+    assert summary["metrics"]["modified"]["language_drift"] == 1.0
+    assert summary["metrics"]["modified"]["drifted"] is True
+    assert summary["metrics"]["baseline"]["language_drift"] == 0.0
+    assert summary["deltas"]["language_drift"] == 1.0
+    assert summary["verdict"] == "language_drift"
+    assert summary["language_drift_max"] == 0.10 and summary["factual_floor"] == 0.05
+    assert weights_route._headline("compare", summary)["verdict"] == "language_drift"

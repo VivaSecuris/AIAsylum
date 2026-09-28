@@ -15,6 +15,7 @@ import { DeleteCustomButton } from '@/components/models/DeleteCustomButton'
 import { belongsToExperiment, modelOrganizationKey, useModelOrganization, type ModelOrganization } from '@/lib/model-organization'
 import { DownloadModelButton, DownloadPanel, RemoveCachedButton } from '@/components/models/DownloadPanel'
 import { availabilityLabel, canUseModel, editDescription, isCachedBaseModel, useModelCatalog, useModelDownloads, type ModelCatalogEntry, type ModelDownload } from '@/lib/model-catalog'
+import { modelChatUrl } from '@/lib/model-chat'
 import { formatApiError } from '@/lib/utils'
 
 const ACTION = 'inline-flex items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
@@ -53,7 +54,7 @@ function ModelCard({ model, allModels, download, organization, onViewHistory }: 
           </span>
         </div>
         <div>
-          <h2 className="break-words text-lg font-semibold">{displayName}</h2>
+          <h2 className="break-words text-lg font-semibold"><Link href={modelChatUrl(model.provider, model.model_ref)} className="hover:text-primary hover:underline">{displayName}</Link></h2>
           {item?.label && <p className="mt-1 break-all text-xs text-muted-foreground">{model.name}</p>}
           {item?.notes && <p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.notes}</p>}
           {experiments.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{experiments.map((experiment) => <span key={experiment.id} className="rounded-full bg-muted px-2 py-1 text-xs">{experiment.name}</span>)}</div>}
@@ -81,11 +82,11 @@ function ModelCard({ model, allModels, download, organization, onViewHistory }: 
         )}
         {custom && <p className="text-center text-xs text-muted-foreground">Compare layer activations on one prompt.</p>}
         {custom && compareEnabled && <Link href={modelUrl('/weights', { kind: 'compare', source_model: model.source_model!, modified_model: model.model_ref })} className="block text-center text-xs text-primary hover:underline">Compare behavior on the same prompts →</Link>}
-        {custom && usable && <Link href={`/weights/models/${encodeURIComponent(model.name)}`} className={`${ACTION} w-full`}>Chat with checkpoint</Link>}
+        <Link href={modelChatUrl(model.provider, model.model_ref)} className={`${ACTION} w-full`}>Chat &amp; model actions</Link>
         <div className="flex gap-2">
           {usable ? <>
             <Link href={modelUrl('/interp', { mode: 'single', model_a: model.model_ref })} className={`${ACTION} flex-1`}><Brain className="h-4 w-4" /> Analyze</Link>
-            <Link href={modelUrl('/create-test', { provider: 'transformers', model: model.model_ref })} className={`${ACTION} flex-1`}><BarChart3 className="h-4 w-4" /> Evaluate</Link>
+            <Link href={modelUrl('/create-test', { provider: model.provider, model: model.model_ref })} className={`${ACTION} flex-1`}><BarChart3 className="h-4 w-4" /> Evaluate</Link>
           </> : <>
             <button disabled className={`${ACTION} flex-1 cursor-not-allowed opacity-50`}><Brain className="h-4 w-4" /> Analyze</button>
             <button disabled className={`${ACTION} flex-1 cursor-not-allowed opacity-50`}><BarChart3 className="h-4 w-4" /> Evaluate</button>
@@ -173,7 +174,8 @@ export default function ModelsPage() {
       <div className="mx-auto max-w-6xl space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold">Models</h1>
+            <Link href="/models" className="mb-2 inline-block text-sm text-primary hover:underline">← All models</Link>
+            <h1 className="text-3xl font-bold">Comparisons and model history</h1>
             <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Explore model visualizations, compare experiments, and organize checkpoints and their history.</p>
           </div>
           {data?.location && <p className="rounded-md border px-3 py-2 text-xs text-muted-foreground">Connected server: <span className="font-medium text-foreground">{data.location}</span></p>}
@@ -189,9 +191,9 @@ export default function ModelsPage() {
         {view === 'charts' ? <div id="charts-panel" role="tabpanel" aria-labelledby="charts-tab"><ModelVisualizations /></div> : view === 'find' ? <div id="find-models-panel" role="tabpanel" aria-labelledby="find-models-tab" className="space-y-4">
           <ModelDiscovery onSelect={setDiscovered} selectedId={discovered?.id} />
           {discovered && <section className="space-y-3 rounded-xl border bg-card p-5" aria-label="Selected discovered model">
-            <div><h2 className="break-all text-lg font-semibold">{discovered.id}</h2><p className="mt-1 text-sm text-muted-foreground">{discovered.family} · {models.some((model) => model.model_ref === discovered.id && model.availability === 'ready') ? 'Ready on server' : 'Download required on the connected server'}</p></div>
+            <div><h2 className="break-all text-lg font-semibold"><Link href={modelChatUrl('transformers', discovered.id)} className="hover:text-primary hover:underline">{discovered.id}</Link></h2><p className="mt-1 text-sm text-muted-foreground">{discovered.family} · {models.some((model) => model.model_ref === discovered.id && model.availability === 'ready') ? 'Ready on server' : 'Download required on the connected server'}</p></div>
             {discovered.gated && <HuggingFaceAccess gated={discovered.gated} modelId={discovered.id} />}
-            <div className="flex flex-wrap gap-2">{!models.some((model) => model.model_ref === discovered.id && model.availability === 'ready') && <DownloadModelButton repoId={discovered.id} download={downloads.find((download) => download.repo_id === discovered.id)} className={ACTION} />}<Link href={modelUrl('/interp', { mode: 'single', model_a: discovered.id })} className={ACTION}><Brain className="h-4 w-4" /> Prepare analysis</Link><Link href={modelUrl('/create-test', { provider: 'transformers', model: discovered.id })} className={ACTION}><BarChart3 className="h-4 w-4" /> Prepare evaluation</Link></div>
+            <div className="flex flex-wrap gap-2"><Link href={modelChatUrl('transformers', discovered.id)} className={ACTION}>Chat &amp; model actions</Link>{!models.some((model) => model.model_ref === discovered.id && model.availability === 'ready') && <DownloadModelButton repoId={discovered.id} download={downloads.find((download) => download.repo_id === discovered.id)} className={ACTION} />}<Link href={modelUrl('/interp', { mode: 'single', model_a: discovered.id })} className={ACTION}><Brain className="h-4 w-4" /> Prepare analysis</Link><Link href={modelUrl('/create-test', { provider: 'transformers', model: discovered.id })} className={ACTION}><BarChart3 className="h-4 w-4" /> Prepare evaluation</Link></div>
             <p className="text-xs text-muted-foreground">Review settings and resource checks before starting a run. Downloaded models appear in the Models tab.</p>
             <OrganizationEditor itemKey={modelOrganizationKey(discovered.id)} originalLabel={discovered.name} />
           </section>}
@@ -213,7 +215,7 @@ export default function ModelsPage() {
 
         <details className="rounded-xl border bg-card p-4"><summary className="cursor-pointer text-sm font-medium">Downloads and storage{downloads.some((download) => download.active) ? ` · ${downloads.filter((download) => download.active).length} active` : ''}</summary><div className="mt-4"><DownloadPanel location={data?.location} /></div></details>
 
-        {isLoading ? <div className="flex justify-center p-12"><LoadingSpinner size="lg" /></div> : error ? <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-6"><h2 className="font-semibold">Could not load the model library</h2><p className="mt-2 text-sm text-muted-foreground">{formatApiError(error, 'Check the connection to your analysis server.')}</p><button onClick={() => refetch()} className={`${ACTION} mt-4`}>Try again</button></div> : filtered.length > 0 ? <div className="grid items-stretch gap-4 lg:grid-cols-2">{filtered.map((model) => <ModelCard key={model.id} model={model} allModels={models} organization={organization} download={downloads.find((d) => d.repo_id === model.model_ref)} onViewHistory={viewHistory} />)}</div> : <div className="rounded-xl border border-dashed p-10 text-center"><h2 className="text-lg font-semibold">{search || experimentId ? 'No matching models' : kind === 'custom' ? 'No custom checkpoints on this server yet' : 'No models found'}</h2><p className="mx-auto mt-2 max-w-lg text-sm text-muted-foreground">{search || experimentId ? 'Try another name, clear the filters, or assign models to this experiment using Organize.' : kind === 'custom' ? 'Save an edited checkpoint from Weight Surgery to add it here. Existing checkpoints in the server model directory appear automatically.' : 'Refresh the library or enter a model ID in Interpretability to begin.'}</p>{search || experimentId ? <button className={`${ACTION} mt-4`} onClick={() => { setKind('all'); updateWorkspace({ experiment: '', clearSearch: true }) }}>Clear filters</button> : <Link className={`${ACTION} mt-4`} href={kind === 'custom' ? '/weights' : '/interp'}>{kind === 'custom' ? 'Open Weight Surgery' : 'Start an analysis'}<ArrowRight className="h-4 w-4" /></Link>}</div>}
+        {isLoading ? <div className="flex justify-center p-12"><LoadingSpinner size="lg" /></div> : error ? <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-6"><h2 className="font-semibold">Could not load the model library</h2><p className="mt-2 text-sm text-muted-foreground">{formatApiError(error, 'Check the connection to your analysis server.')}</p><button onClick={() => refetch()} className={`${ACTION} mt-4`}>Try again</button></div> : filtered.length > 0 ? <div className="grid items-stretch gap-4 lg:grid-cols-2">{filtered.map((model) => <ModelCard key={model.id} model={model} allModels={models} organization={organization} download={downloads.find((d) => d.repo_id === model.model_ref)} onViewHistory={viewHistory} />)}</div> : <div className="rounded-xl border border-dashed p-10 text-center"><h2 className="text-lg font-semibold">{search || experimentId ? 'No matching models' : kind === 'custom' ? 'No custom checkpoints on this server yet' : 'No models found'}</h2><p className="mx-auto mt-2 max-w-lg text-sm text-muted-foreground">{search || experimentId ? 'Try another name, clear the filters, or assign models to this experiment using Organize.' : kind === 'custom' ? 'Save an edited checkpoint from Neurosurgery to add it here. Existing checkpoints in the server model directory appear automatically.' : 'Refresh the library or enter a model ID in Interpretability to begin.'}</p>{search || experimentId ? <button className={`${ACTION} mt-4`} onClick={() => { setKind('all'); updateWorkspace({ experiment: '', clearSearch: true }) }}>Clear filters</button> : <Link className={`${ACTION} mt-4`} href={kind === 'custom' ? '/weights' : '/interp'}>{kind === 'custom' ? 'Open Neurosurgery' : 'Start an analysis'}<ArrowRight className="h-4 w-4" /></Link>}</div>}
         </div>}
       </div>
     </Layout>

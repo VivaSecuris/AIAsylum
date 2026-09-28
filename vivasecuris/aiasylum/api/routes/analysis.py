@@ -6,7 +6,7 @@ import traceback
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vivasecuris.aiasylum.analysis import AnalysisService
 from vivasecuris.aiasylum.database import Assessment, get_session, TestRun
@@ -26,6 +26,12 @@ class AnalysisRequest(BaseModel):
     evaluator_provider: Optional[str] = None
     evaluator_model: Optional[str] = None
     evaluator_system_prompt_id: Optional[int] = None
+    # Extra evaluator instructions, added to the built-in scoring prompt (an ID wins)
+    evaluator_system_prompt: Optional[str] = Field(None, max_length=20000)
+    evaluator_temperature: Optional[float] = Field(None, ge=0, le=2)
+    evaluator_max_tokens: Optional[int] = Field(None, ge=1, le=32768)
+    evaluator_top_p: Optional[float] = Field(None, gt=0, le=1)
+    evaluator_enable_cot: bool = False
 
 
 class AssessmentResponse(BaseModel):
@@ -71,6 +77,11 @@ async def _run_analysis_background(
     evaluator_model: Optional[str],
     analysis_test_run_id: Optional[int] = None,
     evaluator_system_prompt_id: Optional[int] = None,
+    evaluator_system_prompt: Optional[str] = None,
+    evaluator_temperature: Optional[float] = None,
+    evaluator_max_tokens: Optional[int] = None,
+    evaluator_top_p: Optional[float] = None,
+    evaluator_enable_cot: bool = False,
 ):
     """Run analysis in background task."""
     logger.info(f"Starting background analysis for test run {test_run_id}")
@@ -90,6 +101,11 @@ async def _run_analysis_background(
             evaluator_model=evaluator_model,
             analysis_test_run_id=analysis_test_run_id,
             evaluator_system_prompt_id=evaluator_system_prompt_id,
+            evaluator_system_prompt=evaluator_system_prompt,
+            evaluator_temperature=evaluator_temperature,
+            evaluator_max_tokens=evaluator_max_tokens,
+            evaluator_top_p=evaluator_top_p,
+            evaluator_enable_cot=evaluator_enable_cot,
         )
         logger.info(f"Analysis completed successfully for test run {test_run_id}, assessment ID: {assessment.id}")
     except Exception as e:
@@ -162,6 +178,11 @@ async def analyze_test_run(
                     "evaluator_provider": request.evaluator_provider,
                     "evaluator_model": request.evaluator_model,
                     "evaluator_system_prompt_id": request.evaluator_system_prompt_id,
+                    "evaluator_system_prompt": request.evaluator_system_prompt,
+                    "evaluator_temperature": request.evaluator_temperature,
+                    "evaluator_max_tokens": request.evaluator_max_tokens,
+                    "evaluator_top_p": request.evaluator_top_p,
+                    "evaluator_enable_cot": request.evaluator_enable_cot,
                 },
                 "description": f"Analysis of test run #{test_run_id}",
             },
@@ -188,6 +209,11 @@ async def analyze_test_run(
             request.evaluator_model,
             analysis_test_run.id,  # Pass the analysis test run ID
             request.evaluator_system_prompt_id,
+            evaluator_system_prompt=request.evaluator_system_prompt,
+            evaluator_temperature=request.evaluator_temperature,
+            evaluator_max_tokens=request.evaluator_max_tokens,
+            evaluator_top_p=request.evaluator_top_p,
+            evaluator_enable_cot=request.evaluator_enable_cot,
         )
         logger.info(f"Background task added for test run {test_run_id}, analysis test run {analysis_test_run.id}")
     except Exception as e:
@@ -274,6 +300,12 @@ async def analyze_unanalyzed(
                         "enable_manipulation_analysis": request.enable_manipulation_analysis,
                         "evaluator_provider": request.evaluator_provider,
                         "evaluator_model": request.evaluator_model,
+                        "evaluator_system_prompt_id": request.evaluator_system_prompt_id,
+                        "evaluator_system_prompt": request.evaluator_system_prompt,
+                        "evaluator_temperature": request.evaluator_temperature,
+                        "evaluator_max_tokens": request.evaluator_max_tokens,
+                        "evaluator_top_p": request.evaluator_top_p,
+                        "evaluator_enable_cot": request.evaluator_enable_cot,
                     },
                     "description": f"Batch analysis of test run #{run.id}",
                 },
@@ -300,6 +332,11 @@ async def analyze_unanalyzed(
             request.evaluator_model,
             analysis_id,
             request.evaluator_system_prompt_id,
+            evaluator_system_prompt=request.evaluator_system_prompt,
+            evaluator_temperature=request.evaluator_temperature,
+            evaluator_max_tokens=request.evaluator_max_tokens,
+            evaluator_top_p=request.evaluator_top_p,
+            evaluator_enable_cot=request.evaluator_enable_cot,
         )
 
     started_ids = [source_id for source_id, _ in created]

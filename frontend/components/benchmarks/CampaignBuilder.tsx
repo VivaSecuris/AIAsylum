@@ -1,4 +1,9 @@
 import { useMemo, useState } from 'react'
+import { getRoleGenerationDefaults, getSettings } from '@/lib/settings'
+import { GenerationSettings } from '@/components/forms/create-test/GenerationSettings'
+import { SystemPromptPicker } from '@/components/forms/create-test/SystemPromptPicker'
+import type { SystemPromptChoice } from '@/lib/create-test-config'
+import { numberOr, settingsPromptChoice } from '@/lib/create-test-config'
 import Link from 'next/link'
 import { ArrowLeft, ArrowRight, Check, Search } from 'lucide-react'
 import { useModelCatalog, editDescription, type ModelCatalogEntry } from '@/lib/model-catalog'
@@ -17,12 +22,29 @@ export function CampaignBuilder({ onStart, pending, error, initial }: {
 }) {
   const { data: catalog, isLoading, error: catalogError } = useModelCatalog()
   const { data: organization } = useModelOrganization()
+  const [settings] = useState(getSettings)
   const [stage, setStage] = useState(0)
-  const [models, setModels] = useState<string[]>(initial?.models ?? [])
+  const [models, setModels] = useState<string[]>(initial?.models ?? (settings.defaultPatientProvider === 'transformers' && settings.defaultPatientModel ? [settings.defaultPatientModel] : []))
   const [checks, setChecks] = useState<string[]>(initial?.benchmarks ?? ['mmlu', 'gsm8k', 'hellaswag', 'arc'])
   const [samples, setSamples] = useState(initial?.num_samples ?? 25)
   const [seed, setSeed] = useState(initial?.seed ?? 0)
-  const [tokens, setTokens] = useState(initial?.max_new_tokens ?? 256)
+  const [systemPrompt, setSystemPrompt] = useState<SystemPromptChoice>(() => initial
+    ? initial.patient_system_prompt ? { mode: 'custom', text: initial.patient_system_prompt }
+      : initial.patient_system_prompt_id ? { mode: 'library', id: initial.patient_system_prompt_id }
+      : initial.patient_prompt_framing === false ? { mode: 'none' } : { mode: 'default' }
+    : settingsPromptChoice(settings, 'patient'))
+  const validPrompt = systemPrompt.mode === 'custom' ? !!systemPrompt.text.trim()
+    : systemPrompt.mode === 'library' ? systemPrompt.id > 0 : true
+  const [generation, setGeneration] = useState(() => initial ? {
+    temperature: String(initial.temperature ?? 0), top_p: initial.top_p == null ? '' : String(initial.top_p),
+    max_tokens: String(initial.max_new_tokens), enable_cot: initial.enable_cot ?? false, use_dynamic_strategies: false,
+  } : getRoleGenerationDefaults(settings, 'patient'))
+  const tokens = numberOr(generation.max_tokens, 256, { min: 1, max: 32768, int: true })
+  const temperature = numberOr(generation.temperature, 0, { min: 0, max: 2 })
+  const topP = numberOr(generation.top_p, NaN, { min: Number.MIN_VALUE, max: 1 })
+  const validGeneration = (generation.temperature.trim() === '' || Number.isFinite(numberOr(generation.temperature, NaN, { min: 0, max: 2 })))
+    && (generation.top_p.trim() === '' || Number.isFinite(topP))
+    && (generation.max_tokens.trim() === '' || (Number.isInteger(Number(generation.max_tokens)) && Number(generation.max_tokens) >= 1 && Number(generation.max_tokens) <= 32768))
   const [name, setName] = useState(initial ? `${initial.name.slice(0, 112)} · retry` : '')
   const [search, setSearch] = useState('')
   const ready = useMemo(() => (catalog?.models ?? []).filter((model) => model.availability === 'ready'), [catalog])
@@ -31,10 +53,13 @@ export function CampaignBuilder({ onStart, pending, error, initial }: {
   const label = (model: ModelCatalogEntry) => organization?.items[modelOrganizationKey(model.model_ref)]?.label || model.name
   const visible = ready.filter((model) => `${label(model)} ${model.model_ref} ${model.source_model ?? ''}`.toLowerCase().includes(search.toLowerCase()))
   const validModels = models.length > 0 && models.length <= 30 && unavailable.length === 0
-  const validChecks = checks.length > 0 && Number.isInteger(samples) && samples >= 1 && samples <= 200 && Number.isInteger(seed) && seed >= 0 && seed <= 2147483647 && Number.isInteger(tokens) && tokens >= 16 && tokens <= 2048
+  const validChecks = checks.length > 0 && Number.isInteger(samples) && samples >= 1 && samples <= 200 && Number.isInteger(seed) && seed >= 0 && seed <= 2147483647 && validGeneration && validPrompt
   const toggle = (ref: string) => setModels((current) => current.includes(ref) ? current.filter((item) => item !== ref) : [...current, ref])
   const totalRuns = models.length * checks.length
-  const request: BenchmarkCampaignRequest = { name: name.trim() || `${models.length} models · ${checks.map(benchmarkName).join(', ')}`, models, benchmarks: checks, num_samples: samples, seed, max_new_tokens: tokens }
+  const request: BenchmarkCampaignRequest = { name: name.trim() || `${models.length} models · ${checks.map(benchmarkName).join(', ')}`, models, benchmarks: checks, num_samples: samples, seed, max_new_tokens: tokens, temperature, enable_cot: generation.enable_cot, ...(Number.isFinite(topP) ? { top_p: topP } : {}),
+    ...(systemPrompt.mode === 'library' ? { patient_system_prompt_id: systemPrompt.id } :
+      systemPrompt.mode === 'custom' ? { patient_system_prompt: systemPrompt.text } :
+      systemPrompt.mode === 'none' ? { patient_prompt_framing: false } : {}) }
 
   return <section aria-label="New benchmark comparison" className="overflow-hidden rounded-xl border bg-card">
     <ol className="grid grid-cols-3 border-b bg-muted/30">
@@ -85,15 +110,19 @@ export function CampaignBuilder({ onStart, pending, error, initial }: {
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="text-sm font-medium">Questions per check<input type="number" min={1} max={200} step={1} value={Number.isNaN(samples) ? '' : samples} onChange={(event) => setSamples(event.target.valueAsNumber)} className={field} /><span className="mt-1 block text-xs font-normal text-muted-foreground">1–200 for each model</span></label>
           <label className="text-sm font-medium">Sample seed<input type="number" min={0} max={2147483647} step={1} value={Number.isNaN(seed) ? '' : seed} onChange={(event) => setSeed(event.target.valueAsNumber)} className={field} /><span className="mt-1 block text-xs font-normal text-muted-foreground">Use the same seed when retrying</span></label>
-          <label className="text-sm font-medium">Maximum answer tokens<input type="number" min={16} max={2048} step={1} value={Number.isNaN(tokens) ? '' : tokens} onChange={(event) => setTokens(event.target.valueAsNumber)} className={field} /><span className="mt-1 block text-xs font-normal text-muted-foreground">16–2,048; longer answers take more time</span></label>
+
         </div>
+        <SystemPromptPicker role="patient" benchmark allowNone value={systemPrompt} onChange={setSystemPrompt} />
+        <GenerationSettings value={generation} onChange={setGeneration} defaultTemperature={0} defaultMaxTokens={256} />
+        <p className="text-xs text-muted-foreground">Saved patient system and generation settings apply to every selected model. Benchmark answer formats are retained. A retry starts from its recorded protocol.</p>
+        {!validGeneration && <p role="alert" className="text-sm text-destructive">Use temperature 0–2, top-p above 0 through 1, and a whole token limit from 1 to 32768.</p>}
         <p className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">This is small sample screening, not a published leaderboard. Compare results within a check; different checks measure different skills.</p>
       </>}
 
       {stage === 2 && <>
         <div><h2 className="text-xl font-semibold">Review your comparison</h2><p className="mt-1 text-sm text-muted-foreground">Runs are saved together and processed one at a time on the server GPU. You can leave this page and return to the results.</p></div>
         <label className="block text-sm font-medium">Comparison name<input maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder={`${models.length} models · baseline comparison`} className={field} /></label>
-        <dl className="grid gap-4 rounded-lg border p-4 sm:grid-cols-3"><div><dt className="text-xs text-muted-foreground">Saved runs</dt><dd className="mt-1 text-xl font-semibold">{totalRuns}</dd><dd className="text-xs text-muted-foreground">{models.length} models × {checks.length} checks</dd></div><div><dt className="text-xs text-muted-foreground">Requested answers</dt><dd className="mt-1 text-xl font-semibold">{(totalRuns * samples).toLocaleString()}</dd><dd className="text-xs text-muted-foreground">{samples} questions per check</dd></div><div><dt className="text-xs text-muted-foreground">Shared settings</dt><dd className="mt-1 text-sm">Seed {seed} · {tokens} answer tokens</dd><dd className="text-xs text-muted-foreground">Deterministic generation</dd></div></dl>
+        <dl className="grid gap-4 rounded-lg border p-4 sm:grid-cols-3"><div><dt className="text-xs text-muted-foreground">Saved runs</dt><dd className="mt-1 text-xl font-semibold">{totalRuns}</dd><dd className="text-xs text-muted-foreground">{models.length} models × {checks.length} checks</dd></div><div><dt className="text-xs text-muted-foreground">Requested answers</dt><dd className="mt-1 text-xl font-semibold">{(totalRuns * samples).toLocaleString()}</dd><dd className="text-xs text-muted-foreground">{samples} questions per check</dd></div><div><dt className="text-xs text-muted-foreground">Shared settings</dt><dd className="mt-1 text-sm">Seed {seed} · {tokens} answer tokens</dd><dd className="text-xs text-muted-foreground">Temperature {temperature} · ReACT {generation.enable_cot ? 'on' : 'off'}{Number.isFinite(topP) ? ` · top-p ${topP}` : ''}</dd></div></dl>
         <div className="grid gap-4 sm:grid-cols-2"><div><h3 className="text-sm font-medium">Models</h3><ul className="mt-2 max-h-48 space-y-1 overflow-y-auto text-sm text-muted-foreground">{models.map((ref) => <li key={ref} className="break-all">{ref}</li>)}</ul></div><div><h3 className="text-sm font-medium">Checks</h3><ul className="mt-2 space-y-1 text-sm text-muted-foreground">{checks.map((check) => <li key={check}>{benchmarkName(check)}</li>)}</ul></div></div>
       </>}
 

@@ -1,6 +1,7 @@
 """Model provider implementations."""
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -89,6 +90,15 @@ class AnthropicProvider(ModelProvider):
         if not api_key:
             raise ModelProviderError("ANTHROPIC_API_KEY not set")
         self.client = AsyncAnthropic(api_key=api_key)
+        # anthropic < 0.125 shipped only the legacy Completions resource; the
+        # provider speaks the Messages API and would fail on first use with a
+        # bare AttributeError. Say so at construction instead.
+        if getattr(self.client, "messages", None) is None:
+            installed = getattr(sys.modules.get("anthropic"), "__version__", "unknown")
+            raise ModelProviderError(
+                f"anthropic {installed} has no Messages API; install anthropic>=0.125.0 "
+                "(pip install -r requirements.txt)"
+            )
     
     def create_model(
         self,
@@ -162,6 +172,24 @@ class OllamaProvider(ModelProvider):
         )
 
 
+def _openai_reasoning(message: Any) -> Optional[Dict[str, Any]]:
+    """Reasoning an OpenAI-compatible server delivered beside the answer.
+
+    DeepSeek-style servers return ``reasoning_content``; some return
+    ``reasoning``. openai 1.3.5's message type has neither attribute but keeps
+    unknown fields, so read them by name and accept only a non-empty string --
+    a mock message would otherwise hand back a truthy stand-in.
+    """
+    for key in ("reasoning_content", "reasoning"):
+        value = getattr(message, key, None)
+        if value is None:
+            extra = getattr(message, "model_extra", None)
+            value = extra.get(key) if isinstance(extra, dict) else None
+        if isinstance(value, str) and value.strip():
+            return {"reasoning": value.strip(), "reasoning_source": "provider"}
+    return None
+
+
 class OpenAIModel(BaseModel):
     """OpenAI model implementation."""
     
@@ -203,6 +231,7 @@ class OpenAIModel(BaseModel):
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
             } if response.usage else None,
+            metadata=_openai_reasoning(choice.message),
         )
     
     async def stream_generate(
@@ -230,22 +259,136 @@ class OpenAIModel(BaseModel):
                 yield chunk.choices[0].delta.content
 
 
+# Which Claude generations still take sampling parameters, and how each asks
+# for extended thinking. Both rules come from the API documentation bundled
+# with the SDK, not from a live call, so what was actually sent is recorded on
+# every response (``metadata["sampling"]`` / ``metadata["thinking"]``): a
+# wrong row here shows up in the record rather than silently.
+_CLAUDE_ID = re.compile(r"^claude-(?P<family>opus|sonnet|haiku)-(?P<major>\d+)(?:-(?P<minor>\d+))?", re.I)
+_CLAUDE_LEGACY = re.compile(r"^claude-(?P<major>[12])(?:[.-](?P<minor>\d+))?", re.I)
+_CLAUDE_3 = re.compile(r"^claude-3(?:-(?P<minor>\d+))?", re.I)
+_CLAUDE_FRONTIER = re.compile(r"^claude-(fable|mythos)", re.I)
+_MIN_THINKING_BUDGET = 1024
+
+
+def _claude_generation(model_name: str):
+    """``(family, (major, minor))`` for a Claude id, ``("frontier", None)`` for fable/mythos, or None."""
+    name = (model_name or "").strip().lower()
+    if _CLAUDE_FRONTIER.match(name):
+        return "frontier", None
+    m = _CLAUDE_ID.match(name)
+    if m:
+        return m.group("family"), (int(m.group("major")), int(m.group("minor") or 0))
+    m = _CLAUDE_3.match(name)
+    if m:
+        return "claude3", (3, int(m.group("minor") or 0))
+    m = _CLAUDE_LEGACY.match(name)
+    if m:
+        return "legacy", (int(m.group("major")), int(m.group("minor") or 0))
+    return None
+
+
+def _accepts_sampling_params(model_name: str) -> bool:
+    """Whether ``temperature`` may be sent: Haiku of any version and Claude <= 4.6.
+
+    Newer generations (4.7 and later, the 5.x line, fable) reject it. An id this
+    table does not recognise is treated as new: omitting a setting is recorded,
+    a 400 is not.
+    """
+    info = _claude_generation(model_name)
+    if info is None:
+        return False
+    family, gen = info
+    if family == "frontier":
+        return False
+    if family == "haiku":
+        return True
+    return gen <= (4, 6)
+
+
+def _thinking_config(model_name: str, max_tokens: int) -> Dict[str, Any]:
+    """The ``thinking`` request block for this model, when a caller asks for it."""
+    info = _claude_generation(model_name)
+    family, gen = info if info else ("unknown", None)
+    if family == "frontier" or (gen is not None and family != "haiku" and gen >= (4, 7)):
+        # Adaptive thinking; ``display`` is what makes the trace text come back
+        # non-empty (the default omits it).
+        return {"type": "adaptive", "display": "summarized"}
+    if gen is not None and family != "haiku" and gen == (4, 6):
+        return {"type": "adaptive"}
+    budget = max(_MIN_THINKING_BUDGET, min(max_tokens // 2, max_tokens - 1))
+    if max_tokens <= _MIN_THINKING_BUDGET:
+        raise ValueError(
+            f"Extended thinking needs max_tokens above {_MIN_THINKING_BUDGET} "
+            f"(the minimum budget); got {max_tokens}."
+        )
+    return {"type": "enabled", "budget_tokens": budget}
+
+
 class AnthropicModel(BaseModel):
-    """Anthropic model implementation."""
+    """Anthropic model implementation (Messages API, anthropic >= 0.125).
+
+    A model that thinks returns its trace as ``thinking`` content blocks; they
+    are kept in ``metadata["reasoning"]`` (source ``"provider"``) and never
+    reach ``content``, so every scorer reads the answer alone. Thinking is
+    requested only when a caller asks (``generate(..., thinking=True)`` or
+    ``create_model(name, thinking=True)``). The streaming path yields text
+    deltas only.
+    """
 
     supports_seed = False
-    
+
     def __init__(self, model_name: str, provider: AnthropicProvider, **kwargs):
         super().__init__(model_name, "anthropic", **kwargs)
         self.provider_instance = provider
         self.client = provider.client
 
+    @property
+    def supports_temperature(self) -> bool:
+        return _accepts_sampling_params(self.model_name)
+
     def _generation_options(self, kwargs):
-        options = {"temperature": self.temperature, "max_tokens": self.max_tokens, **kwargs}
+        """Request options and the sampling settings the API can actually accept.
+
+        New generations reject all sampling controls. On older generations,
+        native thinking accepts only top_p in [0.95, 1]. These are provider
+        thinking restrictions; the harness's ReACT prompts do not enable it.
+        See https://platform.claude.com/docs/en/build-with-claude/thinking#sampling-parameters.
+        """
+        defaults = {key: self.kwargs[key] for key in ("top_p", "top_k") if key in self.kwargs}
+        options = {"temperature": self.temperature, "max_tokens": self.max_tokens, **defaults, **kwargs}
         if options.pop("seed", None) is not None:
             raise ValueError("Anthropic does not support a generation seed; leave Seed empty.")
-        return options
-    
+        want_thinking = options.pop("thinking", self.kwargs.get("thinking", False))
+        sent = {"temperature": None, "thinking": None}
+        sampling = {key: options.pop(key) for key in ("temperature", "top_p", "top_k") if key in options}
+        sent.update({key: None for key in sampling})
+        if self.supports_temperature:
+            if want_thinking:
+                top_p = sampling.get("top_p")
+                if top_p is not None and 0.95 <= float(top_p) <= 1:
+                    options["top_p"] = top_p
+            else:
+                options.update({key: value for key, value in sampling.items() if value is not None})
+                info = _claude_generation(self.model_name)
+                if info and info[1] and info[1] >= (4, 1) and "top_p" in options:
+                    # These generations accept temperature OR top_p. A selected
+                    # top_p takes precedence over the default/role temperature.
+                    options.pop("temperature", None)
+        sent.update({key: options[key] for key in sampling if key in options})
+        if want_thinking:
+            options["thinking"] = _thinking_config(self.model_name, int(options["max_tokens"]))
+            sent["thinking"] = options["thinking"]
+        return options, sent
+
+    def _request_kwargs(self, system_prompt, messages, kwargs):
+        system_content, filtered_messages = self._extract_system_and_filter(system_prompt, messages)
+        options, sent = self._generation_options(kwargs)
+        request = {"model": self.model_name, "messages": filtered_messages, **options}
+        if system_content:
+            request["system"] = system_content
+        return request, sent
+
     @staticmethod
     def _extract_system_and_filter(
         system_prompt: Optional[str],
@@ -279,34 +422,58 @@ class AnthropicModel(BaseModel):
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
 
-        system_content, filtered_messages = self._extract_system_and_filter(
-            system_prompt, messages
-        )
+        request, sent = self._request_kwargs(system_prompt, messages, kwargs)
+        response = await self.client.messages.create(**request)
 
-        response = await self.client.messages.create(
-            model=self.model_name,
-            system=system_content or "",
-            messages=filtered_messages,
-            **self._generation_options(kwargs)
-        )
-        
-        content = ""
-        if response.content:
-            for block in response.content:
-                if hasattr(block, "text"):
-                    content += block.text
-        
-        return ModelResponse(
-            content=content,
-            model=self.model_name,
-            provider="anthropic",
-            finish_reason=response.stop_reason,
-            usage={
+        text_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        for block in response.content or []:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                text_parts.append(block.text)
+            elif kind == "thinking":
+                # Empty under the default display setting on models that think
+                # by default; only a real trace is recorded.
+                trace = getattr(block, "thinking", None)
+                if isinstance(trace, str) and trace.strip():
+                    reasoning_parts.append(trace.strip())
+            # redacted_thinking, tool_use and anything else carry no answer text.
+
+        metadata: Dict[str, Any] = {
+            "sampling": {key: value for key, value in sent.items() if key != "thinking"},
+            "thinking": sent["thinking"],
+        }
+        if reasoning_parts:
+            metadata["reasoning"] = "\n\n".join(reasoning_parts)
+            metadata["reasoning_source"] = "provider"
+        stop_details = getattr(response, "stop_details", None)
+        if stop_details is not None:
+            metadata["stop_details"] = {
+                k: getattr(stop_details, k, None) for k in ("type", "category", "explanation")
+            }
+
+        usage = None
+        if getattr(response, "usage", None):
+            usage = {
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
-            } if response.usage else None,
+            }
+            for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                value = getattr(response.usage, key, None)
+                if isinstance(value, int):
+                    usage[key] = value
+
+        # A refusal is a result this framework studies, not a failure to route
+        # around: it comes back as finish_reason == "refusal" with stop_details.
+        return ModelResponse(
+            content="".join(text_parts),
+            model=self.model_name,
+            provider="anthropic",
+            finish_reason=getattr(response, "stop_reason", None),
+            usage=usage,
+            metadata=metadata,
         )
-    
+
     async def stream_generate(
         self,
         prompt: str,
@@ -314,19 +481,13 @@ class AnthropicModel(BaseModel):
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs
     ):
+        """Yield answer text as it arrives. Thinking deltas are not part of the
+        visible stream, consistent with ``content`` being the visible answer."""
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
 
-        system_content, filtered_messages = self._extract_system_and_filter(
-            system_prompt, messages
-        )
-
-        async with self.client.messages.stream(
-            model=self.model_name,
-            system=system_content or "",
-            messages=filtered_messages,
-            **self._generation_options(kwargs)
-        ) as stream:
+        request, _sent = self._request_kwargs(system_prompt, messages, kwargs)
+        async with self.client.messages.stream(**request) as stream:
             async for text in stream.text_stream:
                 yield text
 

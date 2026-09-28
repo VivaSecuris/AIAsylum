@@ -23,6 +23,7 @@ const RUN_LABELS: Record<WeightRunKind, string> = {
   direction: 'Direction',
   sweep: 'Causal check',
   select: 'Capability search',
+  autotune: 'Verified edit',
   surgery: 'Weight surgery',
   compare: 'Behavior comparison',
   probe: 'Intent probe',
@@ -30,6 +31,13 @@ const RUN_LABELS: Record<WeightRunKind, string> = {
   expert_surgery: 'Expert edit',
   lora: 'LoRA fine-tune',
   distill: 'Distillation',
+  induce: 'Targeted refusal',
+  hneurons: 'Hallucination neurons',
+  hneuron_bake: 'H-neuron bake',
+  redteam: 'Red-team',
+  embed_align: 'Embedding alignment',
+  embed_extract: 'Embedding extraction',
+  embed_recon: 'Embedding reconstruction',
 }
 
 const hasRows = (value: unknown): boolean => Array.isArray(value) && value.length > 0

@@ -28,7 +28,7 @@ export function TestRunFilters({ onFilterChange }: TestRunFiltersProps) {
       <div className="flex-1 min-w-[200px]">
         <input
           type="text"
-          placeholder="Search by model name..."
+          placeholder="Search by name or model..."
           value={search}
           onChange={(e) => handleChange('search', e.target.value)}
           className="w-full rounded border px-3 py-2 text-sm"
@@ -40,9 +40,14 @@ export function TestRunFilters({ onFilterChange }: TestRunFiltersProps) {
         className="rounded border px-3 py-2 text-sm"
       >
         <option value="">All Test Types</option>
+        <option value="one_shot">One-Shot</option>
+        <option value="multi_shot">Multi-Shot</option>
         <option value="conversation">Conversation</option>
-        <option value="scenario">Scenario</option>
-        <option value="adversarial">Adversarial</option>
+        <option value="group_therapy">Group Therapy</option>
+        <option value="benchmark">Benchmark</option>
+        <option value="analysis">Analysis</option>
+        <option value="scenario">Scenario (legacy)</option>
+        <option value="adversarial">Adversarial (legacy)</option>
       </select>
       <select
         value={status}
@@ -52,6 +57,7 @@ export function TestRunFilters({ onFilterChange }: TestRunFiltersProps) {
         <option value="">All Statuses</option>
         <option value="pending">Pending</option>
         <option value="running">Running</option>
+        <option value="paused">Paused</option>
         <option value="completed">Completed</option>
         <option value="failed">Failed</option>
       </select>

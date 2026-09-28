@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.models.base import BaseModel
 from vivasecuris.aiasylum.analysis.prompts import (
-    get_evaluation_system_prompt,
+    compose_evaluator_system_prompt,
     create_evaluation_prompt,
 )
 from vivasecuris.aiasylum.constants import SCORING_DIMENSIONS
@@ -19,15 +19,35 @@ logger = logging.getLogger(__name__)
 class LLMEvaluator:
     """Evaluates conversations using LLM to extract dimensional scores."""
     
-    def __init__(self, model: BaseModel, system_prompt: Optional[str] = None):
+    def __init__(
+        self,
+        model: BaseModel,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        enable_cot: bool = False,
+    ):
         """
         Initialize the evaluator.
         
         Args:
             model: The LLM model to use for evaluation
+            system_prompt: Extra instructions, added after the built-in scoring
+                prompt (which keeps the dimensions and JSON format)
+            temperature: Sampling temperature; low for consistent scoring
+            max_tokens: Output budget; None uses the model's own default
         """
-        self.model = model
-        self.system_prompt = system_prompt or get_evaluation_system_prompt()
+        from vivasecuris.aiasylum.analysis.generation import ConfiguredEvaluatorModel
+        self.model = (
+            ConfiguredEvaluatorModel(model, enable_cot=enable_cot, top_p=top_p)
+            if (enable_cot or top_p is not None) and not isinstance(model, ConfiguredEvaluatorModel)
+            else model
+        )
+        self.custom_instructions = system_prompt.strip() if system_prompt and system_prompt.strip() else None
+        self.system_prompt = compose_evaluator_system_prompt(self.custom_instructions)
+        self.temperature = 0.3 if temperature is None else float(temperature)
+        self.max_tokens = int(max_tokens) if max_tokens else None
     
     async def evaluate_conversation(
         self,
@@ -82,7 +102,8 @@ class LLMEvaluator:
                     self.model.generate(
                         prompt="",
                         messages=messages,
-                        temperature=0.3,  # Lower temperature for more consistent scoring
+                        temperature=self.temperature,
+                        **({"max_tokens": self.max_tokens} if self.max_tokens else {}),
                     ),
                     timeout=300.0,  # 5 minute timeout
                 )

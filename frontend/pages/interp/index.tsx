@@ -12,6 +12,7 @@ import { ModelFitPanel } from '@/components/interp/ModelFitPanel'
 import { ModelPicker } from '@/components/models/ModelPicker'
 import { useModelCatalog } from '@/lib/model-catalog'
 import { parseInterpPrefill } from '@/lib/interp-prefill'
+import { getSettings } from '@/lib/settings'
 import {
   useInterpModes,
   useInterpRuns,
@@ -59,7 +60,10 @@ export default function InterpIndexPage() {
   useEffect(() => {
     if (!router.isReady || appliedPrefill.current === prefillKey) return
     appliedPrefill.current = prefillKey
-    const next = parseInterpPrefill(router.query)
+    const defaults = getSettings()
+    const defaultModel = ['transformers', 'local'].includes(defaults.defaultPatientProvider) && defaults.defaultPatientModel
+      ? defaults.defaultPatientModel : undefined
+    const next = parseInterpPrefill(router.query, defaultModel)
     setMode(next.mode)
     setModelA(next.modelA)
     setModelB(next.modelB)

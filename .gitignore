@@ -64,6 +64,8 @@ frontend/.next-gpu/
 frontend/.next-check/
 frontend/.next-local/
 frontend/.next-visuals-verify/
+frontend/.next-dev/
+frontend/.next-build/
 frontend/build/
 frontend/dist/
 frontend/.env.local

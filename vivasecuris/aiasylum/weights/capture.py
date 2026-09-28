@@ -15,13 +15,87 @@ question.
 from __future__ import annotations
 
 import logging
-import re
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Qwen3 and other hybrid reasoning models open the reply with a <think> block.
-_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)\s*", re.DOTALL)
+# Version of the (text, special-tokens) contract that ``format_chat`` produces for
+# a given tokenizer and message list. Recorded on every derived direction and
+# probe so an artifact can say which contract it was captured under. Bump it
+# when the no-template text, the special-tokens rule, ``add_generation_prompt``
+# or the thinking default changes -- never for a model, corpus or method change.
+#
+#   1  pre-fix: no-template text was the raw prompt with the system prompt
+#      dropped, and ``add_special_tokens`` was keyed on the caller's *request*
+#      rather than on whether a template was applied, so base models got no BOS.
+#   2  ``format_chat``: plain text keeps the system prompt and ends in a blank
+#      line, and special tokens are added exactly when no template rendered them.
+PROMPT_FORMAT_VERSION = 2
+
+
+class NoChatTemplateError(ValueError):
+    """A caller required a chat template and the tokenizer has none.
+
+    Deriving a refusal direction from raw prompts against a base model is a
+    different experiment from deriving it through the model's chat template,
+    so it has to be asked for rather than fallen into. ``ValueError`` so the
+    run loop's existing handling marks the run failed with this message.
+    """
+
+
+def has_chat_template(tokenizer) -> bool:
+    """Whether the tokenizer carries a usable chat template.
+
+    ``bool()`` rather than ``is not None``: transformers treats an empty string
+    as a real template and renders every prompt to ``""``, which is precisely
+    the plausible-looking wrong result this module exists to refuse.
+    """
+    return bool(getattr(tokenizer, "chat_template", None))
+
+
+def render_plain(messages: List[Dict[str, str]]) -> str:
+    """The one no-template rendering: every message, joined, ending in a blank line.
+
+    The system prompt is kept. The trailing separator is what plays the role
+    of ``add_generation_prompt=True`` on a base model: without it the last
+    prompt token is the last word of the question, and greedy generation tends
+    to continue the question rather than answer it. It is also the text
+    ``lora.build_examples`` trains on, so a base-model adapter's training
+    positions and its later capture and serving positions coincide.
+    """
+    return "\n\n".join(m.get("content", "") for m in messages) + "\n\n"
+
+
+_warned_no_template: set = set()
+
+
+def _warn_no_template_once(tokenizer) -> None:
+    key = getattr(tokenizer, "name_or_path", "") or f"id:{id(tokenizer)}"
+    if key in _warned_no_template:
+        return
+    _warned_no_template.add(key)
+    logger.warning(
+        "Tokenizer %s has no chat template: prompts are rendered as plain text with "
+        "a trailing blank line and the tokenizer's own special tokens (BOS) added.",
+        key,
+    )
+
+
+def format_chat(
+    tokenizer, messages: List[Dict[str, str]], *, thinking: bool = False
+) -> Tuple[str, bool]:
+    """Render one message list. The single source of truth for prompt text.
+
+    Returns ``(text, template_applied)``. Every caller must tokenize with
+    ``add_special_tokens=not template_applied``: a chat template carries its own
+    special tokens (``{{ bos_token }}``, ``<|begin_of_text|>``, ``<bos>``), and
+    plain text needs the tokenizer to add them. Keying that flag on whether a
+    template was *requested* rather than *applied* is the bug this replaces.
+    """
+    if not has_chat_template(tokenizer):
+        _warn_no_template_once(tokenizer)
+        return render_plain(messages), False
+    return render_chat(tokenizer, messages, thinking=thinking), True
 
 
 def render_chat(tokenizer, messages: List[Dict[str, str]], thinking: bool = False) -> str:
@@ -41,8 +115,16 @@ def render_chat(tokenizer, messages: List[Dict[str, str]], thinking: bool = Fals
 
 
 def strip_thinking(text: str) -> str:
-    """Drop a leading reasoning block so only the answer is scored."""
-    return _THINK_BLOCK.sub("", text or "", count=1).lstrip()
+    """Drop the reasoning block so only the answer is scored.
+
+    One rule for the whole framework, in ``reasoning.split_reasoning``: the
+    behavioural scorers, the benchmark parser and this module all read the same
+    visible answer, including the closing-tag-only trace a template that
+    pre-fills ``<think>`` produces.
+    """
+    from vivasecuris.aiasylum.reasoning import split_reasoning
+
+    return split_reasoning(text or "")[0].lstrip()
 
 
 def format_prompts(
@@ -50,25 +132,26 @@ def format_prompts(
     prompts: Sequence[str],
     system_prompt: Optional[str] = None,
     thinking: bool = False,
-) -> List[str]:
-    """Wrap raw prompts in the model's chat template.
+) -> Tuple[List[str], bool]:
+    """Wrap raw prompts as single-turn chats: ``(texts, template_applied)``.
 
-    Falls back to the raw text for base models with no template. The same
-    formatting must be used at capture and at generation time, or the direction
-    is derived from positions the model never actually sees.
+    Built on :func:`format_chat`, so the same text is produced at capture and
+    at generation time -- or the direction is derived from positions the model
+    never actually sees. Returns a tuple on purpose: a caller that still does
+    ``format_prompts(...)[0]`` and hands the result to a tokenizer fails at its
+    first call, rather than silently keying ``add_special_tokens`` on its own
+    request as every caller once did.
     """
-    if getattr(tokenizer, "chat_template", None) is None:
-        logger.warning("Tokenizer has no chat template; using raw prompts")
-        return list(prompts)
-
-    formatted = []
+    applied = has_chat_template(tokenizer)   # defined even for an empty prompt list
+    texts: List[str] = []
     for prompt in prompts:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        formatted.append(render_chat(tokenizer, messages, thinking=thinking))
-    return formatted
+        text, applied = format_chat(tokenizer, messages, thinking=thinking)
+        texts.append(text)
+    return texts, applied
 
 
 def capture_pooled_residuals(
@@ -83,6 +166,7 @@ def capture_pooled_residuals(
     system_prompt: Optional[str] = None,
     prompt_suffix: Optional[str] = None,
     thinking: bool = False,
+    require_template: bool = False,
     progress: Optional[callable] = None,
 ):
     """Per-layer residuals pooled over the prompt: ``[n_layers+1, n_prompts, d_model]``.
@@ -112,8 +196,17 @@ def capture_pooled_residuals(
     texts = list(prompts)
     if prompt_suffix:
         texts = [f"{p}\n\n{prompt_suffix}" for p in texts]
+    # Refuse before formatting so the no-template warning does not fire on a raise.
+    if apply_template and require_template and not has_chat_template(tokenizer):
+        raise NoChatTemplateError(
+            "This tokenizer has no chat template, and this capture requires one. "
+            "Capturing plain-text prompts against a base model is a different "
+            "experiment; pass allow_no_chat_template to run it deliberately."
+        )
     if apply_template:
-        texts = format_prompts(tokenizer, texts, system_prompt, thinking=thinking)
+        texts, applied = format_prompts(tokenizer, texts, system_prompt, thinking=thinking)
+    else:
+        applied = False
     if not texts:
         raise ValueError("No prompts to capture")
 
@@ -126,7 +219,7 @@ def capture_pooled_residuals(
             chunk = texts[start : start + batch_size]
             encoded = tokenizer(
                 chunk, return_tensors="pt", padding=True, truncation=True,
-                max_length=max_length, add_special_tokens=not apply_template,
+                max_length=max_length, add_special_tokens=not applied,
             ).to(model.device)
             mask = encoded["attention_mask"].unsqueeze(-1)          # [b, seq, 1]
 
@@ -172,16 +265,33 @@ def capture_last_token_residuals(
     max_length: int = 512,
     apply_template: bool = True,
     system_prompt: Optional[str] = None,
+    thinking: bool = False,
+    require_template: bool = False,
     progress: Optional[callable] = None,
 ):
     """Return per-layer last-token hidden states as ``[n_layers+1, n_prompts, d_model]``.
 
     Results come back on CPU in float32 regardless of model dtype, so a few
     hundred prompts stay well inside memory while the model itself may be on MPS.
+
+    ``thinking`` is part of the formatting a direction is derived under: on a
+    hybrid reasoning model the generation prompt differs with it, so the last
+    prompt token does too. ``require_template`` refuses a base model rather
+    than silently capturing plain text.
     """
     import torch
 
-    texts = format_prompts(tokenizer, prompts, system_prompt) if apply_template else list(prompts)
+    # Refuse before formatting so the no-template warning does not fire on a raise.
+    if apply_template and require_template and not has_chat_template(tokenizer):
+        raise NoChatTemplateError(
+            "This tokenizer has no chat template, and direction capture requires one. "
+            "Deriving from plain-text prompts against a base model is a different "
+            "experiment; pass allow_no_chat_template to run it deliberately."
+        )
+    if apply_template:
+        texts, applied = format_prompts(tokenizer, prompts, system_prompt, thinking=thinking)
+    else:
+        texts, applied = list(prompts), False
     if not texts:
         raise ValueError("No prompts to capture")
 
@@ -200,7 +310,7 @@ def capture_last_token_residuals(
                 padding=True,
                 truncation=True,
                 max_length=max_length,
-                add_special_tokens=not apply_template,  # the template already has them
+                add_special_tokens=not applied,
             ).to(model.device)
 
             with torch.no_grad():

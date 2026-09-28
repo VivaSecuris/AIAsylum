@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.database import get_session, TestRun, TestSuite
-from vivasecuris.aiasylum.constants import STATUS_PENDING, TEST_TYPE_BENCHMARK
+from vivasecuris.aiasylum.constants import STATUS_PENDING, TEST_TYPE_BENCHMARK, TEST_TYPE_GROUP_THERAPY
 from vivasecuris.aiasylum.suites.progress_tracker import ProgressTracker
 
 
@@ -19,10 +19,19 @@ class SuiteRunner:
         models: List[Dict[str, str]],
         test_config: Optional[Dict] = None,
         num_samples: Optional[int] = None,
+        doctor: Optional[Dict[str, str]] = None,
     ) -> TestSuite:
-        """Create a test suite with all test run combinations."""
+        """Create a test suite with all test run combinations.
+
+        ``doctor`` interviews and assesses every model; without one each model is
+        its own doctor (the original behaviour). Group therapy is one session with
+        every model as a patient, sharing the suite's patient system prompt.
+        """
         session = get_session()
         try:
+            from vivasecuris.aiasylum.runner.run_config import validate_patient_prompt_selection
+            for test_type in test_types:
+                validate_patient_prompt_selection(session, test_type, test_config)
             # Create suite record
             suite = TestSuite(
                 name=name,
@@ -45,35 +54,40 @@ class SuiteRunner:
             session.refresh(suite)
 
             # Create test runs for all combinations
-            test_run_ids = []
+            runs: List[TestRun] = []
+
+            def add_run(doctor_model: Dict[str, str], patient: Dict[str, str], test_type: str, config: Dict) -> None:
+                run = TestRun(
+                    doctor_provider=doctor_model["provider"],
+                    doctor_model=doctor_model["model"],
+                    patient_provider=patient["provider"],
+                    patient_model=patient["model"],
+                    test_type=test_type,
+                    status=STATUS_PENDING,
+                    suite_id=suite.id,
+                    meta_data={"test_config": config, "suite_id": suite.id},
+                )
+                session.add(run)
+                runs.append(run)
 
             # For each test type + model combination
             for test_type in test_types:
                 # Skip "benchmark" test type here - benchmarks are handled separately
                 if test_type == TEST_TYPE_BENCHMARK:
                     continue
-                    
-                for model in models:
-                    # Merge test_config with suite-level config
-                    run_test_config = {
-                        **(test_config or {}),
-                        "suite_id": suite.id,
+                base_config = {**(test_config or {}), "suite_id": suite.id}
+                if test_type == TEST_TYPE_GROUP_THERAPY:
+                    shared_prompt = {
+                        key: value for key, value in (
+                            ("system_prompt_id", base_config.get("patient_system_prompt_id")),
+                            ("system_prompt", base_config.get("patient_system_prompt")),
+                        ) if value
                     }
-                    test_run = TestRun(
-                        doctor_provider=model["provider"],
-                        doctor_model=model["model"],
-                        patient_provider=model["provider"],
-                        patient_model=model["model"],
-                        test_type=test_type,
-                        status=STATUS_PENDING,
-                        suite_id=suite.id,
-                        meta_data={
-                            "test_config": run_test_config,
-                            "suite_id": suite.id,
-                        },
-                    )
-                    session.add(test_run)
-                    test_run_ids.append(test_run.id)
+                    patients = [{"provider": m["provider"], "model": m["model"], **shared_prompt} for m in models]
+                    add_run(doctor or models[0], models[0], test_type, {**base_config, "patients": patients})
+                    continue
+                for model in models:
+                    add_run(doctor or model, model, test_type, dict(base_config))
 
             # For each benchmark + model combination
             for benchmark in benchmarks:
@@ -94,6 +108,7 @@ class SuiteRunner:
                             "benchmark": benchmark,
                             "num_samples": num_samples,
                             "test_config": {
+                                **(test_config or {}),
                                 "benchmark_name": benchmark,
                                 "num_samples": num_samples or 100,
                                 "test_mode": test_mode,
@@ -102,8 +117,10 @@ class SuiteRunner:
                         },
                     )
                     session.add(test_run)
-                    test_run_ids.append(test_run.id)
+                    runs.append(test_run)
 
+            session.flush()  # assigns the IDs
+            test_run_ids = [run.id for run in runs]
             session.commit()
 
             # Update suite total_runs

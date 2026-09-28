@@ -5,6 +5,7 @@ import { ModelDiscovery, HuggingFaceAccess } from '@/components/models/ModelDisc
 import type { DiscoveredModel } from '@/lib/model-discovery'
 import { availabilityLabel, canUseModel, useModelCatalog, useModelDownloads } from '@/lib/model-catalog'
 import { belongsToExperiment, modelOrganizationKey, useModelOrganization } from '@/lib/model-organization'
+import { modelChatUrl } from '@/lib/model-chat'
 import { formatApiError } from '@/lib/utils'
 
 interface ModelPickerProps {
@@ -73,6 +74,7 @@ export function ModelPicker({ id, label, value, onChange, description, disabled 
       </>)}
       <button type="button" onClick={() => setDiscover((open) => !open)} disabled={disabled} aria-expanded={discover} aria-controls={`${id}-discover`} className="rounded-md border px-3 py-1.5 text-xs font-medium text-primary hover:bg-muted disabled:opacity-50">{discover ? 'Close model search' : 'Find common models'}</button>
       {discover && <div id={`${id}-discover`}><ModelDiscovery selectedId={value} disabled={disabled} onSelect={(model) => { setDiscovered(model); onChange(model.id); setManual(false); setSearch(''); setExperiment(''); setDiscover(false) }} /></div>}
+      {!!value && <Link href={modelChatUrl(selected?.provider || 'transformers', value)} className="inline-block text-xs text-primary hover:underline">Chat &amp; actions for this model →</Link>}
       {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
       {((selected?.kind === 'base' && selected.availability === 'download_required') || (!selected && chosenDiscovery) || download?.active) && (
         <div className="mt-2 space-y-1">

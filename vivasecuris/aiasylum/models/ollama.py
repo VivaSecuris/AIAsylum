@@ -9,6 +9,19 @@ from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
 from config import settings
 
 
+def _with_reasoning(metadata: Dict[str, Any], thinking: Any) -> Dict[str, Any]:
+    """Attach a trace the server delivered separately (Ollama's ``thinking`` field).
+
+    Thinking models on Ollama >= 0.9 return the trace beside the answer rather
+    than inside it; it is kept under the same keys ``ModelResponse`` uses for an
+    inline block, so every reader sees one shape.
+    """
+    if isinstance(thinking, str) and thinking.strip():
+        metadata["reasoning"] = thinking.strip()
+        metadata["reasoning_source"] = "provider"
+    return metadata
+
+
 class OllamaModel(BaseModel):
     """First-class Ollama model implementation with enhanced features."""
     
@@ -124,14 +137,23 @@ class OllamaModel(BaseModel):
                 "stream": False,
                 "options": options,
             }
+            # Only when asked: Ollama >= 0.9 rejects `think` on models that
+            # cannot think, and older servers ignore it.
+            think = kwargs.get("think", self.kwargs.get("think"))
+            if think is not None:
+                request_data["think"] = bool(think)
+            request_system_prompts = [
+                msg["content"] for msg in request_data["messages"] if msg["role"] == "system"
+            ]
             
             try:
                 response = await client.post("/api/chat", json=request_data, timeout=self._timeout)
                 response.raise_for_status()
                 data = response.json()
+                message = data.get("message", {}) or {}
                 
                 return ModelResponse(
-                    content=data.get("message", {}).get("content", ""),
+                    content=message.get("content", ""),
                     model=self.model_name,
                     provider="ollama",
                     finish_reason="stop" if data.get("done") else None,
@@ -140,9 +162,11 @@ class OllamaModel(BaseModel):
                         "eval_count": data.get("eval_count"),
                         "total_duration": data.get("total_duration"),
                     } if "prompt_eval_count" in data else None,
-                    metadata={
+                    metadata=_with_reasoning({
                         "done": data.get("done"),
-                    },
+                        "request_system_prompts": request_system_prompts,
+                        "request_system_prompts_source": "provider",
+                    }, message.get("thinking")),
                 )
             except httpx.ConnectError as e:
                 raise RuntimeError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running? Error: {str(e)}")
@@ -159,13 +183,19 @@ class OllamaModel(BaseModel):
             except Exception as e:
                 # Fallback to generate API if chat fails
                 full_prompt = self._messages_to_prompt(messages)
+                request_system_prompts = [
+                    msg.get("content", "") for msg in messages if msg.get("role") == "system"
+                ]
                 if system_prompt:
                     full_prompt = f"{system_prompt}\n\n{full_prompt}"
+                    request_system_prompts.insert(0, system_prompt)
         else:
             # Use generate API for simple prompts
             full_prompt = prompt
+            request_system_prompts = []
             if system_prompt:
                 full_prompt = f"{system_prompt}\n\n{prompt}"
+                request_system_prompts.append(system_prompt)
         
         # Prepare generate request (same options as chat for consistency)
         options = {
@@ -202,10 +232,13 @@ class OllamaModel(BaseModel):
                     "eval_count": data.get("eval_count"),
                     "total_duration": data.get("total_duration"),
                 } if "prompt_eval_count" in data else None,
-                metadata={
-                    "context": data.get("context"),
-                    "done": data.get("done"),
-                },
+                metadata=_with_reasoning(
+                    {
+                        "context": data.get("context"), "done": data.get("done"),
+                        "request_system_prompts": request_system_prompts,
+                        "request_system_prompts_source": "provider",
+                    }, data.get("thinking")
+                ),
             )
         except httpx.ConnectError as e:
             raise RuntimeError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running? Error: {str(e)}")
@@ -334,14 +367,35 @@ class OllamaProvider:
             **kwargs
         )
     
-    async def list_available_models(self) -> List[str]:
-        """List all available Ollama models. Raises on connection error."""
+    async def list_available_models(self, chat_only: bool = False) -> List[str]:
+        """List installed Ollama models. Raises on connection error.
+
+        ``chat_only`` drops models whose reported capabilities lack "completion"
+        (embedding models such as bge-m3, which fail every chat request). A model
+        whose capabilities cannot be read is kept.
+        """
+        base = self.base_url.rstrip('/')
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{self.base_url.rstrip('/')}/api/tags")
+            response = await client.get(f"{base}/api/tags")
             response.raise_for_status()
             data = response.json()
             models = data.get("models", []) if isinstance(data, dict) else []
-            return [m.get("name", "") for m in models if isinstance(m, dict) and m.get("name")]
+            names = [m.get("name", "") for m in models if isinstance(m, dict) and m.get("name")]
+            if not chat_only:
+                return names
+
+            async def can_chat(name: str) -> bool:
+                try:
+                    show = await client.post(f"{base}/api/show", json={"model": name})
+                    show.raise_for_status()
+                    capabilities = show.json().get("capabilities")
+                except Exception:
+                    return True
+                return not isinstance(capabilities, list) or "completion" in capabilities
+
+            import asyncio
+            keep = await asyncio.gather(*(can_chat(name) for name in names))
+            return [name for name, ok in zip(names, keep) if ok]
     
     async def pull_model(self, model_name: str) -> Dict[str, Any]:
         """Pull a model from Ollama."""

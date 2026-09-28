@@ -25,14 +25,15 @@ _ANSWER_MARKER = re.compile(
 
 
 def _visible_answer_text(response: str) -> str:
-    """Only answer-channel text may supply a choice or a number."""
-    text = str(response).strip()
-    for tag in ("think", "thinking", "analysis"):
-        if re.search(fr"</{tag}>", text, re.I):
-            text = re.split(fr"</{tag}>", text, flags=re.I)[-1]
-        elif re.search(fr"<{tag}>", text, re.I):
-            return ""
-    return _unmark(text)
+    """Only answer-channel text may supply a choice or a number.
+
+    The shared rule (``reasoning.split_reasoning``) plus ``<analysis>``, which
+    this parser has always treated as a reasoning channel: an unclosed block
+    means no answer was submitted.
+    """
+    from vivasecuris.aiasylum.reasoning import split_reasoning
+
+    return _unmark(split_reasoning(str(response), tags=("think", "thinking", "analysis"))[0])
 
 
 def final_answer_text(response: str) -> str:

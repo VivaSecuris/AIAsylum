@@ -184,18 +184,27 @@ def build_model_catalog(
     presets_path = presets_path or project_root / "config" / "interp_model_matrix.json"
     imports_root = imports_root or project_root / "runs" / "model-lineage" / "imports"
     cached = _cached_models(_cache_roots() if cache_roots is None else cache_roots)
-    aliases = {str(snapshot.resolve()): repo for repo, (snapshot, _, _) in cached.items()}
+    snapshot_aliases = {str(snapshot.resolve()): repo for repo, (snapshot, _, _) in cached.items()}
+    observed_refs: dict[str, set[str]] = {}
+    for snapshot, repo in snapshot_aliases.items():
+        observed_refs.setdefault(repo, set()).add(snapshot)
 
     def canonical(ref: str | None) -> str | None:
         if not isinstance(ref, str) or not ref.strip():
             return None
+        original_ref = ref
         ref = ref.strip()
         path = Path(ref).expanduser()
         looks_local = path.is_absolute() or ref.startswith((".", "~")) or ref.split("/")[0] == models_root.name
         if looks_local or (project_root / path).exists():
             path = path if path.is_absolute() else project_root / path
-            return aliases.get(str(path.resolve()), str(path.resolve()))
-        return ref
+            key = snapshot_aliases.get(str(path.resolve()), str(path.resolve()))
+        else:
+            key = ref
+        # Consumers can merge only identities the server resolved to the same
+        # checkpoint; names or path suffixes alone do not establish identity.
+        observed_refs.setdefault(key, set()).update((original_ref, ref))
+        return key
 
     session = get_session()
     try:
@@ -319,7 +328,7 @@ def build_model_catalog(
                             metadata = {}
                     if isinstance(metadata, dict):
                         remember(imported_ref(metadata.get("modified_model")), table, run_key)
-                    if record.get("kind") == "surgery":
+                    if record.get("kind") in WEIGHT_KINDS_WRITING_MODELS:
                         remember(imported_ref(record.get("out_dir")), table, run_key)
 
     # Deleted checkpoint identities remain visible in history even when they
@@ -358,6 +367,13 @@ def build_model_catalog(
         row["history"] = {kind: len(ids) for kind, ids in history.get(key, {
             "test_runs": set(), "interp_runs": set(), "weight_runs": set(),
         }).items()}
+        references = observed_refs.get(key, set()) - {row["model_ref"]}
+        if key in cached and not cached[key][2]:
+            # No main ref means the explicit snapshot is usable, but a bare
+            # repo ID could fetch different weights. Do not equate those load
+            # requests merely because they share an inventory provenance key.
+            references = {ref for ref in references if ref.strip() != key}
+        row["aliases"] = sorted(references)
 
     return {"models": sorted(entries.values(), key=lambda row: (row["kind"] != "custom", row["name"].lower())),
             "location": socket.gethostname()}

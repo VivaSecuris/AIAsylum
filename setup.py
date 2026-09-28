@@ -19,7 +19,7 @@ setup(
         "sqlalchemy>=2.0.23",
         "alembic>=1.12.1",
         "openai>=1.3.5",
-        "anthropic>=0.7.7",
+        "anthropic>=0.125.0,<1",
         "google-generativeai>=0.3.1",
         "httpx>=0.25.1",
         "click>=8.1.0",

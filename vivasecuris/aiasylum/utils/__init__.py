@@ -1,6 +1,6 @@
 """Utility functions for AI Asylum."""
 
-from vivasecuris.aiasylum.utils.model_context import model_gen_kwargs_from_context
+from vivasecuris.aiasylum.utils.model_context import model_gen_kwargs_from_context, role_setting
 from vivasecuris.aiasylum.utils.prompt_variables import (
     extract_variables,
     substitute_variables,
@@ -14,6 +14,7 @@ __all__ = [
     "extract_variables",
     "substitute_variables",
     "model_gen_kwargs_from_context",
+    "role_setting",
     "SafetyTaxonomyClassifier",
     "classify_response",
 ]

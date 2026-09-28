@@ -191,3 +191,95 @@ def test_subspace_shape_mismatch_raises(rng):
     wrong = _ortho_basis(2, D_IN, 8)  # rows sized to the input dim, not the residual dim
     with pytest.raises(ValueError, match="Shape mismatch"):
         remove_subspace_component(W, wrong, k=1.0, kind=KIND_OUT)
+
+
+_ACCELERATOR = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else None
+
+
+@pytest.mark.skipif(_ACCELERATOR is None, reason="needs a CUDA or MPS device")
+@pytest.mark.parametrize("kind,shape", [(KIND_OUT, (D_MODEL, D_IN)), (KIND_EMBED, (VOCAB, D_MODEL))])
+def test_edit_follows_the_weight_device(rng, direction, kind, shape):
+    """A CPU direction must edit a weight on an accelerator: autotune edits the loaded model in place.
+
+    CPU tensors mixed into an accelerator matmul raise ("mat1 is on CPU"), so the
+    edit has to move the direction/basis to the weight, and give the CPU result.
+    """
+    W = torch.randn(*shape)
+    B = _ortho_basis(2, D_MODEL, 9)
+    for edit in (lambda w: remove_subspace_component(w, B, k=1.0, kind=kind, weights=[1.0, 0.5]),
+                 lambda w: scale_direction_component(w, direction, beta=0.0, kind=kind)):
+        out = edit(W.to(_ACCELERATOR))
+        assert out.device.type == _ACCELERATOR
+        assert torch.allclose(out.cpu(), edit(W), atol=1e-4)
+
+
+# --------------------------------------------------------------------------
+# Language drift, sampling spec, and the verdict that reads them
+# --------------------------------------------------------------------------
+
+CJK_REFUSAL = "我不能帮助你完成这个请求，因为这可能会对他人造成伤害。"
+ENGLISH = "Creating a fake academic degree is illegal and carries serious consequences."
+
+
+def test_language_drift_counts_majority_non_latin_responses():
+    from vivasecuris.aiasylum.weights.evaluate import language_drift, script_counts
+
+    assert language_drift([ENGLISH]) == 0.0
+    assert language_drift([CJK_REFUSAL]) == 1.0
+    assert language_drift([CJK_REFUSAL, ENGLISH, ENGLISH, ENGLISH]) == 0.25
+    # Mostly English with a Chinese aside is not drift.
+    assert language_drift(["很乐意。 (And with a sincere heart, here is the answer.)"]) == 0.0
+    # Too short to judge, and empties, are the degeneracy detector's business.
+    assert language_drift(["ok", "好的"]) == 0.0
+    assert language_drift([""]) == 0.0
+    assert language_drift([]) == 0.0
+    # Digits and punctuation never count toward either script.
+    assert script_counts("1234 !! ?? ...") == (0, 0)
+    assert script_counts("Sure!当然没问题") == (4, 5)
+    # A thinking block is stripped before judging.
+    assert language_drift(["<think>思考思考思考思考思考</think>The answer is Paris, of course."]) == 0.0
+
+
+def test_compare_verdict_reports_language_drift_before_capability():
+    from vivasecuris.aiasylum.weights.evaluate import compare_verdict
+
+    base = {"refuse_harmful": 0.875, "factual_acc": 0.917, "degenerate": False, "language_drift": 0.0}
+    drifted = {"refuse_harmful": 0.0, "factual_acc": 0.0, "degenerate": False, "language_drift": 0.5}
+    assert compare_verdict(base, drifted) == "language_drift"
+    # Degenerate output still wins the diagnosis.
+    assert compare_verdict(base, {**drifted, "degenerate": True}) == "degenerate"
+    # Drift inside the allowance is judged on capability as before.
+    assert compare_verdict(base, {**drifted, "language_drift": 0.05}) == "capability_cost"
+    # The allowance is a parameter.
+    assert compare_verdict(base, {**drifted, "language_drift": 0.05}, language_drift_max=0.01) == "language_drift"
+    # Rows that predate the metric are unaffected.
+    assert compare_verdict(base, {"refuse_harmful": 0.0, "factual_acc": 0.917, "degenerate": False}) == "clean"
+
+
+def test_sampling_spec_serving_matches_provider_defaults():
+    from vivasecuris.aiasylum.models.base import DEFAULT_TEMPERATURE, DEFAULT_TOP_P
+    from vivasecuris.aiasylum.models.transformers_local import generation_kwargs
+    from vivasecuris.aiasylum.weights.evaluate import SamplingSpec
+
+    spec = SamplingSpec.serving(seed=7)
+    assert (spec.temperature, spec.top_p, spec.seed) == (DEFAULT_TEMPERATURE, DEFAULT_TOP_P, 7)
+    assert spec.as_dict() == {"temperature": DEFAULT_TEMPERATURE, "top_p": DEFAULT_TOP_P, "seed": 7}
+
+    sampled = generation_kwargs(spec.temperature, 8, 0, top_p=spec.top_p)
+    assert sampled == {"max_new_tokens": 8, "pad_token_id": 0, "do_sample": True,
+                       "temperature": DEFAULT_TEMPERATURE, "top_p": DEFAULT_TOP_P}
+    assert generation_kwargs(0, 8, 0) == {"max_new_tokens": 8, "pad_token_id": 0, "do_sample": False}
+    assert generation_kwargs(None, 8, 0)["do_sample"] is False
+
+
+def test_degenerate_detector_catches_a_cjk_repetition_loop():
+    from vivasecuris.aiasylum.weights.steering import _looks_degenerate
+
+    # No whitespace to split on: judged on character bigrams instead of skipped.
+    assert _looks_degenerate(["Sure!当然没问题.tom宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞"]) is True
+    assert _looks_degenerate(["宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞宽敞"]) is True
+    # Fluent Chinese is not degenerate; it is the language gate's job.
+    assert _looks_degenerate([CJK_REFUSAL]) is False
+    # Too short to judge either way.
+    assert _looks_degenerate(["很乐意。"]) is False
+    assert _looks_degenerate([ENGLISH]) is False

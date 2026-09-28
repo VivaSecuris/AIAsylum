@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQueries, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
 import {
   apiClient,
@@ -242,10 +242,13 @@ export function useRunBenchmark() {
 }
 
 // Prompts
-export function usePrompts(params?: Parameters<typeof apiClient.listPrompts>[0]) {
+export function usePrompts(params?: Parameters<typeof apiClient.listPrompts>[0], options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['prompts', params],
     queryFn: () => apiClient.listPrompts(params),
+    // Keep showing the last results while a new search loads.
+    placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
   })
 }
 
@@ -255,6 +258,35 @@ export function usePrompt(id: number) {
     queryFn: () => apiClient.getPrompt(id),
     enabled: !!id,
   })
+}
+
+/** Resolve prompts by ID (shares the per-prompt cache with usePrompt). */
+export function usePromptsByIds(ids: number[]) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: ['prompt', id],
+      queryFn: () => apiClient.getPrompt(id),
+      retry: false,
+    })),
+  })
+}
+
+/** The built-in system prompts each role falls back to. */
+export function usePromptDefaults() {
+  return useQuery({
+    queryKey: ['prompt-defaults'],
+    queryFn: () => apiClient.getPromptDefaults(),
+    staleTime: Infinity,
+  })
+}
+
+export function useDebouncedValue<T>(value: T, delayMs = 250): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs)
+    return () => clearTimeout(timer)
+  }, [value, delayMs])
+  return debounced
 }
 
 export function useCreatePrompt() {
@@ -315,14 +347,7 @@ export function useSuite(id: number) {
 export function useCreateSuite() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: {
-      name?: string
-      test_types: string[]
-      benchmarks: string[]
-      models: Array<{ provider: string; model: string }>
-      test_config?: Record<string, any>
-      num_samples?: number
-    }) => apiClient.createSuite(data),
+    mutationFn: (data: Parameters<typeof apiClient.createSuite>[0]) => apiClient.createSuite(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suites'] })
     },
@@ -723,11 +748,16 @@ export function useStopWeightRun() {
 export function useWeightRunProgress(runId: number, enabled: boolean = true) {
   const queryClient = useQueryClient()
   const [progress, setProgress] = useState<ProgressEvent | null>(null)
+  // A running history, not just the latest event, so the run page can render a
+  // step-by-step "what happened" view instead of one overwriting line. Capped so
+  // a chatty count/metrics stream cannot grow without bound.
+  const [history, setHistory] = useState<ProgressEvent[]>([])
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!enabled || !runId || runId === 0) return
+    setHistory([])
 
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     const eventSource = new EventSource(`${API_BASE_URL}/api/v1/weights/runs/${runId}/progress`, {
@@ -743,6 +773,18 @@ export function useWeightRunProgress(runId: number, enabled: boolean = true) {
       try {
         const data: ProgressEvent = JSON.parse(event.data)
         setProgress(data)
+        // Keep messages that describe a step; collapse consecutive count/metrics
+        // ticks (same message text) so a progress bar does not flood the log.
+        if (data.message) {
+          setHistory((prev) => {
+            const last = prev[prev.length - 1]
+            if (last && last.message === data.message && (data.event_type === 'weights_progress')) {
+              return [...prev.slice(0, -1), data]
+            }
+            const next = [...prev, data]
+            return next.length > 400 ? next.slice(next.length - 400) : next
+          })
+        }
         if (
           data.event_type === 'weights_completed' ||
           data.event_type === 'weights_failed' ||
@@ -773,7 +815,23 @@ export function useWeightRunProgress(runId: number, enabled: boolean = true) {
     }
   }, [runId, enabled, queryClient])
 
-  return { progress, isConnected, error }
+  return { progress, history, isConnected, error }
+}
+
+export function useWeightTasks() {
+  return useQuery({
+    queryKey: ['weight-tasks'],
+    queryFn: () => apiClient.listWeightTasks(),
+    staleTime: Infinity,
+  })
+}
+
+export function useWeightGlossary() {
+  return useQuery({
+    queryKey: ['weight-glossary'],
+    queryFn: () => apiClient.getWeightGlossary(),
+    staleTime: Infinity,
+  })
 }
 
 // ---------------------------------------------------------------- Interp artifacts

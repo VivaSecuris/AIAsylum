@@ -69,6 +69,25 @@ def _protocol_verified(meta, detail, config, benchmark):
     if not all(isinstance(value, dict) for value in (provenance, generation, scoring)):
         return False
     revision = (meta.get("test_config") or {}).get("dataset_revision")
+    expected_system = config.get("patient_system_prompt") or (
+        "Answer the question accurately. Follow the requested answer format."
+        if config.get("patient_prompt_framing", True) else None
+    )
+    checks_system = "patient_system_prompt" in config or "patient_prompt_framing" in config
+    requests = generation.get("requests")
+    if config.get("protocol_version", 1) >= 2:
+        expected_protocol = "zero-shot-react-v1" if config.get("enable_cot", False) else "zero-shot-direct-answer-v1"
+        if requests is None or generation.get("prompt_protocol") != expected_protocol:
+            return False
+    if requests is not None:
+        if not isinstance(requests, list) or len(requests) != detail.get("num_samples"):
+            return False
+        expected_prompts = [expected_system] if expected_system else []
+        for request in requests:
+            if not isinstance(request, dict) or (checks_system and request.get("request_system_prompts") != expected_prompts):
+                return False
+            if bool(request.get("cot_enabled", False)) != bool(config.get("enable_cot", False)):
+                return False
     return bool(
         provenance.get("ordered_sample_hash") and revision
         and provenance.get("resolved_revision") == revision
@@ -77,7 +96,10 @@ def _protocol_verified(meta, detail, config, benchmark):
         and provenance.get("split") == expected.get("split")
         and generation.get("seed") == config["seed"]
         and generation.get("max_new_tokens") == config["max_new_tokens"]
-        and generation.get("temperature") == 0.0
+        and generation.get("temperature") == config.get("temperature", 0.0)
+        and generation.get("enable_cot", False) == config.get("enable_cot", False)
+        and ("top_p" not in config or generation.get("top_p") == config["top_p"])
+        and (not checks_system or ("system_prompt" in generation and generation["system_prompt"] == expected_system))
         and generation.get("independent_questions") is True
         and generation.get("prompt_protocol")
         and scoring.get("version") == SCORING_VERSION
@@ -174,6 +196,36 @@ def get_campaign(campaign_id: str) -> dict | None:
     return next((c for c in list_campaigns() if c["id"] == campaign_id), None)
 
 
+def _checkpoint_metadata_hash(path, manifest):
+    """Detect ordinary checkpoint replacement; this is a file-metadata hash."""
+    return hashlib.sha256(json.dumps({
+        "manifest": manifest,
+        "files": [(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(path.iterdir()) if p.is_file()],
+    }, sort_keys=True).encode()).hexdigest()
+
+
+def _verify_checkpoint(run_id):
+    from pathlib import Path
+    with get_session() as session:
+        row = session.get(TestRun, run_id)
+        provenance = (row.meta_data or {}).get("model_provenance", {}) if row else {}
+        if provenance.get("kind") != "custom" or not provenance.get("file_metadata_hash"):
+            return True
+        try:
+            path = Path(provenance["path"])
+            manifest_path = path / "asylum_surgery.json"
+            manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+            unchanged = _checkpoint_metadata_hash(path, manifest) == provenance["file_metadata_hash"]
+        except (OSError, ValueError, KeyError):
+            unchanged = False
+        if not unchanged:
+            row.status = "failed"
+            row.meta_data = {**row.meta_data, "error": "Checkpoint files changed after this comparison was created. Start a new comparison with the current checkpoint.",
+                             "checkpoint_identity_verified": False}
+            session.commit()
+        return unchanged
+
+
 def pin_inputs(models: list[str], benchmarks: list[str]) -> tuple[dict, dict]:
     """Resolve only already-downloaded weights; pin dataset commits before queueing."""
     from pathlib import Path
@@ -190,10 +242,7 @@ def pin_inputs(models: list[str], benchmarks: list[str]) -> tuple[dict, dict]:
             raise ValueError(f"Model is not ready on this server: {ref}. Download it in Find models first.")
         if model["kind"] == "custom":
             path = Path(ref)
-            identity = hashlib.sha256(json.dumps({
-                "manifest": model.get("manifest"),
-                "files": [(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(path.iterdir()) if p.is_file()],
-            }, sort_keys=True).encode()).hexdigest()
+            identity = _checkpoint_metadata_hash(path, model.get("manifest"))
             resolved[ref] = {"path": ref, "kind": "custom", "manifest": model.get("manifest"), "file_metadata_hash": identity}
         else:
             if ref not in cached:
@@ -212,8 +261,25 @@ def pin_inputs(models: list[str], benchmarks: list[str]) -> tuple[dict, dict]:
 
 
 def create_campaign(data: dict, resolved: dict, revisions: dict) -> dict:
+    from vivasecuris.aiasylum.database import PromptLibrary
+    data = dict(data)
     config = {"id": uuid4().hex, **data}
+    if any(key in data for key in ("enable_cot", "temperature", "top_p", "patient_system_prompt", "patient_system_prompt_id", "patient_prompt_framing")):
+        config["protocol_version"] = 2
     with get_session() as session:
+        prompt_id = data.get("patient_system_prompt_id")
+        if prompt_id is not None:
+            prompt = session.query(PromptLibrary).filter(
+                PromptLibrary.id == prompt_id, PromptLibrary.prompt_type == "system_prompt",
+                PromptLibrary.target == "patient",
+            ).first()
+            if prompt is None:
+                raise ValueError("The selected patient system prompt is unavailable or belongs to another role.")
+            config["patient_system_prompt"] = prompt.prompt_text
+            prompt.usage_count = (prompt.usage_count or 0) + 1
+        # Freeze text at creation; edits to the library cannot change a later
+        # model's protocol halfway through the comparison.
+        prompt_settings = {key: config[key] for key in ("patient_system_prompt", "patient_prompt_framing") if key in config}
         for model in data["models"]:
             for benchmark in data["benchmarks"]:
                 session.add(TestRun(
@@ -226,6 +292,10 @@ def create_campaign(data: dict, resolved: dict, revisions: dict) -> dict:
                                "test_config": {"benchmark_name": benchmark, "test_mode": "one_shot",
                                                "num_samples": data["num_samples"], "seed": data["seed"],
                                                "max_new_tokens": data["max_new_tokens"],
+                                               "enable_cot": data.get("enable_cot", False),
+                                               "temperature": data.get("temperature", 0.0),
+                                               "top_p": data.get("top_p", 0.9),
+                                               **prompt_settings,
                                                "dataset_revision": revisions[benchmark]}},
                 ))
         session.commit()
@@ -250,10 +320,13 @@ async def run_campaign(campaign_id: str):
             row = session.get(TestRun, run["id"])
             if not row or row.status != "pending":
                 continue
+        if not _verify_checkpoint(run["id"]):
+            continue
         task = asyncio.create_task(execute_benchmark_job(run["id"]))
         cancellation_manager.register_task(run["id"], task)
         try:
             await task
+            _verify_checkpoint(run["id"])
         except asyncio.CancelledError:
             _fail(run["id"], "Benchmark comparison was cancelled.", cancelled=True)
             if asyncio.current_task().cancelling():

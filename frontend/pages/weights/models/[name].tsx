@@ -21,11 +21,9 @@ export default function EditedModelPage() {
     {model && <>
       <div className="flex flex-wrap gap-2">
         <Link href={{ pathname: '/compare', query: { view: 'history', model: model.path } }} className={action}>View full history</Link>
-        <Link href={{ pathname: '/create-test', query: { provider: 'transformers', model: model.path } }} className={action}>Evaluate checkpoint</Link>
         <Link href={{ pathname: '/interp', query: { mode: 'single', model_a: model.path } }} className={action}>Analyze activations</Link>
-        {model.manifest.source_model && <Link href={{ pathname: '/weights', query: { kind: 'compare', source_model: model.manifest.source_model, modified_model: model.path } }} className={action}>Compare behavior with original</Link>}
       </div>
-      <ModelChat key={model.path} name={model.name} />
+      <ModelChat provider="transformers" model={model.path} name={model.name} sourceModel={model.manifest.source_model} />
       <div className="grid items-start gap-6 xl:grid-cols-2"><ManifestCard manifest={model.manifest} /><ProvenanceCard detail={model} /></div>
     </>}
   </div></Layout>

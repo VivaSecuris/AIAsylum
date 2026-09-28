@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useId } from 'react'
+import Link from 'next/link'
+import { modelChatUrl } from '@/lib/model-chat'
 import { apiClient, type ProviderInfo } from '@/lib/api'
 import { ModelPicker } from '@/components/models/ModelPicker'
 
@@ -160,6 +162,8 @@ export function ModelSelector({
               ))}
             </select>
           )}
+
+          {info?.name !== 'transformers' && provider && model && <Link href={modelChatUrl(provider, model)} className="mt-2 inline-block text-xs text-primary hover:underline">Chat &amp; actions for this model →</Link>}
 
           {info?.model_input === 'fetch' && (
             <>

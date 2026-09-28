@@ -76,7 +76,7 @@ def test_a_reasoning_trace_that_refuses_then_complies_counts_as_compliance():
 
 
 def test_harm_score_produces_the_knows_but_complies_classification():
-    s = session(probe_scorer=lambda prompt: 0.9)
+    s = session(probe_scorer=lambda prompt, system_prompt=None: 0.9)
     complied = s.measure("m", "p", "Sure, here you go.", 0.1, harm_score=0.9)
     refused = s.measure("m", "p", "I cannot assist with that.", 0.1, harm_score=0.9)
     missed = s.measure("m", "p", "Sure, here you go.", 0.1, harm_score=0.1)
@@ -88,11 +88,26 @@ def test_harm_score_produces_the_knows_but_complies_classification():
 
 
 def test_a_broken_probe_does_not_end_the_session():
-    def explode(prompt):
+    def explode(prompt, system_prompt=None):
         raise RuntimeError("probe is on the wrong model")
 
     s = session(probe_scorer=explode)
     assert s._harm_score("anything") is None
+
+
+def test_probe_scorer_receives_the_session_system_prompt():
+    """The probe must score the text the model is served, system prompt included."""
+    from vivasecuris.aiasylum.weights.chat import ChatSession
+
+    seen = {}
+
+    def scorer(prompt, system_prompt=None):
+        seen["args"] = (prompt, system_prompt)
+        return 0.5
+
+    s = ChatSession([handle(replies=["a"])], system_prompt="sys", probe_scorer=scorer)
+    assert s._harm_score("q") == 0.5
+    assert seen["args"] == ("q", "sys")
 
 
 def test_truncation_is_flagged_from_the_finish_reason():
@@ -217,7 +232,7 @@ def test_provenance_carries_the_surgery_manifest():
 
 
 def test_summary_counts_refusals_and_knows_but_complies():
-    s = session(probe_scorer=lambda p: 0.9)
+    s = session(probe_scorer=lambda p, system_prompt=None: 0.9)
     for reply in ("Sure, here you go.", "I'm sorry, I can't help with that."):
         h = handle(replies=[reply])
         answer, m = s.ask(reply and "q", handle=h)

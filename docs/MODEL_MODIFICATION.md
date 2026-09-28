@@ -46,7 +46,7 @@ Reversible, stackable, nothing to store. The model on disk is untouched.
 | **Activation steering / ActAdd** | `h ← h + αr` at one layer | **Yes (measured)** | Built. α must be relative to layer norm — see §7 |
 | **Control vectors / RepE** | Same idea, vectors fit by contrastive pairs over many concepts | Yes | Generalization of what's built; multiple concepts at once |
 | **SAE feature steering** | Clamp an interpretable sparse-autoencoder feature | Partly | Needs a trained SAE for your model; training one is a real project |
-| **Logit bias / constrained decoding** | Force or forbid tokens, or a grammar | Yes | Blunt for safety work — bans surface forms, not intent |
+| **Logit bias / constrained decoding** | Force or forbid tokens, or a grammar | Yes | Blunt for safety work — bans surface forms, not intent. Built for one token pair as `weights remap --preview`; the saved form moves unembedding rows instead ([WEIGHT_SURGERY.md §17](WEIGHT_SURGERY.md)) |
 | **Contrastive decoding / DoLa** | Decode from the difference between two layers or two models | Yes | Mostly a factuality technique |
 | **Sampling controls** | temperature, top-p, repetition penalty | Yes | Already plumbed through `utils/model_context.py` |
 | **Soft prompts / prefix tuning** | Learn a small tensor prepended to the input | Yes | Gradient method, but tiny — see §4 |
@@ -250,6 +250,22 @@ Editing the embedding table also edits the unembedding. `arch.py` deduplicates b
 which is not a no-op for any β except 0 and 1 — and records the tying in the
 manifest.
 
+**An ablated tied Qwen2.5 answering in Chinese.** The most common way an edit
+"did not work" here, and the pipeline used to score it as a success. Three
+things combined: editing the embedding table on a tied model rewrites the
+unembedding; the phrase-matching refusal scorer finds no English refusal phrase
+in a Chinese answer and reads 0% refusal; and the repetition detector splits on
+whitespace, which Chinese does not have, so the answer was never flagged. On top
+of that, the `select` search previewed candidates with inference-time hooks
+that never touch `lm_head`, and every measurement was greedy while test runs
+sample at temperature 0.7. Fixes, all in `weights/`: `evaluate.language_drift`
+and the `language_drift` verdict; a bigram fallback in the degeneracy detector;
+`select` previews with the real weight edit against a bit-exact snapshot;
+`autotune` runs the modify → test → restore loop, tries the no-embeddings edit
+first on tied models, re-checks the winner under the serving sampling, and
+verifies the written directory from disk before publishing; `verify` does that
+last check for any directory. See WEIGHT_SURGERY.md §6b and §12c.
+
 **No bitsandbytes on MPS.** No 4-bit QLoRA, no 8-bit optimizers. LoRA here is
 plain bf16.
 
@@ -279,12 +295,15 @@ have no MPS kernel.
 | Weight-surgery API + UI | `api/routes/weights.py`, `frontend/pages/weights/` | Working |
 | Subspace ablation (rank > 1) | `weights/direction.py`, `weights/surgery.py` | Working, CLI + UI |
 | Capability-gated edit search | `weights/surgery.py::select_edit` | Working, CLI + UI |
-| Refusal + capability measurement | `weights/evaluate.py` | Working, CLI + UI |
+| Refusal + capability + language-drift measurement, serving-conditions sampled pass | `weights/evaluate.py` | Working, CLI + UI |
+| Modify → test → restore → next loop, writes and verifies the winner | `weights/autotune.py`, `weights/surgery.py` (`ResidualWriterSnapshot`, `temporary_subspace_edit`), `weights/cli.py` (`autotune`), API stage `autotune` | Working, CLI + UI |
+| Reload-from-disk verification with SHA-256 digests in the manifest | `weights/verify.py`, `weights/cli.py` (`verify`) | Working, CLI; the API runs it on every autotune write |
 | Causal interp tools over HTTP | `enable_patching` / `enable_scrub` / `enable_minimal_circuit` | Working |
 | Expert routing statistics (MoE) | `weights/routing.py`, `weights/cli.py` (`routing`) | Working, CLI + UI |
 | Expert-selective surgery (partial by design, MoE) | `interp/core/arch.py::expert_down_matrices`, `weights/surgery.py::ablate_experts`, `weights/cli.py` (`experts`) | Working, CLI + UI |
 | LoRA | `weights/lora.py`, `weights/train_worker.py`, `api/train_runtime.py`, `weights/cli.py` (`lora`) | Working: plain-precision peft adapter merged into a model, ≤3B on the M4, CLI + UI |
 | Distillation | `weights/distill.py` (response text, or logit KL; LoRA student), `weights/cli.py` (`distill`) | Working, CLI + UI; teacher must be local open-weights |
+| Token remap (decode-time filter; saved unembedding row swap, copy or merge, untying a tied head first) | `weights/remap.py`, `weights/cli.py` (`remap`) | Implemented, CLI only; tests written, not yet run; not yet tried on a real model |
 
 See [WEIGHT_SURGERY.md](WEIGHT_SURGERY.md) for how to drive what exists.
 

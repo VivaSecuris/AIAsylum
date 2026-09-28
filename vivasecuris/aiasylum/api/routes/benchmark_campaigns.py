@@ -13,7 +13,13 @@ class CampaignRequest(BaseModel):
     benchmarks: list[str] = Field(min_length=1, max_length=4)
     num_samples: int = Field(default=25, ge=1, le=200)
     seed: int = Field(default=0, ge=0, le=2147483647)
-    max_new_tokens: int = Field(default=256, ge=16, le=2048)
+    max_new_tokens: int = Field(default=256, ge=1, le=32768)
+    enable_cot: bool = False
+    temperature: float = Field(default=0.0, ge=0, le=2)
+    top_p: float = Field(default=0.9, gt=0, le=1)
+    patient_system_prompt_id: int | None = Field(default=None, ge=1)
+    patient_system_prompt: str | None = Field(default=None, max_length=32000)
+    patient_prompt_framing: bool = True
 
     @field_validator("models", "benchmarks")
     @classmethod
@@ -43,7 +49,10 @@ async def create_campaign(request: CampaignRequest):
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(503, f"Could not pin benchmark inputs: {exc}") from exc
-    campaign = campaigns.create_campaign(request.model_dump(), resolved, revisions)
+    try:
+        campaign = campaigns.create_campaign(request.model_dump(), resolved, revisions)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     campaigns.schedule(campaign["id"])
     return campaign
 

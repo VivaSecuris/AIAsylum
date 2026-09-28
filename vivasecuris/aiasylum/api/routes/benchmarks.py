@@ -27,7 +27,13 @@ class BenchmarkRequest(BaseModel):
     benchmark: str
     num_samples: Optional[int] = Field(default=100, ge=1, le=100000)
     seed: int = Field(default=0, ge=0, le=2**32 - 1)
-    max_new_tokens: int = Field(default=512, ge=1, le=8192)
+    max_new_tokens: int = Field(default=512, ge=1, le=32768)
+    temperature: Optional[float] = Field(default=None, ge=0, le=2)
+    top_p: Optional[float] = Field(default=None, gt=0, le=1)
+    enable_cot: bool = False
+    patient_system_prompt_id: Optional[int] = None
+    patient_system_prompt: Optional[str] = Field(None, max_length=32000)
+    patient_prompt_framing: bool = True
     dataset_revision: Optional[str] = Field(default=None, min_length=1, max_length=128)
     suite_id: Optional[int] = None  # Optional suite ID to link benchmark run to a suite
 
@@ -237,7 +243,17 @@ async def run_benchmark(request: BenchmarkRequest, background_tasks: BackgroundT
                     "num_samples": sample_count,
                     "seed": request.seed,
                     "max_new_tokens": request.max_new_tokens,
-                    "temperature": 0.0,
+                    "temperature": 0.0 if request.temperature is None else request.temperature,
+                    "top_p": request.top_p,
+                    "enable_cot": request.enable_cot,
+                    "patient_system_prompt_id": request.patient_system_prompt_id,
+                    "patient_system_prompt": request.patient_system_prompt,
+                    "patient_prompt_framing": request.patient_prompt_framing,
+                    "roles": {"patient": {
+                        "temperature": 0.0 if request.temperature is None else request.temperature,
+                        "top_p": request.top_p, "max_tokens": request.max_new_tokens,
+                        "enable_cot": request.enable_cot,
+                    }},
                     "dataset_revision": request.dataset_revision,
                     # Jailbreak benchmarks default to one_shot mode
                     # Individual prompts will be handled based on their is_multi_shot flag

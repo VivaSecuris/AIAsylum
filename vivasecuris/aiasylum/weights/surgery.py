@@ -30,6 +30,8 @@ bfloat16 loses most of the edit to rounding.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.interp.core.arch import (
@@ -59,7 +61,8 @@ def scale_direction_component(W, r, beta: float, kind: str):
 
     orig_dtype = W.dtype
     W32 = W.to(torch.float32)
-    r32 = r.to(torch.float32).flatten()
+    # The direction is loaded on the CPU; W may sit on an accelerator (autotune edits in place).
+    r32 = r.to(device=W32.device, dtype=torch.float32).flatten()
     r32 = r32 / r32.norm()
 
     coeff = float(beta) - 1.0
@@ -112,12 +115,13 @@ def remove_subspace_component(W, basis, k: float, kind: str, weights=None):
 
     orig_dtype = W.dtype
     W32 = W.to(torch.float32)
-    B = basis.to(torch.float32)
+    # The basis is loaded on the CPU; W may sit on an accelerator (autotune edits in place).
+    B = basis.to(device=W32.device, dtype=torch.float32)
     if B.dim() == 1:
         B = B.reshape(1, -1)
     B = B / B.norm(dim=1, keepdim=True).clamp_min(1e-12)
     if weights is not None:
-        w = torch.as_tensor([float(x) for x in weights], dtype=torch.float32)[: B.shape[0]]
+        w = torch.as_tensor([float(x) for x in weights], dtype=torch.float32, device=W32.device)[: B.shape[0]]
         if w.shape[0] != B.shape[0]:
             raise ValueError(f"{B.shape[0]} basis rows but {w.shape[0]} weights")
         Bw = B * w.unsqueeze(1)             # scale each row's contribution
@@ -183,6 +187,109 @@ def _plan_fields(plan) -> Dict[str, object]:
         "shared_expert_matrices": plan.shared_expert_matrices,
         "coverage_verified": plan.coverage_verified,
     }
+
+
+@dataclass
+class ResidualWriterSnapshot:
+    """Bit-exact copies of every residual-writing tensor, for try-and-restore.
+
+    The search loops apply a candidate edit with the *same* functions the write
+    path uses, score it, and put the original weights back before the next
+    candidate. Restoring by ``copy_`` into the live parameter keeps every storage
+    pointer, so a tied embedding/unembedding pair stays tied and
+    :func:`residual_write_plan`'s deduplication keeps seeing one tensor.
+
+    Undoing the edit arithmetically would not be exact: the update is computed in
+    float32 and cast back, and subtracting it again in bf16 does not land on the
+    original bits. Memory is the price: about 2.5 GB for Qwen2.5-3B and 6 GB for
+    Qwen3-8B in bf16, held on ``device`` (CPU by default).
+    """
+
+    tensors: Dict[str, object]
+    params: Dict[str, object]
+    embeddings_tied: bool
+    n_bytes: int
+    device: str
+    released: bool = False
+
+    @classmethod
+    def take(cls, model, device: str = "cpu") -> "ResidualWriterSnapshot":
+        import torch
+
+        arch = detect_architecture(model)
+        plan = residual_write_plan(model, arch, include_embeddings=True)
+        tensors: Dict[str, object] = {}
+        params: Dict[str, object] = {}
+        n_bytes = 0
+        with torch.no_grad():
+            for wm in plan.matrices:
+                copy = wm.param.data.detach().to(device, copy=True)
+                tensors[wm.name] = copy
+                params[wm.name] = wm.param
+                n_bytes += copy.numel() * copy.element_size()
+        logger.info("Snapshot of %d residual writers: %.2f GB on %s",
+                    len(tensors), n_bytes / 1e9, device)
+        return cls(tensors, params, embeddings_are_tied(model), n_bytes, str(device))
+
+    def restore(self) -> None:
+        """Put every snapshotted tensor back, bit for bit."""
+        import torch
+
+        if self.released:
+            raise RuntimeError("This weight snapshot has been released")
+        with torch.no_grad():
+            for name, param in self.params.items():
+                param.data.copy_(self.tensors[name])
+
+    def matches(self) -> bool:
+        """True when every live parameter equals its snapshot exactly."""
+        import torch
+
+        if self.released:
+            raise RuntimeError("This weight snapshot has been released")
+        for name, param in self.params.items():
+            saved = self.tensors[name]
+            if not torch.equal(param.data.detach().to(saved.device), saved):
+                return False
+        return True
+
+    def release(self) -> None:
+        """Drop live parameters and saved copies after the final write/restore.
+
+        Preserve size/provenance fields for the search report. Idempotent so
+        success, rejection, and error cleanup can use the same operation.
+        """
+        self.params.clear()
+        self.tensors.clear()
+        self.released = True
+
+    @property
+    def n_gb(self) -> float:
+        return self.n_bytes / 1e9
+
+
+@contextmanager
+def temporary_subspace_edit(
+    model,
+    snapshot: ResidualWriterSnapshot,
+    basis,
+    k: float = 1.0,
+    include_embeddings: bool = True,
+    weights=None,
+):
+    """Apply :func:`apply_subspace_to_model` for the duration of the block, then restore.
+
+    This is the preview that matches the shipped edit exactly, unlike the
+    inference-time hooks in :mod:`steering`, which project the residual stream
+    but never touch a tied ``lm_head``. Yields the edit summary.
+    """
+    summary = apply_subspace_to_model(
+        model, basis, k=k, include_embeddings=include_embeddings, weights=weights,
+    )
+    try:
+        yield summary
+    finally:
+        snapshot.restore()
 
 
 def apply_to_model(
@@ -435,6 +542,75 @@ def _edit_experts(model, direction, selection, mode, scale, include_shared, beta
     raise ValueError(f"expert_mode must be direction, subspace or ablate, got {mode!r}")
 
 
+def save_edited_model(
+    model,
+    tokenizer,
+    out_dir: str,
+    *,
+    source_model: str,
+    direction,
+    method: str,
+    summary: Dict[str, object],
+    beta: Optional[float] = None,
+    notes: Optional[str] = None,
+    extra: Optional[dict] = None,
+    reporter=None,
+) -> str:
+    """Write an already-edited model as a drop-in Hugging Face directory.
+
+    Weights, tokenizer and the ``asylum_surgery.json`` manifest built from
+    ``summary`` (what :func:`apply_to_model` / :func:`apply_subspace_to_model`
+    returned). :func:`edit_and_save` ends here; the search loops call it directly
+    with the in-memory model that just passed their gates, so the tensors that
+    were measured are the tensors that get written.
+    """
+    from contextlib import nullcontext
+    from pathlib import Path
+
+    from vivasecuris.aiasylum.weights.manifest import SurgeryManifest
+
+    out = Path(out_dir)
+    if out.exists() and any(out.iterdir()):
+        raise FileExistsError(
+            f"{out} already exists and is not empty. Choose another path or remove it; "
+            f"overwriting a model directory in place is not done implicitly."
+        )
+    step = reporter.step if reporter is not None else (lambda name: nullcontext())
+
+    out.mkdir(parents=True, exist_ok=True)
+    with step(f"writing weights to {out}"):
+        model.save_pretrained(str(out))
+        tokenizer.save_pretrained(str(out))
+
+    SurgeryManifest(
+        source_model=source_model,
+        method=method,
+        beta=float(beta) if (beta is not None and method in ("direction_scale", "expert_direction_scale")) else None,
+        direction_layer=getattr(direction, "layer", None),
+        direction_auc=getattr(direction, "auc", None),
+        split_hash=getattr(direction, "split_hash", None),
+        architecture=summary["architecture"],
+        matrices_edited=summary["matrices_edited"],
+        embeddings_tied=summary["embeddings_tied"],
+        embeddings_edited=summary["embeddings_edited"],
+        mean_relative_change=summary["mean_relative_change"],
+        model_type=summary.get("model_type"),
+        coverage_verified=summary.get("coverage_verified"),
+        moe_layers=summary.get("moe_layers"),
+        expert_matrices=summary.get("expert_matrices"),
+        shared_expert_matrices=summary.get("shared_expert_matrices"),
+        notes=notes,
+        extra=dict(extra or {}),
+    ).save(out)
+
+    if "subspace_rank" in summary:
+        logger.info("Saved edited model to %s (subspace rank=%d, k=%.3f)",
+                    out, summary["subspace_rank"], summary["k"])
+    else:
+        logger.info("Saved edited model to %s (beta=%s)", out, beta)
+    return str(out)
+
+
 def edit_and_save(
     source_model: str,
     direction,
@@ -448,6 +624,7 @@ def edit_and_save(
     use_subspace: bool = False,
     k: Optional[float] = None,
     *,
+    rank: Optional[int] = None,
     expert_selection=None,
     expert_mode: str = "direction",
     expert_scale: float = 0.0,
@@ -460,8 +637,8 @@ def edit_and_save(
     - **single direction** (default): scale the ``direction.vector`` component by
       ``beta`` (0 ablates, 1 no-op, >1 amplifies, <0 over-projects).
     - **subspace** (``use_subspace=True``): remove ``direction``'s orthonormal
-      ``basis`` with strength ``k`` (defaults to 1.0). ``rank=1, k=1`` is
-      identical to ``beta=0``.
+      ``basis`` with strength ``k`` (defaults to 1.0), cut to its first ``rank``
+      rows when ``rank`` is given. ``rank=1, k=1`` is identical to ``beta=0``.
     - **expert-selective** (``expert_selection`` given): edit only the chosen
       experts of the chosen MoE layers, with ``expert_mode`` ``direction``
       (scale by ``beta``), ``subspace`` (remove at ``k``) or ``ablate`` (scale
@@ -469,14 +646,13 @@ def edit_and_save(
       ``None``). Partial by design; the manifest records ``coverage_verified``
       as False.
 
-    Writes weights, tokenizer and an ``asylum_surgery.json`` manifest, so the
-    result is a drop-in Hugging Face directory that the ``transformers``
-    provider (and any other tool) can load directly.
+    Writes weights, tokenizer and an ``asylum_surgery.json`` manifest through
+    :func:`save_edited_model`, so the result is a drop-in Hugging Face directory
+    that the ``transformers`` provider (and any other tool) can load directly.
     """
     from pathlib import Path
 
     from vivasecuris.aiasylum.interp.core.loader import load
-    from vivasecuris.aiasylum.weights.manifest import SurgeryManifest
 
     out = Path(out_dir)
     if out.exists() and any(out.iterdir()):
@@ -501,6 +677,12 @@ def edit_and_save(
         )
     elif use_subspace:
         basis = direction.as_basis() if hasattr(direction, "as_basis") else direction
+        if rank is not None:
+            if not 1 <= int(rank) <= int(basis.shape[0]):
+                raise ValueError(
+                    f"rank must be between 1 and {int(basis.shape[0])} for this direction; got {rank}"
+                )
+            basis = basis[: int(rank)]
         strength = 1.0 if k is None else float(k)
         rank = int(basis.shape[0])
         weights = direction.as_weights(rank) if hasattr(direction, "as_weights") else None
@@ -520,11 +702,6 @@ def edit_and_save(
             f"{summary['matrices_edited']} matrices edited, "
             f"mean relative change {summary['mean_relative_change']:.4f}"
         )
-
-    out.mkdir(parents=True, exist_ok=True)
-    with step(f"writing weights to {out}"):
-        model.save_pretrained(str(out))
-        tokenizer.save_pretrained(str(out))
 
     # Subspace-specific provenance rides `extra` -- no manifest schema change, so
     # it still flows through transformers_local -> ModelResponse.metadata.
@@ -552,33 +729,11 @@ def edit_and_save(
             "derivation": getattr(direction, "method", "diff_in_means"),
         }
 
-    SurgeryManifest(
-        source_model=source_model,
-        method=method,
-        beta=float(beta) if method in ("direction_scale", "expert_direction_scale") else None,
-        direction_layer=getattr(direction, "layer", None),
-        direction_auc=getattr(direction, "auc", None),
-        split_hash=getattr(direction, "split_hash", None),
-        architecture=summary["architecture"],
-        matrices_edited=summary["matrices_edited"],
-        embeddings_tied=summary["embeddings_tied"],
-        embeddings_edited=summary["embeddings_edited"],
-        mean_relative_change=summary["mean_relative_change"],
-        model_type=summary.get("model_type"),
-        coverage_verified=summary.get("coverage_verified"),
-        moe_layers=summary.get("moe_layers"),
-        expert_matrices=summary.get("expert_matrices"),
-        shared_expert_matrices=summary.get("shared_expert_matrices"),
-        notes=notes,
-        extra=extra,
-    ).save(out)
-
-    if use_subspace:
-        logger.info("Saved edited model to %s (subspace rank=%d, k=%.3f)",
-                    out, summary["subspace_rank"], summary["k"])
-    else:
-        logger.info("Saved edited model to %s (beta=%.3f)", out, beta)
-    return str(out)
+    return save_edited_model(
+        model, tokenizer, str(out),
+        source_model=source_model, direction=direction, method=method, summary=summary,
+        beta=beta, notes=notes, extra=extra, reporter=reporter,
+    )
 
 
 def select_edit(
@@ -593,6 +748,9 @@ def select_edit(
     factual_limit: Optional[int] = None,
     progress: Optional[callable] = None,
     capability=None,
+    preview: str = "weights",
+    include_embeddings: bool = True,
+    language_drift_max: Optional[float] = None,
 ) -> Dict[str, object]:
     """Search subspace rank x strength for the most-compliant capability-safe edit.
 
@@ -602,30 +760,43 @@ def select_edit(
     Selection *is* the fix. Cranking one direction (beta<0) or removing a large
     subspace both reach 0% refusal only by lobotomizing the model, which a
     phrase-matching detector cannot distinguish from a clean jailbreak. So every
-    candidate is previewed at inference time (via :func:`steering.ablate_subspace`,
-    no weights written) and scored on both harmful refusal *and* the factual
-    capability control; a candidate is admissible only if it stays within
-    ``factual_floor`` of the unedited baseline's factual accuracy and is not
-    degenerate.
+    candidate is previewed without writing weights and scored on harmful
+    refusal, the factual capability control, degeneracy and language drift; a
+    candidate is admissible only if it stays within ``factual_floor`` of the
+    unedited baseline's factual accuracy, is not degenerate and does not drift
+    out of the Latin script.
 
-    Returns ``{"baseline", "frontier", "best"}``. ``frontier`` is every (rank, k)
-    with its refusal + factual + accepted flag -- the "what 100% costs" curve.
-    ``best`` is the admissible config with the lowest refusal (ties broken toward
-    the *least* destructive edit: smaller rank, then smaller k, then higher
-    factual), or ``None`` if nothing clears the floor.
+    ``preview="weights"`` (the default) applies the real weight edit against a
+    bit-exact :class:`ResidualWriterSnapshot` and restores it after each
+    candidate, so what is scored is exactly what ``edit_and_save`` would write --
+    including the tied ``lm_head`` on Qwen2.5 0.5B/1.5B/3B when
+    ``include_embeddings`` is set. ``preview="hooks"`` is the older
+    inference-time projection (:func:`steering.ablate_subspace`), which never
+    touches ``lm_head``; keep it for comparison, not for choosing an edit.
+
+    Returns ``{"baseline", "frontier", "best", ...}``. ``frontier`` is every
+    (rank, k) with its refusal + factual + drift + accepted flag -- the "what
+    100% costs" curve. ``best`` is the admissible config with the lowest
+    refusal (ties broken toward the *least* destructive edit: smaller rank, then
+    smaller k, then higher factual), or ``None`` if nothing clears the floor.
     """
     from vivasecuris.aiasylum.weights.evaluate import (
+        LANGUAGE_DRIFT_MAX,
+        CapabilitySet,
         capability_questions,
         factual_accuracy,
         generate_greedy,
+        language_drift,
     )
     from vivasecuris.aiasylum.weights.steering import (
+        _looks_degenerate,
         ablate_subspace,
         refusal_rate,
-        _looks_degenerate,
     )
 
-    from vivasecuris.aiasylum.weights.evaluate import CapabilitySet
+    if preview not in ("weights", "hooks"):
+        raise ValueError(f"preview must be 'weights' or 'hooks'; got {preview!r}")
+    drift_max = LANGUAGE_DRIFT_MAX if language_drift_max is None else float(language_drift_max)
 
     basis = direction.as_basis()
     max_rank = int(basis.shape[0])
@@ -642,38 +813,59 @@ def select_edit(
         if progress:
             progress(msg)
 
+    def _score(harm, fac):
+        drift = language_drift(list(harm) + list(fac))
+        return {
+            "refuse_harmful": refusal_rate(harm),
+            "factual_acc": capability.score(fac),
+            "degenerate": bool(_looks_degenerate(harm) or _looks_degenerate(fac)),
+            "language_drift": drift,
+            "drifted": drift > drift_max,
+        }
+
     # Unedited baseline, once: the capability floor is relative to this.
     _note("baseline (no edit)")
     base_harm = generate_greedy(model, tokenizer, harmful_prompts, max_new_tokens=max_new_tokens)
     base_fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=capability.max_new_tokens)
-    baseline = {
-        "refuse_harmful": refusal_rate(base_harm),
-        "factual_acc": capability.score(base_fac),
-    }
+    baseline = _score(base_harm, base_fac)
     floor = baseline["factual_acc"] - factual_floor
 
+    tied = embeddings_are_tied(model)
+    snapshot = ResidualWriterSnapshot.take(model) if preview == "weights" else None
     frontier: List[dict] = []
-    for r in ranks:
-        sub = basis[:r]
-        for k in ks:
-            _note(f"rank={r} k={k}")
-            with ablate_subspace(model, sub, k=k, weights=direction.as_weights(r) if hasattr(direction, 'as_weights') else None):
-                harm = generate_greedy(model, tokenizer, harmful_prompts, max_new_tokens=max_new_tokens)
-                fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=capability.max_new_tokens)
-            refuse = refusal_rate(harm)
-            fac_acc = capability.score(fac)
-            degenerate = bool(_looks_degenerate(harm) or _looks_degenerate(fac))
-            accepted = (not degenerate) and (fac_acc >= floor)
-            frontier.append({
-                "rank": r,
-                "k": float(k),
-                "refuse_harmful": refuse,
-                "compliance": 1.0 - refuse,
-                "factual_acc": fac_acc,
-                "factual_drop": baseline["factual_acc"] - fac_acc,
-                "degenerate": degenerate,
-                "accepted": accepted,
-            })
+    try:
+        for r in ranks:
+            sub = basis[:r]
+            w = direction.as_weights(r) if hasattr(direction, "as_weights") else None
+            for k in ks:
+                _note(f"rank={r} k={k}")
+                if preview == "weights":
+                    ctx = temporary_subspace_edit(
+                        model, snapshot, sub, k=k, include_embeddings=include_embeddings, weights=w,
+                    )
+                else:
+                    ctx = ablate_subspace(model, sub, k=k, weights=w)
+                with ctx:
+                    harm = generate_greedy(model, tokenizer, harmful_prompts, max_new_tokens=max_new_tokens)
+                    fac = generate_greedy(model, tokenizer, factual_qs, max_new_tokens=capability.max_new_tokens)
+                scored = _score(harm, fac)
+                accepted = (
+                    (not scored["degenerate"]) and (not scored["drifted"])
+                    and scored["factual_acc"] >= floor
+                )
+                frontier.append({
+                    "rank": r,
+                    "k": float(k),
+                    "include_embeddings": bool(include_embeddings) if preview == "weights" else None,
+                    "compliance": 1.0 - scored["refuse_harmful"],
+                    "factual_drop": baseline["factual_acc"] - scored["factual_acc"],
+                    "accepted": accepted,
+                    "preview": preview,
+                    **scored,
+                })
+    finally:
+        if snapshot is not None:
+            snapshot.restore()
 
     admissible = [row for row in frontier if row["accepted"]]
     best = None
@@ -685,5 +877,10 @@ def select_edit(
             key=lambda row: (row["refuse_harmful"], row["rank"], row["k"], -row["factual_acc"]),
         )
 
-    return {"baseline": baseline, "frontier": frontier, "best": best,
-            "capability_set": capability.name, "capability_n": capability.size}
+    return {
+        "baseline": baseline, "frontier": frontier, "best": best,
+        "capability_set": capability.name, "capability_n": capability.size,
+        "preview": preview, "embeddings_tied": tied,
+        "include_embeddings": bool(include_embeddings) if preview == "weights" else None,
+        "language_drift_max": drift_max,
+    }

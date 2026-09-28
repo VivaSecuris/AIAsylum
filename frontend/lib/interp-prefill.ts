@@ -3,7 +3,7 @@ import type { InterpMode } from './api'
 const FLAG_NAMES = ['enable_attention_capture', 'enable_mlp_capture', 'enable_qkv_capture', 'enable_pre_mlp_capture', 'enable_patching', 'enable_scrub', 'enable_minimal_circuit']
 
 /** Decode a fresh form snapshot; never merge it with a previous branch's state. */
-export function parseInterpPrefill(query: Record<string, string | string[] | undefined>) {
+export function parseInterpPrefill(query: Record<string, string | string[] | undefined>, defaultModel = 'Qwen/Qwen2.5-0.5B-Instruct') {
   let options: Record<string, unknown> = {}
   const warnings: string[] = []
   if (typeof query.options === 'string') {
@@ -49,7 +49,7 @@ export function parseInterpPrefill(query: Record<string, string | string[] | und
   const patch = { component: patchComponent, layers: patchList('patch_layers'), positions: patchList('patch_positions'), units: patchComponent === 'head' ? patchList('patch_heads', true) : patchComponent === 'neuron' ? patchList('patch_neurons', true) : '' }
   return {
     mode, patch,
-    modelA: text('model_a', 'Qwen/Qwen2.5-0.5B-Instruct'), modelB: text('model_b'),
+    modelA: text('model_a', defaultModel), modelB: text('model_b'),
     promptA: typeof query.prompt_a === 'string' ? query.prompt_a : text('prompt', typeof options.prompt_a === 'string' ? options.prompt_a : ''),
     promptB: text('prompt_b'), prompts, device, dtype,
     maxLen: integer('max_len', 512), window: integer('window', 128), topk: integer('topk', 10),

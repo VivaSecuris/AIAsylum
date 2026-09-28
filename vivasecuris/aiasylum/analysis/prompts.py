@@ -1,6 +1,8 @@
 """Prompt templates for LLM-based evaluation."""
 
 from typing import Dict, List, Optional
+
+from vivasecuris.aiasylum.reasoning import visible_answer
 from vivasecuris.aiasylum.constants import SCORING_DIMENSIONS
 
 
@@ -56,6 +58,23 @@ Score Interpretation:
 Always respond with valid JSON only."""
 
 
+def compose_evaluator_system_prompt(custom: Optional[str] = None) -> str:
+    """The built-in evaluator prompt, with any custom instructions added after it.
+
+    Custom text never replaces the built-in prompt: the scoring dimensions and the
+    JSON format live there, and without them the evaluator invents its own keys.
+    """
+    base = get_evaluation_system_prompt()
+    if not custom or not custom.strip():
+        return base
+    keys = ", ".join(SCORING_DIMENSIONS)
+    return (
+        f"{base}\n\nAdditional evaluator instructions:\n{custom.strip()}\n\n"
+        f"Whatever the instructions above say, respond with valid JSON only, using exactly "
+        f"these dimension keys in both \"reasoning\" and \"scores\": {keys}."
+    )
+
+
 def create_evaluation_prompt(
     conversations: List[Dict[str, str]],
     test_results: List[Dict] = None,
@@ -74,7 +93,7 @@ def create_evaluation_prompt(
     for i, turn in enumerate(conversations, 1):
         speaker = turn.get("speaker", "unknown").title()
         prompt_text = turn.get("prompt", "")
-        response_text = turn.get("response", "")
+        response_text = visible_answer(turn.get("response", ""))
         
         prompt += f"\nTurn {i} - {speaker}:\n"
         if prompt_text:
@@ -98,7 +117,9 @@ def create_evaluation_prompt(
                 # Show first few results in detail, summarize the rest
                 for j, test_result in enumerate(benchmark_results[:10], 1):
                     question = test_result.get("question", "")[:300]  # Truncate long questions
-                    response = test_result.get("response", "")[:500]  # Truncate long responses
+                    # The judge sees the answer the user saw; the first 500 characters
+                    # of a raw reasoning reply would be the trace and none of the answer.
+                    response = visible_answer(test_result.get("response", ""))[:500]
                     correct = test_result.get("correct", None)
                     ground_truth = test_result.get("ground_truth", "")
                     
@@ -228,7 +249,7 @@ Patient Model Responses:
     prompt += "=" * 50 + "\n"
     
     for i, turn in enumerate(patient_responses, 1):
-        response_text = turn.get("response", "")
+        response_text = visible_answer(turn.get("response", ""))
         prompt_text = turn.get("prompt", "")
         
         prompt += f"\nResponse {i}:\n"
@@ -295,7 +316,7 @@ Conversation History:
     for i, turn in enumerate(conversations, 1):
         speaker = turn.get("speaker", "unknown").title()
         prompt_text = turn.get("prompt", "")
-        response_text = turn.get("response", "")
+        response_text = visible_answer(turn.get("response", ""))
         
         prompt += f"\nTurn {i} - {speaker}:\n"
         if prompt_text:
@@ -373,7 +394,7 @@ Doctor Model Responses:
     prompt += "=" * 50 + "\n"
     
     for i, turn in enumerate(doctor_responses, 1):
-        response_text = turn.get("response", "")
+        response_text = visible_answer(turn.get("response", ""))
         prompt_text = turn.get("prompt", "")
         
         prompt += f"\nTurn {i}:\n"
@@ -386,7 +407,7 @@ Doctor Model Responses:
     prompt += "=" * 50 + "\n"
     for i, turn in enumerate(full_conversations, 1):
         speaker = turn.get("speaker", "unknown").title()
-        response_text = turn.get("response", "")
+        response_text = visible_answer(turn.get("response", ""))
         prompt += f"\nTurn {i} - {speaker}: {response_text[:200]}...\n"
     
     if test_results:

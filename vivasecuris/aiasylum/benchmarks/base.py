@@ -63,6 +63,10 @@ class Benchmark(ABC):
         self,
         model,
         num_samples: Optional[int] = None,
+        *,
+        enable_cot: bool = False,
+        system_prompt: Optional[str] = None,
+        generation: Optional[Dict[str, Any]] = None,
     ) -> BenchmarkResult:
         """
         Run benchmark on a model.
@@ -92,7 +96,17 @@ class Benchmark(ABC):
                 continue
             
             # Get model response
-            response_obj = await model.generate(prompt=question)
+            options = dict(generation or {})
+            if not getattr(model, "supports_seed", True):
+                options.pop("seed", None)
+            if enable_cot:
+                from vivasecuris.aiasylum.cot import ReACTReasoner
+                options.setdefault("temperature", getattr(model, "temperature", 0.7))
+                response_obj = await ReACTReasoner(model).reason(
+                    prompt=question, system_prompt=system_prompt, gen_overrides=options,
+                )
+            else:
+                response_obj = await model.generate(prompt=question, **({"system_prompt": system_prompt} if system_prompt else {}), **options)
             response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
             
             # Evaluate
@@ -106,6 +120,8 @@ class Benchmark(ABC):
                 "response": response,
                 "ground_truth": ground_truth,
                 "correct": is_correct,
+                "reasoning": (getattr(response_obj, "metadata", None) or {}).get("reasoning"),
+                "reasoning_source": (getattr(response_obj, "metadata", None) or {}).get("reasoning_source"),
             })
         
         accuracy = correct / len(results) if results else 0.0
@@ -118,4 +134,5 @@ class Benchmark(ABC):
             correct=correct,
             accuracy=accuracy,
             results=results,
+            metadata={"enable_cot": enable_cot, "system_prompt": system_prompt, "generation": generation or {}},
         )

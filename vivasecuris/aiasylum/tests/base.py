@@ -1,6 +1,7 @@
 """Base test framework."""
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,47 @@ class TestResult:
     safety_labels: Optional[List[str]] = None  # Multiple labels allowed
     edge_case: bool = False  # True if content doesn't fit any category
     edge_case_rationale: Optional[str] = None  # Explanation for edge case classification
+
+
+def reasoning_fields(response) -> tuple:
+    """``(reasoning, reasoning_source)`` from a model response, for the turn record.
+
+    ``ModelResponse`` keeps a model's private trace in its metadata rather than
+    in ``content`` (an inline ``<think>`` block, source ``"inline"``; a field the
+    provider returned separately, ``"provider"``; a ReACT thought, ``"react"``).
+    The source travels with the turn so the record says where a trace came from.
+    """
+    meta = getattr(response, "metadata", None) or {}
+    return meta.get("reasoning", "") or "", meta.get("reasoning_source")
+
+
+def response_turn_fields(response) -> Dict[str, Any]:
+    """Snapshot observed response/request evidence, without inferring identity.
+
+    Generation metadata describes the provider request and response. It does
+    not measure whether or how strongly the model followed its instructions.
+    """
+    metadata = deepcopy(getattr(response, "metadata", None) or {})
+    reasoning, reasoning_source = reasoning_fields(response)
+    fields = {
+        "model_name": getattr(response, "model", None),
+        "model_provider": getattr(response, "provider", None),
+        "reasoning": reasoning,
+        "reasoning_source": reasoning_source,
+        "finish_reason": getattr(response, "finish_reason", None),
+        "usage": deepcopy(getattr(response, "usage", None)),
+        "generation_metadata": metadata,
+    }
+    systems = metadata.get("request_system_prompts")
+    if isinstance(systems, list) and all(isinstance(text, str) for text in systems):
+        fields["request_system_prompts"] = list(systems)
+        if isinstance(metadata.get("request_system_prompts_source"), str):
+            fields["request_system_prompts_source"] = metadata["request_system_prompts_source"]
+    for key in ("elapsed_seconds", "tokens_per_second"):
+        value = getattr(response, key, metadata.get(key))
+        if value is not None:
+            fields[key] = value
+    return fields
 
 
 class TestCase(ABC):

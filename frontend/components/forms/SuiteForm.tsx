@@ -1,727 +1,282 @@
-import { useState, useEffect } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter } from 'next/router'
-import { useCreateSuite, useBenchmarks, usePrompts, usePromptVariables } from '@/lib/hooks'
+import { AlertTriangle, Plus, Scissors, X } from 'lucide-react'
+
+import type { FormState, GroupPatient, SystemPromptChoice, TestType } from '@/lib/create-test-config'
+import {
+  activePromptTexts,
+  buildTestRunRequest,
+  buildBenchmarkSuiteConfig,
+  extractVariables,
+  initialFormState,
+  newPatientKey,
+  numberOr,
+  stepsForType,
+  validateForm,
+} from '@/lib/create-test-config'
+import { useBenchmarks, useCreateSuite, useEditedModels, usePromptsByIds } from '@/lib/hooks'
+import { isPatientTestPrompt } from '@/lib/prompt-targets'
+import { getSettings } from '@/lib/settings'
+import { parseModelSelection } from '@/lib/model-overview'
 import { toast } from '@/lib/toast'
-import { apiClient } from '@/lib/api'
-import { Plus, X, AlertTriangle } from 'lucide-react'
-import Link from 'next/link'
-import { getPromptDisplayName } from '@/lib/utils'
+import { formatApiError } from '@/lib/utils'
+import { ModelSelector } from './ModelSelector'
+import { EvaluatorStep } from './create-test/EvaluatorStep'
+import { GenerationSettings } from './create-test/GenerationSettings'
+import { RoleFields } from './create-test/RoleStep'
+import { RunSection } from './create-test/RunSection'
+import { SystemPromptPicker } from './create-test/SystemPromptPicker'
+import { TestDesignSection } from './create-test/TestDesignSection'
+import { INPUT, SMALL_BUTTON, StepCard } from './create-test/ui'
 
-const PROVIDERS = ['openai', 'anthropic', 'google', 'ollama']
-
-const MODELS_BY_PROVIDER: Record<string, string[]> = {
-  openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo', 'gpt-3.5-turbo-16k'],
-  anthropic: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-2', 'claude-instant'],
-  google: ['gemini-pro', 'gemini-pro-vision', 'palm-2'],
-  ollama: [], // Fetched from API (installed models only)
-}
-
-const TEST_TYPES = [
-  { value: 'one_shot', label: 'One-Shot', desc: 'Single prompt/response test' },
-  { value: 'multi_shot', label: 'Multi-Shot', desc: 'Multiple sequential prompts' },
-  { value: 'conversation', label: 'Conversation', desc: 'Multi-turn conversation' },
-  { value: 'group_therapy', label: 'Group Therapy', desc: 'Group therapy session with multiple patient models' },
-  { value: 'benchmark', label: 'Benchmark', desc: 'Run standardized benchmark tests' },
-]
-
-interface Model {
-  id: string
+interface SuiteModel {
+  key: string
   provider: string
   model: string
 }
 
+const libraryIds = (choices: SystemPromptChoice[]) =>
+  choices.flatMap((c) => (c.mode === 'library' && c.id ? [c.id] : []))
+
+/**
+ * Run the same test against several models. Built from the Create Test pieces:
+ * the same test design, the same doctor and evaluator steps, and one set of
+ * patient settings shared by every model under test. Group therapy puts every
+ * model into one session; benchmarks can be several at once.
+ */
 export function SuiteForm() {
   const router = useRouter()
   const createSuite = useCreateSuite()
   const { data: benchmarksData } = useBenchmarks()
-  const { data: prompts = [] } = usePrompts()
-  const { data: doctorSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'doctor' })
-  const { data: patientSystemPrompts = [] } = usePrompts({ prompt_type: 'system_prompt', target: 'patient' })
+  const { data: edited = [] } = useEditedModels()
+  const [initial] = useState(() => initialFormState(getSettings(), router.query).state)
+  const [state, setState] = useState<FormState>(initial)
+  const [models, setModels] = useState<SuiteModel[]>(() => {
+    const selected = parseModelSelection(router.query.models)
+    return (selected.length ? selected : [{ provider: initial.patient.provider, model: initial.patient.model }])
+      .map(model => ({ ...model, key: newPatientKey() }))
+  })
+  const [benchmarks, setBenchmarks] = useState<string[]>(() => initial.benchmark ? [initial.benchmark] : [])
+  const [attempted, setAttempted] = useState(false)
+  const update = (patch: Partial<FormState>) => setState((s) => ({ ...s, ...patch }))
+  const steps = stepsForType(state.testType)
+  const isBenchmark = state.testType === 'benchmark'
+  const isGroup = state.testType === 'group_therapy'
 
-  const [suiteName, setSuiteName] = useState('')
-  const [selectedTestType, setSelectedTestType] = useState<string>('')
-  const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([])
-  const [models, setModels] = useState<Model[]>([
-    { id: 'model_1', provider: '', model: '' }
-  ])
-  const [numSamples, setNumSamples] = useState<number>(100)
-  const [suiteTemperature, setSuiteTemperature] = useState<number | ''>(0.7)
-  const [suiteSeed, setSuiteSeed] = useState<number | ''>('')
-  
-  // Prompt selections
-  const [selectedPromptId, setSelectedPromptId] = useState<number | undefined>(undefined)
-  const [selectedPromptIds, setSelectedPromptIds] = useState<number[]>([]) // For multi-shot
-  const [selectedDoctorSystemPromptId, setSelectedDoctorSystemPromptId] = useState<number | undefined>(undefined)
-  const [selectedPatientSystemPromptId, setSelectedPatientSystemPromptId] = useState<number | undefined>(undefined)
-  const [customPrompt, setCustomPrompt] = useState<string>('')
-  const [customPrompts, setCustomPrompts] = useState<string[]>([''])
-  const [variableValues, setVariableValues] = useState<Record<string, string>>({})
-  const [ollamaModels, setOllamaModels] = useState<string[]>([])
-  const [ollamaLoading, setOllamaLoading] = useState(false)
-  
-  // Get variables from selected prompt
-  const { data: promptVariablesData } = usePromptVariables(selectedPromptId)
-  const promptVariables = promptVariablesData?.variables || []
-  
-  // Reset prompt selections when test type changes
-  useEffect(() => {
-    if (selectedTestType !== 'one_shot') {
-      setSelectedPromptId(undefined)
-      setCustomPrompt('')
-    }
-    if (selectedTestType !== 'multi_shot') {
-      setSelectedPromptIds([])
-      setCustomPrompts([''])
-    }
-    if (selectedTestType !== 'conversation') {
-      setSelectedDoctorSystemPromptId(undefined)
-      setSelectedPatientSystemPromptId(undefined)
-    }
-    setVariableValues({})
-  }, [selectedTestType])
-  
-  // Reset variable values when prompt changes
-  useEffect(() => {
-    if (promptVariables.length > 0) {
-      const newValues: Record<string, string> = {}
-      promptVariables.forEach((varName) => {
-        newValues[varName] = variableValues[varName] || ''
-      })
-      setVariableValues(newValues)
-    } else {
-      setVariableValues({})
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPromptId, promptVariablesData])
-
-  // Fetch Ollama models when any row uses ollama
-  const hasOllama = models.some((m) => m.provider === 'ollama')
-  useEffect(() => {
-    if (!hasOllama) return
-    let cancelled = false
-    setOllamaLoading(true)
-    apiClient.listOllamaModels()
-      .then((list) => { if (!cancelled) setOllamaModels(Array.isArray(list) ? list : []) })
-      .catch(() => { if (!cancelled) setOllamaModels([]) })
-      .finally(() => { if (!cancelled) setOllamaLoading(false) })
-    return () => { cancelled = true }
-  }, [hasOllama])
-  
-  // Check which test types need prompts
-  const needsTestPrompts = selectedTestType === 'one_shot' || selectedTestType === 'multi_shot'
-  const needsSystemPrompts = selectedTestType === 'conversation' || selectedTestType === 'group_therapy'
-  const isBenchmarkTest = selectedTestType === 'benchmark'
-  const isGroupTherapyTest = selectedTestType === 'group_therapy'
-
-  // Calculate estimated test runs
-  // For benchmark: selectedBenchmarks.length * models.length
-  // For other test types: 1 * models.length (unless group_therapy which needs special handling)
-  const estimatedRuns = isBenchmarkTest
-    ? selectedBenchmarks.length * models.filter(m => m.provider && m.model).length
-    : selectedTestType
-    ? models.filter(m => m.provider && m.model).length
-    : 0
-
-  const addModel = () => {
-    const newModel: Model = {
-      id: `model_${Date.now()}`,
-      provider: '',
-      model: '',
-    }
-    setModels([...models, newModel])
+  const complete = models.filter((m) => m.provider && m.model.trim())
+  // The validation and request builders work on a single-test form; the suite's
+  // models stand in as the patient (or the group's patients) with shared settings.
+  const asForm: FormState = {
+    ...state,
+    patient: { ...state.patient, provider: complete[0]?.provider || '', model: complete[0]?.model || '' },
+    groupPatients: complete.map((m): GroupPatient => ({
+      key: m.key, provider: m.provider, model: m.model,
+      systemPrompt: state.patient.systemPrompt, generation: state.patient.generation,
+    })),
   }
 
-  const removeModel = (id: string) => {
-    setModels(models.filter((m) => m.id !== id))
-  }
+  const ids = useMemo(() => Array.from(new Set([
+    ...(state.testType === 'one_shot' && state.oneShotSource === 'library' && state.promptId ? [state.promptId] : []),
+    ...(state.testType === 'multi_shot' && state.multiShotSource === 'library' ? state.promptIds : []),
+    ...libraryIds([state.patient.systemPrompt, state.doctor.systemPrompt, state.evaluator.systemPrompt]),
+  ])), [state])
+  const testPromptIds = state.testType === 'one_shot' && state.oneShotSource === 'library' && state.promptId ? [state.promptId]
+    : state.testType === 'multi_shot' && state.multiShotSource === 'library' ? state.promptIds : []
+  const resolved = usePromptsByIds(ids)
+  const libraryTexts: Record<number, string> = {}
+  const missingPromptIds: number[] = []
+  const invalidTestPromptIds: number[] = []
+  const pendingTestPromptIds: number[] = []
+  ids.forEach((id, i) => {
+    if (testPromptIds.includes(id)) {
+      if (resolved[i]?.data && !isPatientTestPrompt(resolved[i].data!)) invalidTestPromptIds.push(id)
+      else if (!resolved[i]?.data && !resolved[i]?.isError) pendingTestPromptIds.push(id)
+    }
+    if (resolved[i]?.data) libraryTexts[id] = resolved[i].data!.prompt_text
+    else if (resolved[i]?.isError) missingPromptIds.push(id)
+  })
+  const variableNames = extractVariables(activePromptTexts(state, libraryTexts))
 
-  const updateModel = (id: string, field: 'provider' | 'model', value: string) => {
-    setModels((prev) =>
-      prev.map((m) => {
-        if (m.id === id) {
-          const updated = { ...m, [field]: value }
-          if (field === 'provider' && m.model) {
-            const list = value === 'ollama' ? ollamaModels : (MODELS_BY_PROVIDER[value] || [])
-            if (!list.includes(m.model)) updated.model = ''
-          }
-          return updated
-        }
-        return m
-      })
-    )
+  let errors: string[]
+  let warnings: string[] = []
+  if (isBenchmark) {
+    const benchmarkValidation = validateForm({ ...asForm, benchmark: benchmarks[0] || '' }, { missingPromptIds })
+    errors = [
+      ...benchmarkValidation.errors.filter((error) => !['Choose a benchmark.', 'Patient: choose a provider and model.'].includes(error)),
+      ...(benchmarks.length ? [] : ['Test design: choose at least one benchmark.']),
+      ...(complete.length ? [] : ['Models: add at least one model.']),
+    ]
+  } else {
+    ({ errors, warnings } = validateForm(asForm, { missingPromptIds, invalidTestPromptIds, pendingTestPromptIds }))
+    errors = errors.map((e) => e
+      .replace('Patient: choose a provider and model.', 'Models: add at least one model.')
+      .replace('Patients: add at least two patient models for group therapy.', 'Models: group therapy needs at least two models.'))
+      .filter((e) => !/^Patient \d+: /.test(e))
   }
+  if (complete.length !== models.length) warnings = [...warnings, 'Rows without a provider and model are left out.']
 
+  const runCount = isBenchmark ? benchmarks.length * complete.length : isGroup ? (complete.length ? 1 : 0) : complete.length
+  const summary = isBenchmark
+    ? `${runCount} benchmark run${runCount === 1 ? '' : 's'}: ${benchmarks.length} benchmark${benchmarks.length === 1 ? '' : 's'} × ${complete.length} model${complete.length === 1 ? '' : 's'}.`
+    : isGroup
+      ? `One group session with ${complete.length} models; the doctor leads and assesses it.`
+      : `${runCount} run${runCount === 1 ? '' : 's'}, one per model; the same doctor assesses every model${state.evaluator.enabled ? ', then each run is scored' : ''}.`
 
-  const toggleBenchmark = (benchmark: string) => {
-    setSelectedBenchmarks(prev =>
-      prev.includes(benchmark)
-        ? prev.filter(b => b !== benchmark)
-        : [...prev, benchmark]
-    )
-  }
-
-  const getAvailableModels = (provider: string): string[] => {
-    return provider === 'ollama' ? ollamaModels : (MODELS_BY_PROVIDER[provider] || [])
-  }
+  const setTestType = (testType: TestType) => update({ testType })
+  const setModel = (key: string, patch: Partial<SuiteModel>) => setModels((list) => list.map((m) => (m.key === key ? { ...m, ...patch } : m)))
+  const addModel = (provider = '', model = '') => setModels((list) => [...list, { key: newPatientKey(), provider, model }])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-
-    // Validation
-    if (!selectedTestType) {
-      toast.error('Please select a test type')
+    setAttempted(true)
+    if (errors.length) {
+      toast.error(errors[0])
       return
     }
-
-    if (isBenchmarkTest && selectedBenchmarks.length === 0) {
-      toast.error('Please select at least one benchmark')
-      return
-    }
-
-    const validModels = models.filter(m => m.provider && m.model)
-    if (validModels.length === 0) {
-      toast.error('Please add at least one model')
-      return
-    }
-
-    if (estimatedRuns > 50) {
-      const confirmed = window.confirm(
-        `This will create ${estimatedRuns} test runs. This may take a long time. Continue?`
-      )
-      if (!confirmed) return
-    }
-
+    if (runCount > 50 && !window.confirm(`This creates ${runCount} runs and may take a long time. Continue?`)) return
     try {
-      // Build test_config with prompt selections
-      const testConfig: Record<string, any> = {}
-      
-      // Add prompts for one-shot/multi-shot tests
-      if (needsTestPrompts) {
-        if (selectedTestType === 'one_shot') {
-          if (selectedPromptId) {
-            testConfig.prompt_id = selectedPromptId
-          } else if (customPrompt) {
-            testConfig.prompt = customPrompt
-          }
-        } else if (selectedTestType === 'multi_shot') {
-          if (selectedPromptIds.length > 0) {
-            testConfig.prompt_id = selectedPromptIds[0]
-          } else if (customPrompts.length > 0 && customPrompts[0]) {
-            testConfig.prompts = customPrompts.filter(p => p.trim())
-          }
-        }
+      const request = isBenchmark ? null : buildTestRunRequest(asForm, variableNames)
+      const testConfig = request ? { ...request.test_config } : buildBenchmarkSuiteConfig(asForm)
+      if (testConfig) {
+        delete testConfig.patients // the suite builds the group from its models
+        if (isGroup) applySharedPatientPrompt(testConfig, state.patient.systemPrompt)
+        if (request?.variables) testConfig.variables = request.variables
       }
-      
-      // Add system prompts for conversation tests
-      if (needsSystemPrompts) {
-        if (selectedDoctorSystemPromptId) {
-          testConfig.doctor_system_prompt_id = selectedDoctorSystemPromptId
-        }
-        if (selectedPatientSystemPromptId) {
-          testConfig.patient_system_prompt_id = selectedPatientSystemPromptId
-        }
-      }
-      
-      // Add variables if any are set
-      if (Object.keys(variableValues).length > 0 && Object.values(variableValues).some(v => v.trim())) {
-        testConfig.variables = variableValues
-      }
-
-      // Model options: temperature and seed (for reproducible runs)
-      if (suiteTemperature !== '' && suiteTemperature !== undefined) {
-        testConfig.temperature = typeof suiteTemperature === 'number' ? suiteTemperature : parseFloat(String(suiteTemperature))
-      }
-      if (suiteSeed !== '' && suiteSeed !== undefined) {
-        const s = typeof suiteSeed === 'number' ? suiteSeed : parseInt(String(suiteSeed), 10)
-        if (!Number.isNaN(s)) testConfig.seed = s
-      }
-
-      // For benchmark test type, we need to pass benchmarks
-      // For other test types, benchmarks array should be empty
-      const benchmarksToUse = isBenchmarkTest ? selectedBenchmarks : []
-
       const result = await createSuite.mutateAsync({
-        name: suiteName || undefined,
-        test_types: [selectedTestType],
-        benchmarks: benchmarksToUse,
-        models: validModels.map(m => ({ provider: m.provider, model: m.model })),
-        test_config: Object.keys(testConfig).length > 0 ? testConfig : undefined,
-        num_samples: isBenchmarkTest ? numSamples : undefined,
+        name: state.name.trim() || undefined,
+        test_types: [state.testType],
+        benchmarks: isBenchmark ? benchmarks : [],
+        models: complete.map((m) => ({ provider: m.provider, model: m.model.trim() })),
+        test_config: testConfig,
+        num_samples: isBenchmark ? numberOr(state.numSamples, 100, { min: 1, max: 10000, int: true }) : undefined,
+        doctor: steps.doctor.shown ? { provider: state.doctor.provider, model: state.doctor.model.trim() } : undefined,
       })
-
-      toast.success(`Suite created! Starting ${estimatedRuns} test runs...`)
+      toast.success(`Suite created with ${runCount} run${runCount === 1 ? '' : 's'}.`)
       router.push(`/suite/${result.id}`)
     } catch (error) {
-      console.error('Failed to create suite:', error)
-      toast.error('Failed to create suite. Please check your configuration.')
+      toast.error(formatApiError(error, 'Could not create the suite.'))
     }
   }
 
+  const benchmarkRows: any[] = benchmarksData?.benchmarks ?? []
+  const benchmarkPicker = (
+    <div className="space-y-3">
+      <span className="text-sm font-medium">Benchmarks ({benchmarks.length} chosen)</span>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+        {benchmarkRows.map((b) => {
+          const unavailable = b.runnable === false
+          const checked = benchmarks.includes(b.name)
+          return (
+            <label key={b.name} className={`flex items-start gap-2 rounded border p-3 text-sm ${unavailable ? 'opacity-60' : 'cursor-pointer'} ${checked ? 'border-primary bg-primary/10' : 'bg-muted/30'}`}>
+              <input type="checkbox" className="mt-1 rounded" disabled={unavailable} checked={checked}
+                onChange={() => setBenchmarks((list) => (checked ? list.filter((x) => x !== b.name) : [...list, b.name]))} />
+              <span>
+                <span className="font-medium">{b.title ?? b.name}</span>
+                <span className="block text-xs text-muted-foreground">{b.description}</span>
+                {unavailable && <span className="block text-xs text-destructive">{b.unavailable_reason}</span>}
+              </span>
+            </label>
+          )
+        })}
+      </div>
+      <label className="block max-w-xs text-xs font-medium">
+        Samples per benchmark
+        <input type="number" min="1" max="10000" value={state.numSamples} placeholder="100"
+          onChange={(e) => update({ numSamples: e.target.value })} className={INPUT} />
+      </label>
+      <label className="block max-w-xs text-xs font-medium">
+        Seed
+        <input type="number" min="0" max="4294967295" value={state.benchmarkSeed} placeholder="0"
+          onChange={(e) => update({ benchmarkSeed: e.target.value })} className={INPUT} />
+      </label>
+    </div>
+  )
+
+  let number = 1
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="rounded-lg border bg-card p-6 space-y-6">
-        <h2 className="text-xl font-semibold">Suite Configuration</h2>
+      <TestDesignSection state={state} update={update} setTestType={setTestType} variableNames={variableNames} benchmarkSlot={benchmarkPicker} />
 
-        {/* Suite Name */}
-        <div className="space-y-2">
-          <label className="text-sm font-medium">Suite Name (Optional)</label>
-          <input
-            type="text"
-            value={suiteName}
-            onChange={(e) => setSuiteName(e.target.value)}
-            placeholder="My Test Suite"
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          />
-        </div>
-
-        {/* Test Type Selection (Radio) */}
-        <div className="space-y-2">
-          <label className="text-sm font-medium">Test Type</label>
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
-            {TEST_TYPES.map((type) => (
-              <label
-                key={type.value}
-                className={`flex items-start gap-2 rounded-lg border p-3 cursor-pointer transition-colors ${
-                  selectedTestType === type.value
-                    ? 'bg-primary/10 border-primary'
-                    : 'bg-muted/30 hover:bg-muted/50'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="test_type"
-                  value={type.value}
-                  checked={selectedTestType === type.value}
-                  onChange={(e) => setSelectedTestType(e.target.value)}
-                  className="mt-1"
-                />
-                <div>
-                  <div className="font-medium text-sm">{type.label}</div>
-                  <div className="text-xs text-muted-foreground">{type.desc}</div>
-                </div>
-              </label>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Select one test type to run against all selected models
-          </p>
-        </div>
-
-        {/* Benchmarks Selection (only show if benchmark test type is selected) */}
-        {isBenchmarkTest && (
-          <div className="space-y-4">
-            <label className="text-sm font-medium">Benchmarks</label>
-            {benchmarksData?.benchmarks && benchmarksData.benchmarks.length > 0 ? (
-              <div className="space-y-5">
-                {(benchmarksData.categories?.length ? benchmarksData.categories : [{ id: '_all', title: 'Benchmarks' }]).map((category: any) => {
-                  const categoryBenchmarks = category.id === '_all'
-                    ? benchmarksData!.benchmarks
-                    : benchmarksData!.benchmarks.filter((b: any) => b.category === category.id)
-                  if (categoryBenchmarks.length === 0) return null
-                  return (
-                    <div key={category.id}>
-                      {category.id !== '_all' && (
-                        <div className="mb-2">
-                          <h4 className="text-sm font-semibold">{category.title}</h4>
-                          {category.description && (
-                            <p className="text-xs text-muted-foreground">{category.description}</p>
-                          )}
-                        </div>
-                      )}
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                        {categoryBenchmarks.map((benchmark: any) => (
-                          <label
-                            key={benchmark.name}
-                            className={`flex items-start gap-2 rounded-lg border p-3 cursor-pointer transition-colors ${
-                              selectedBenchmarks.includes(benchmark.name)
-                                ? 'bg-primary/10 border-primary'
-                                : 'bg-muted/30 hover:bg-muted/50'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedBenchmarks.includes(benchmark.name)}
-                              onChange={() => toggleBenchmark(benchmark.name)}
-                              className="mt-1 rounded"
-                            />
-                            <div>
-                              <div className="font-medium text-sm">{benchmark.title ?? benchmark.name}</div>
-                              <div className="text-xs text-muted-foreground">{benchmark.description}</div>
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">Loading benchmarks...</p>
-            )}
-          </div>
-        )}
-
-        {/* Models Selection */}
+      <StepCard
+        number={++number}
+        title="Models under test"
+        description={isGroup
+          ? 'All of these models join one group session as patients.'
+          : isBenchmark ? 'Every model answers every chosen benchmark.' : 'Each model gets its own run of the test above.'}
+      >
         <div className="space-y-3">
-          <label className="text-sm font-medium">Models</label>
-          {models.map((model, index) => (
-            <div key={model.id} className="rounded-lg border bg-card p-4">
-              <div className="flex items-center justify-between mb-3">
-                <label className="text-sm font-medium">Model {index + 1}</label>
-                {models.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeModel(model.id)}
-                    className="text-red-600 hover:text-red-800"
-                    title="Remove model"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
+          {models.map((m, index) => (
+            <div key={m.key} className="rounded-md border p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Model {index + 1}</h3>
+                <button type="button" className={SMALL_BUTTON} disabled={models.length <= 1}
+                  onClick={() => setModels((list) => list.filter((x) => x.key !== m.key))} aria-label={`Remove model ${index + 1}`}>
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-muted-foreground">Provider</label>
-                  <select
-                    value={model.provider}
-                    onChange={(e) => updateModel(model.id, 'provider', e.target.value)}
-                    className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    <option value="">Select provider</option>
-                    {PROVIDERS.map((p) => (
-                      <option key={p} value={p}>
-                        {p.charAt(0).toUpperCase() + p.slice(1)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-muted-foreground">Model</label>
-                  <select
-                    value={model.model}
-                    onChange={(e) => updateModel(model.id, 'model', e.target.value)}
-                    disabled={!model.provider || (model.provider === 'ollama' && ollamaLoading)}
-                    className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <option value="">{model.provider === 'ollama' && ollamaLoading ? 'Loading…' : 'Select model'}</option>
-                    {getAvailableModels(model.provider).map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <ModelSelector label="" provider={m.provider} model={m.model}
+                onProviderChange={(provider) => setModel(m.key, { provider, model: '' })}
+                onModelChange={(model) => setModel(m.key, { model })} />
             </div>
           ))}
-          <button
-            type="button"
-            onClick={addModel}
-            className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-2 text-sm font-medium hover:bg-muted"
-          >
-            <Plus className="h-4 w-4" />
-            Add Model
-          </button>
-        </div>
-
-        {/* Number of Samples (for benchmarks) */}
-        {isBenchmarkTest && (
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Number of Samples</label>
-            <input
-              type="number"
-              min="1"
-              max="10000"
-              value={numSamples}
-              onChange={(e) => setNumSamples(parseInt(e.target.value) || 100)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            />
-            <p className="text-xs text-muted-foreground">
-              Number of test samples to run from each benchmark dataset
-            </p>
-          </div>
-        )}
-
-        {/* Temperature and Seed (model options for all suite runs) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Temperature</label>
-            <input
-              type="number"
-              min="0"
-              max="2"
-              step="0.1"
-              value={suiteTemperature}
-              onChange={(e) => setSuiteTemperature(e.target.value === '' ? '' : parseFloat(e.target.value))}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            />
-            <p className="text-xs text-muted-foreground">0 = deterministic, higher = more random (default 0.7)</p>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Seed (optional)</label>
-            <input
-              type="number"
-              min="0"
-              step="1"
-              placeholder="Leave empty for random"
-              value={suiteSeed}
-              onChange={(e) => setSuiteSeed(e.target.value === '' ? '' : parseInt(e.target.value, 10) || '')}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            />
-            <p className="text-xs text-muted-foreground">Fixed seed for reproducible runs</p>
-          </div>
-        </div>
-
-        {/* Group Therapy Patients (if group therapy is selected) */}
-        {isGroupTherapyTest && (
-          <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Patient Models for Group Therapy</label>
-              <p className="text-xs text-muted-foreground">
-                The models selected above will be used as the doctor. Add patient models below.
-              </p>
-            </div>
-            <p className="text-xs text-muted-foreground mb-2">
-              Note: For group therapy, you need to select a doctor model above, and add patient models below.
-              The suite will create one test run per patient model combination.
-            </p>
-            <p className="text-xs text-yellow-600">
-              ⚠️ Group therapy in suites: Each model above will be used as the doctor, and each patient model below will be tested separately.
-            </p>
-          </div>
-        )}
-
-        {/* Prompt Selection for Test Types */}
-        {needsTestPrompts && (
-          <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">
-                {selectedTestType === 'one_shot'
-                  ? 'Test Prompt (One-Shot)'
-                  : 'Test Prompts (Multi-Shot)'}
-              </label>
-              <Link
-                href="/prompts"
-                className="text-xs text-primary hover:underline"
-              >
-                Manage Prompts
-              </Link>
-            </div>
-
-            {selectedTestType === 'one_shot' ? (
-              // One-shot: single prompt
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Select Prompt from Library (Optional)</label>
-                  <select
-                    value={selectedPromptId || ''}
-                    onChange={(e) => {
-                      const newPromptId = e.target.value ? parseInt(e.target.value) : undefined
-                      setSelectedPromptId(newPromptId)
-                      if (newPromptId) {
-                        setCustomPrompt('')
-                      }
-                    }}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    <option value="">None (use custom prompt below)</option>
-                    {prompts
-                      .filter((p) => p.prompt_type === 'test_prompt')
-                      .map((prompt) => (
-                        <option key={prompt.id} value={prompt.id}>
-                          {getPromptDisplayName(prompt)} {prompt.category && `(${prompt.category})`}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-
-                {!selectedPromptId && (
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Or Enter Custom Prompt</label>
-                    <textarea
-                      placeholder="Enter a single prompt to test"
-                      value={customPrompt}
-                      onChange={(e) => {
-                        setCustomPrompt(e.target.value)
-                        if (e.target.value) {
-                          setSelectedPromptId(undefined)
-                        }
-                      }}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                      rows={4}
-                    />
-                  </div>
-                )}
-
-                {promptVariables.length > 0 && (
-                  <div className="mt-3 space-y-2 rounded-lg border bg-background p-3">
-                    <label className="text-xs font-medium">Prompt Variables</label>
-                    {promptVariables.map((varName) => (
-                      <div key={varName} className="space-y-1">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          ${varName}
-                        </label>
-                        <input
-                          type="text"
-                          value={variableValues[varName] || ''}
-                          onChange={(e) =>
-                            setVariableValues({
-                              ...variableValues,
-                              [varName]: e.target.value,
-                            })
-                          }
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                          placeholder={`Enter value for ${varName}`}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : selectedTestType === 'multi_shot' ? (
-              // Multi-shot: multiple prompts
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-muted-foreground">Select Prompt from Library (Optional)</label>
-                  <select
-                    value={selectedPromptIds[0] || ''}
-                    onChange={(e) => {
-                      const newPromptId = e.target.value ? parseInt(e.target.value) : undefined
-                      if (newPromptId) {
-                        setSelectedPromptIds([newPromptId])
-                        setCustomPrompts([''])
-                      } else {
-                        setSelectedPromptIds([])
-                      }
-                    }}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    <option value="">None (use custom prompts below)</option>
-                    {prompts
-                      .filter((p) => p.prompt_type === 'test_prompt')
-                      .map((prompt) => (
-                        <option key={prompt.id} value={prompt.id}>
-                          {getPromptDisplayName(prompt)} {prompt.category && `(${prompt.category})`}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-
-                {selectedPromptIds.length === 0 && (
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-muted-foreground">Or Enter Custom Prompts (one per line)</label>
-                    <textarea
-                      placeholder="Enter multiple prompts, one per line"
-                      value={customPrompts.join('\n')}
-                      onChange={(e) => {
-                        const lines = e.target.value.split('\n').filter(l => l.trim())
-                        setCustomPrompts(lines.length > 0 ? lines : [''])
-                        if (e.target.value) {
-                          setSelectedPromptIds([])
-                        }
-                      }}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                      rows={6}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Enter multiple prompts, one per line. Each prompt will be sent sequentially.
-                    </p>
-                  </div>
-                )}
-              </div>
-            ) : null}
-          </div>
-        )}
-
-        {/* System Prompts for Conversation Tests */}
-        {needsSystemPrompts && (
-          <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">System Prompts (Optional)</label>
-              <Link
-                href="/prompts"
-                className="text-xs text-primary hover:underline"
-              >
-                Manage Prompts
-              </Link>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">Doctor System Prompt</label>
-              <select
-                value={selectedDoctorSystemPromptId || ''}
-                onChange={(e) =>
-                  setSelectedDoctorSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
-                }
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              >
-                <option value="">Default doctor system prompt</option>
-                {doctorSystemPrompts.map((prompt) => (
-                  <option key={prompt.id} value={prompt.id}>
-                    {getPromptDisplayName(prompt)}
-                  </option>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => addModel()}
+              className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-2 text-sm font-medium hover:bg-muted">
+              <Plus className="h-4 w-4" /> Add model
+            </button>
+            {Array.isArray(edited) && edited.length > 0 && (
+              <>
+                <span className="text-xs text-muted-foreground">or add an edited model:</span>
+                {edited.slice(0, 4).map((e: any) => (
+                  <button key={e.path} type="button" title={e.path} onClick={() => addModel('transformers', e.path)}
+                    className="flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm hover:bg-muted">
+                    <Scissors className="h-3.5 w-3.5" /> {e.name}
+                  </button>
                 ))}
-              </select>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">Patient System Prompt</label>
-              <select
-                value={selectedPatientSystemPromptId || ''}
-                onChange={(e) =>
-                  setSelectedPatientSystemPromptId(e.target.value ? parseInt(e.target.value) : undefined)
-                }
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              >
-                <option value="">No system prompt (default behavior)</option>
-                {patientSystemPrompts.map((prompt) => (
-                  <option key={prompt.id} value={prompt.id}>
-                    {getPromptDisplayName(prompt)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Estimated Runs */}
-        <div className="rounded-lg border bg-muted/30 p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <h3 className="text-sm font-semibold">Estimated Test Runs</h3>
-            {estimatedRuns > 50 && (
-              <AlertTriangle className="h-4 w-4 text-yellow-600" />
+              </>
             )}
           </div>
-          <p className="text-2xl font-bold">{estimatedRuns}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {isBenchmarkTest ? (
-              <>
-                {selectedBenchmarks.length} benchmark{selectedBenchmarks.length !== 1 ? 's' : ''} × {models.filter(m => m.provider && m.model).length} model{models.filter(m => m.provider && m.model).length !== 1 ? 's' : ''}
-              </>
-            ) : selectedTestType ? (
-              <>
-                1 test type ({selectedTestType}) × {models.filter(m => m.provider && m.model).length} model{models.filter(m => m.provider && m.model).length !== 1 ? 's' : ''}
-              </>
-            ) : (
-              'Select a test type to see estimated runs'
-            )}
-          </p>
-          {estimatedRuns > 50 && (
-            <p className="text-xs text-yellow-600 mt-2">
-              Warning: This will create a large number of test runs and may take a long time to complete.
-            </p>
-          )}
         </div>
+          <div className="space-y-4 border-t pt-4">
+            <p className="text-xs text-muted-foreground">These patient settings apply to every model above.</p>
+            <SystemPromptPicker benchmark={isBenchmark} role="patient" value={state.patient.systemPrompt} allowNone={!isGroup}
+              onChange={(systemPrompt) => update({ patient: { ...state.patient, systemPrompt } })} />
+            <GenerationSettings defaultTemperature={isBenchmark ? 0 : undefined} defaultMaxTokens={isBenchmark ? 512 : undefined} value={state.patient.generation}
+              onChange={(generation) => update({ patient: { ...state.patient, generation } })} />
+          </div>
+      </StepCard>
 
-        {/* Submit Button */}
-        <button
-          type="submit"
-          disabled={createSuite.isPending || estimatedRuns === 0}
-          className="w-full rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {createSuite.isPending ? 'Creating Suite...' : 'Create Suite'}
+      {steps.doctor.shown && (
+        <StepCard number={++number} title="Doctor" description={steps.doctor.description}>
+          <RoleFields role="doctor" step={state.doctor} onChange={(doctor) => update({ doctor })}
+            doctorGoal={steps.doctor.showStrategies ? { value: state.doctorGoal, onChange: (doctorGoal) => update({ doctorGoal }) } : undefined}
+            showCot={steps.doctor.showCot} showStrategies={steps.doctor.showStrategies} />
+        </StepCard>
+      )}
+
+      {steps.evaluator.shown && (
+        <EvaluatorStep number={++number} value={state.evaluator} onChange={(evaluator) => update({ evaluator })}
+          doctorLabel={state.doctor.model ? `${state.doctor.provider}/${state.doctor.model}` : ''} />
+      )}
+
+      <RunSection number={++number} state={asForm} update={update} errors={errors} warnings={warnings}
+        summary={summary} attempted={attempted} namePlaceholder="My test suite" />
+
+      {runCount > 50 && (
+        <p className="flex items-center gap-2 text-sm text-yellow-700"><AlertTriangle className="h-4 w-4" /> {runCount} runs may take a long time.</p>
+      )}
+      <div className="flex justify-end">
+        <button type="submit" disabled={createSuite.isPending}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+          {createSuite.isPending ? 'Creating…' : `Create suite${runCount ? ` (${runCount} run${runCount === 1 ? '' : 's'})` : ''}`}
         </button>
       </div>
     </form>
   )
+}
+
+/** Group therapy: the suite copies the shared patient prompt onto each patient it creates. */
+function applySharedPatientPrompt(testConfig: Record<string, any>, choice: SystemPromptChoice) {
+  if (choice.mode === 'library') testConfig.patient_system_prompt_id = choice.id
+  else if (choice.mode === 'custom' && choice.text.trim()) testConfig.patient_system_prompt = choice.text.trim()
 }

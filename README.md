@@ -542,6 +542,14 @@ AI Asylum supports **purple teaming**—the fusion of red teaming (offensive) an
 - Discovered failures feed back into training pipelines
 - Systematic hardening based on real-world attack patterns
 
+## Role, Context, and Goal Prompt Presets
+
+The optional [Role Lab v1 catalog](docs/PROMPT_PRESETS.md) adds matching user and
+system prompts for doctor, patient, and evaluator roles. Preview the twelve
+nonmedical examples with `venv/bin/python scripts/seed_prompt_presets.py --catalog`.
+Install missing entries into an existing database with `--apply`; existing prompts
+and edits are preserved.
+
 ## Jailbreak Testing Resources
 
 The project includes resources for testing jailbreak resistance. See `docs/JAILBREAK_RESOURCES.md` for a list of repositories and techniques.

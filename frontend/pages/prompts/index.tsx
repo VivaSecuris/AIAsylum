@@ -3,7 +3,7 @@ import { Layout } from '@/components/layout/Layout'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { usePrompts, useDeletePrompt } from '@/lib/hooks'
 import { Prompt } from '@/lib/api'
-import { Plus, Edit, Trash2, Search, Tag, Play } from 'lucide-react'
+import { Plus, Edit, Trash2, Search, Tag, Play, Copy } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from '@/lib/toast'
 import { formatDate, getPromptDisplayName } from '@/lib/utils'
@@ -313,26 +313,26 @@ export default function PromptsPage() {
             />
           </div>
           <select
+            aria-label="Prompt type filter"
             value={promptTypeFilter}
             onChange={(e) => setPromptTypeFilter(e.target.value)}
             className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Types</option>
-            <option value="test_prompt">Test Prompts</option>
+            <option value="test_prompt">User / Test Prompts</option>
             <option value="system_prompt">System Prompts</option>
           </select>
-          {promptTypeFilter === 'system_prompt' && (
-            <select
-              value={targetFilter}
-              onChange={(e) => setTargetFilter(e.target.value)}
-              className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            >
-              <option value="">All Targets</option>
-              <option value="doctor">Doctor</option>
-              <option value="patient">Patient</option>
-              <option value="evaluator">Evaluator</option>
-            </select>
-          )}
+          <select
+            aria-label="Prompt target filter"
+            value={targetFilter}
+            onChange={(e) => setTargetFilter(e.target.value)}
+            className="rounded-md border border-input bg-background px-4 py-2 text-sm text-foreground ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <option value="">All Targets</option>
+            <option value="doctor">Doctor</option>
+            <option value="patient">Patient</option>
+            <option value="evaluator">Evaluator</option>
+          </select>
           {categories.length > 0 && (
             <select
               value={categoryFilter}
@@ -508,6 +508,22 @@ export default function PromptsPage() {
 
 function PromptCard({ prompt, onDelete }: { prompt: Prompt; onDelete: (id: number) => void }) {
   const isTestPrompt = prompt.prompt_type === 'test_prompt'
+  const runAction = !isTestPrompt ? null : prompt.target === 'doctor'
+    ? {
+      href: `/create-test?type=conversation&test_config=${encodeURIComponent(JSON.stringify({ doctor_goal: prompt.prompt_text }))}`,
+      label: 'Use as doctor goal',
+    }
+    : (!prompt.target || prompt.target === 'patient')
+      ? { href: `/create-test?promptId=${prompt.id}`, label: 'Run Test with this Prompt' }
+      : null
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(prompt.prompt_text)
+      toast.success('Prompt copied')
+    } catch {
+      toast.error('Could not copy the prompt')
+    }
+  }
   
   return (
     <div className="rounded-lg border bg-card p-6 space-y-4 hover:shadow-md transition-shadow">
@@ -517,15 +533,18 @@ function PromptCard({ prompt, onDelete }: { prompt: Prompt; onDelete: (id: numbe
           {prompt.description && <p className="text-sm text-muted-foreground line-clamp-2">{prompt.description}</p>}
         </div>
         <div className="flex gap-2">
-          {isTestPrompt && (
+          {runAction && (
             <Link
-              href={`/create-test?promptId=${prompt.id}`}
+              href={runAction.href}
               className="p-2 hover:bg-muted rounded text-primary"
-              title="Run Test with this Prompt"
+              title={runAction.label}
             >
               <Play className="h-4 w-4" />
             </Link>
           )}
+          <button onClick={copyPrompt} className="p-2 hover:bg-muted rounded" title="Copy prompt">
+            <Copy className="h-4 w-4" />
+          </button>
           <Link
             href={`/prompts/${prompt.id}/edit`}
             className="p-2 hover:bg-muted rounded"
@@ -553,7 +572,7 @@ function PromptCard({ prompt, onDelete }: { prompt: Prompt; onDelete: (id: numbe
             ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' 
             : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
         }`}>
-          {prompt.prompt_type === 'system_prompt' ? 'System' : 'Test'}
+          {prompt.prompt_type === 'system_prompt' ? 'System' : 'User / Test'}
           {prompt.target && ` - ${prompt.target}`}
         </span>
         {prompt.category && (
@@ -589,16 +608,29 @@ function PromptCard({ prompt, onDelete }: { prompt: Prompt; onDelete: (id: numbe
         </div>
       )}
       
-      {/* Run Test button for test prompts */}
+      {/* Route user prompts only to the model role they are intended to exercise. */}
       {isTestPrompt && (
         <div className="pt-2 border-t">
-          <Link
-            href={`/create-test?promptId=${prompt.id}`}
-            className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-lg transition-colors"
-          >
-            <Play className="h-4 w-4" />
-            Run Test with this Prompt
-          </Link>
+          {runAction ? (
+            <Link
+              href={runAction.href}
+              className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-lg transition-colors"
+            >
+              <Play className="h-4 w-4" />
+              {runAction.label}
+            </Link>
+          ) : (
+            <>
+              <button onClick={copyPrompt}
+                className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-lg transition-colors">
+                <Copy className="h-4 w-4" />
+                Copy {prompt.target === 'evaluator' ? 'evaluator ' : ''}user prompt
+              </button>
+              {prompt.target === 'evaluator' && (
+                <p className="mt-2 text-xs text-muted-foreground">Paste into an evaluator chat to assess the included example.</p>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

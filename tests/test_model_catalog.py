@@ -185,6 +185,7 @@ def test_history_deduplicates_relative_and_absolute_refs_and_model_roles(tmp_pat
     custom = next(m for m in models if m["kind"] == "custom")
     assert custom["history"] == {"test_runs": 1, "interp_runs": 1, "weight_runs": 2}
     assert custom["run_id"] is not None
+    assert custom["aliases"] == ["models/edit"]
 
 
 def test_catalog_endpoint_returns_server_location_and_exact_contract(tmp_path, catalog, monkeypatch):
@@ -200,7 +201,7 @@ def test_catalog_endpoint_returns_server_location_and_exact_contract(tmp_path, c
     assert response.json()["location"]
     assert set(response.json()["models"][0]) == {
         "id", "model_ref", "name", "kind", "provider", "source_model", "availability",
-        "reason", "size_bytes", "created_at", "run_id", "manifest", "history",
+        "reason", "size_bytes", "created_at", "run_id", "manifest", "history", "aliases",
     }
 
 
@@ -239,3 +240,59 @@ def test_catalog_serializes_naive_database_creation_as_utc(tmp_path, catalog, te
 @pytest.mark.parametrize("value", ["not a timestamp", "2026-99-24T02:18:00", "2026-09-24", None, 42])
 def test_invalid_or_incomplete_timestamp_is_not_invented(value):
     assert model_catalog.normalize_timestamp(value) is None
+
+
+def test_aliases_preserve_observed_relative_paths_spaces_and_hash_without_merging_names(tmp_path, catalog, test_db):
+    first = checkpoint(tmp_path / "models" / "model #1")
+    second = checkpoint(tmp_path / "other" / "model #1")
+    test_db.add_all([
+        Run(doctor_provider="transformers", doctor_model="./models/model #1",
+            patient_provider="local", patient_model="models/model #1", test_type="one_shot"),
+        Run(doctor_provider="openai", doctor_model="api-only-alias",
+            patient_provider="transformers", patient_model=str(second), test_type="one_shot"),
+    ])
+    test_db.commit()
+    models = {row["model_ref"]: row for row in catalog()["models"]}
+    assert set(models) == {str(first), str(second)}
+    assert models[str(first)]["aliases"] == ["./models/model #1", "models/model #1"]
+    assert models[str(second)]["aliases"] == []
+    assert models[str(first)]["availability"] == models[str(second)]["availability"] == "ready"
+
+
+def test_aliases_link_only_selected_main_snapshot_not_an_older_revision(tmp_path, catalog, test_db):
+    repo = tmp_path / "hub" / "models--org--base"
+    current = checkpoint(repo / "snapshots" / "new")
+    old = checkpoint(repo / "snapshots" / "old")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("new")
+    test_db.add(Run(doctor_provider="transformers", doctor_model=str(old),
+                    patient_provider="transformers", patient_model="hub/models--org--base/snapshots/new",
+                    test_type="one_shot"))
+    test_db.commit()
+    models = {row["model_ref"]: row for row in catalog()["models"]}
+    assert set(models) == {"org/base", str(old)}
+    assert models["org/base"]["aliases"] == sorted([str(current), "hub/models--org--base/snapshots/new"])
+    assert str(old) not in models["org/base"]["aliases"]
+    assert models[str(old)]["aliases"] == []
+
+
+def test_pinned_cache_without_main_does_not_claim_repo_id_is_an_equivalent_request(tmp_path, catalog, test_db):
+    snapshot = checkpoint(tmp_path / "hub" / "models--org--base" / "snapshots" / "pinned")
+    test_db.add(Run(doctor_provider="transformers", doctor_model="org/base",
+                    patient_provider="local", patient_model="hub/models--org--base/snapshots/pinned",
+                    test_type="one_shot"))
+    test_db.commit()
+    model = catalog()["models"][0]
+    assert model["model_ref"] == str(snapshot)
+    assert model["aliases"] == ["hub/models--org--base/snapshots/pinned"]
+    assert model["availability"] == "ready"
+
+
+def test_current_snapshot_alias_is_available_without_any_recorded_run(tmp_path, catalog):
+    repo = tmp_path / "hub" / "models--org--base"
+    snapshot = checkpoint(repo / "snapshots" / "current")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("current")
+    model = catalog()["models"][0]
+    assert model["model_ref"] == "org/base"
+    assert model["aliases"] == [str(snapshot)]

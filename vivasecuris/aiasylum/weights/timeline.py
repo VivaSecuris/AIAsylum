@@ -46,10 +46,15 @@ def refusal_timeline(
     direction,
     layer: Optional[int] = None,
     max_new_tokens: int = 128,
-    thinking: bool = True,
+    thinking: bool = False,
     apply_template: bool = True,
 ) -> Dict[str, object]:
-    """Generate greedily and record the refusal projection per generated token."""
+    """Generate greedily and record the refusal projection per generated token.
+
+    ``thinking`` defaults to False like every other formatting entry point:
+    the direction was derived under one setting, and the timeline must read
+    the same positions.
+    """
     import torch
 
     from vivasecuris.aiasylum.weights.capture import format_prompts
@@ -89,8 +94,8 @@ def refusal_timeline(
         target = get_final_norm(model) if final_hidden_is_normed(model) else None
         handle = (target or blocks[-1]).register_forward_hook(post_hook)
 
-    text = format_prompts(tokenizer, [prompt], thinking=thinking)[0] if apply_template else prompt
-    inputs = tokenizer(text, return_tensors="pt", add_special_tokens=not apply_template).to(model.device)
+    texts, applied = format_prompts(tokenizer, [prompt], thinking=thinking) if apply_template else ([prompt], False)
+    inputs = tokenizer(texts[0], return_tensors="pt", add_special_tokens=not applied).to(model.device)
     try:
         with torch.no_grad():
             out = model.generate(
