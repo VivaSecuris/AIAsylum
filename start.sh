@@ -11,7 +11,7 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
 
 if [ ! -x venv/bin/python ] || [ ! -f venv/.installed ]; then
-    ./install.sh --no-frontend
+    ./install.sh
 fi
 
 # shellcheck disable=SC1091

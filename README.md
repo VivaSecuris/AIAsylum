@@ -106,10 +106,12 @@ Requires Python 3.10, 3.11, or 3.12 (3.13+ cannot build the pinned dependencies)
 ```bash
 git clone --recursive https://github.com/VivaSecuris/AIAsylum.git
 cd AIAsylum
-./install.sh
+./start.sh
 ```
 
-`./install.sh` creates a virtual environment, installs the package (`pip install -e .`), writes `.env` with generated secrets when one is missing, applies database migrations, loads the prompt presets, and installs the frontend. It does not overwrite an existing `.env`.
+That is the only command you need. On first run `./start.sh` installs everything, then starts the API at http://127.0.0.1:8000 and the web UI at http://127.0.0.1:3000. Later runs start the services. The API binds to loopback. Press Ctrl+C to stop.
+
+`./install.sh` does the same install without starting the servers. It creates a virtual environment, installs the package (`pip install -e .`), writes `.env` with generated secrets when one is missing, applies database migrations, loads the prompt presets, and installs the frontend. It does not overwrite an existing `.env`.
 
 Flags:
 
@@ -137,19 +139,14 @@ Provider keys and your own API key are different. How to create each one and whe
 Docker Compose builds the API and PostgreSQL images from this repo. It will not start until `.env` has `POSTGRES_PASSWORD`, `API_KEY_HMAC_SECRET`, and `API_KEYS`. See [docs/DOCKER.md](docs/DOCKER.md).
 
 ```bash
-docker compose build
-docker compose up -d
+docker compose up -d --build
 ```
 
 The dependency inventories are [sbom/python-core.cdx.json](sbom/python-core.cdx.json) and [sbom/frontend.cdx.json](sbom/frontend.cdx.json). Regenerate them with `./scripts/generate_sbom.sh`.
 
 ## Quick Start
 
-```bash
-./start.sh
-```
-
-On first run this installs (via `./install.sh`) and then starts the API at http://127.0.0.1:8000 and the web UI at http://127.0.0.1:3000. The API binds to loopback. For any other interface, set `REQUIRE_AUTH=true` and use `scripts/remote_session.sh`. `HOST=0.0.0.0 ./start.sh` overrides the bind address. `python start.py` is the cross-platform equivalent.
+`./start.sh` installs on first run and starts the API and web UI. For any interface other than loopback, set `REQUIRE_AUTH=true` and use `scripts/remote_session.sh`. `HOST=0.0.0.0 ./start.sh` overrides the bind address. `python start.py` is the cross-platform equivalent.
 
 Run a conversation against a local model:
 

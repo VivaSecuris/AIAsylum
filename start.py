@@ -5,6 +5,7 @@ Checks/creates venv, installs deps, starts API and frontend
 """
 
 import os
+import secrets
 import sys
 import subprocess
 import signal
@@ -110,10 +111,11 @@ def main():
     # Install dependencies if needed
     installed_marker = venv_path / ".installed"
     if not installed_marker.exists():
-        print("📥 Installing dependencies...")
+        print("Installing dependencies...")
         pip_cmd = str(venv_python)
-        run_command([pip_cmd, "install", "--upgrade", "pip"])
-        run_command([pip_cmd, "install", "-r", "requirements.txt"])
+        run_command([pip_cmd, "-m", "pip", "install", "--upgrade", "pip"])
+        run_command([pip_cmd, "-m", "pip", "install", "-r", "requirements.txt"])
+        run_command([pip_cmd, "-m", "pip", "install", "-e", "."])
         installed_marker.touch()
         print("📥 Warming Hugging Face benchmark dataset caches (one row each; first time may take several minutes)...")
         run_command([pip_cmd, "-m", "vivasecuris.aiasylum.benchmarks.prefetch"], check=False)
@@ -123,9 +125,16 @@ def main():
     if not env_file.exists():
         env_example = SCRIPT_DIR / ".env.example"
         if env_example.exists():
-            print("⚠️  .env file not found. Copying from .env.example...")
-            env_file.write_text(env_example.read_text())
-            print("📝 Please edit .env with your API keys before continuing")
+            print(".env was missing. Copied from .env.example and generated the local secrets.")
+            text = env_example.read_text()
+            for key in ("API_SECRET_KEY", "JWT_SECRET_KEY", "API_KEY_HMAC_SECRET"):
+                text = text.replace(
+                    f"{key}=change-me-in-production",
+                    f"{key}={secrets.token_urlsafe(32)}",
+                    1,
+                )
+            env_file.write_text(text)
+            print("Add a provider key to .env if you are not using Ollama. See docs/API_KEYS.md.")
         else:
             print("⚠️  .env file not found. Creating from template...")
             env_content = """# API Keys (at least one provider required, or use Ollama)
