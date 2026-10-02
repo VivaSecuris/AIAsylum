@@ -185,7 +185,9 @@ def load(
     logger.info("Loading %s (device=%s, dtype=%s)", model_id, torch_device, torch_dtype)
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_id, token=token)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_id, token=token, trust_remote_code=False,
+        )
         # torch_dtype also works on our oldest supported transformers (4.45).
         # Dispatch CUDA weights directly while reading shards so large models
         # do not first require a second complete copy in host RAM.
@@ -193,6 +195,7 @@ def load(
             model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
             device_map={"": str(torch_device)} if torch_device.type == "cuda" else None,
             token=token,
+            trust_remote_code=False,
         )
     except (OSError, ValueError) as exc:
         text = str(exc).lower()

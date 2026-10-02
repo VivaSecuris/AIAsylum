@@ -14,10 +14,7 @@ Thank you for your interest in contributing to AI Asylum!
 
 ```bash
 # Install dev dependencies
-make install-dev
-
-# Set up pre-commit hooks
-pre-commit install
+./install.sh --dev
 
 # Run tests
 make test

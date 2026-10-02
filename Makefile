@@ -1,11 +1,15 @@
-.PHONY: venv install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean prefetch-benchmarks
+.PHONY: venv setup install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean prefetch-benchmarks
 
 # Everything runs through the venv's interpreter, so no activation is needed.
-# PYTHON_BOOTSTRAP only creates the venv; it must be 3.10-3.12 (see PYTHON_VERSION.md).
+# PYTHON_BOOTSTRAP only creates the venv; it must be 3.10-3.12 (see docs/INSTALL_TROUBLESHOOTING.md).
 PYTHON_BOOTSTRAP ?= python3.11
 PY ?= venv/bin/python
+HOST ?= 127.0.0.1
 
 # Installation
+setup:
+	./install.sh
+
 venv:
 	@if [ ! -x $(PY) ]; then $(PYTHON_BOOTSTRAP) -m venv venv; fi
 
@@ -38,7 +42,7 @@ migrate-create:
 
 # Running
 run-api:
-	$(PY) -m uvicorn vivasecuris.aiasylum.api.main:app --reload --host 0.0.0.0 --port 8000
+	$(PY) -m uvicorn vivasecuris.aiasylum.api.main:app --reload --host $(HOST) --port 8000
 
 run-frontend:
 	cd frontend && npm run dev

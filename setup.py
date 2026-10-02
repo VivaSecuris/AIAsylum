@@ -9,7 +9,7 @@ setup(
     author="VivaSecuris Syndicate",
     license="Proprietary",
     packages=find_namespace_packages(include=["vivasecuris*", "config*"]),
-    # pinned pydantic-core has no wheels for 3.13+ (see PYTHON_VERSION.md)
+    # pinned pydantic-core has no wheels for 3.13+ (see docs/INSTALL_TROUBLESHOOTING.md)
     python_requires=">=3.10,<3.13",
     install_requires=[
         "fastapi>=0.104.1",

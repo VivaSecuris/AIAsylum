@@ -4,7 +4,15 @@ This document lists resources for jailbreak testing and prompt injection techniq
 
 ## Local Resources
 
-The project includes comprehensive jailbreak resources in `docs/jailbreaks/`:
+The jailbreak corpora live in `docs/jailbreaks/` as git submodules. A normal clone leaves those directories empty until you fetch them:
+
+```bash
+git clone --recursive https://github.com/VivaSecuris/AIAsylum.git
+# or, in an existing checkout:
+git submodule update --init
+```
+
+`./install.sh` runs `git submodule update --init` when those directories are empty and this is a git checkout. Licenses are listed in [THIRD_PARTY.md](../THIRD_PARTY.md).
 
 ### 1. jailbreak_llms/
 Real-world jailbreak prompts dataset collected from December 2022 to December 2023:

@@ -1,0 +1,12 @@
+[submodule "docs/jailbreaks/Awesome-LLM-Jailbreak"]
+	path = docs/jailbreaks/Awesome-LLM-Jailbreak
+	url = https://github.com/Meirtz/Awesome-LLM-Jailbreak.git
+[submodule "docs/jailbreaks/LLM-Jailbreaks"]
+	path = docs/jailbreaks/LLM-Jailbreaks
+	url = https://github.com/langgptai/LLM-Jailbreaks.git
+[submodule "docs/jailbreaks/Prompt-Hacking-Resources"]
+	path = docs/jailbreaks/Prompt-Hacking-Resources
+	url = https://github.com/PromptLabs/Prompt-Hacking-Resources.git
+[submodule "docs/jailbreaks/jailbreak_llms"]
+	path = docs/jailbreaks/jailbreak_llms
+	url = https://github.com/verazuo/jailbreak_llms.git

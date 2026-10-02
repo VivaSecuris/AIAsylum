@@ -9,10 +9,42 @@ Every "fits here?" verdict below is against the measured machine: **Apple M4,
 24 GB unified memory, 10 GPU cores, no CUDA**. Where a number was measured on
 this hardware it is marked *(measured)*; everything else is an estimate.
 
-Companion documents:
-- [WEIGHT_SURGERY.md](WEIGHT_SURGERY.md) — operating the capability that is built
-- `~/Desktop/Companies/VivaSecuris/product/docs/adr/ADR-009-own-models-ladder.md` — the architecture of record
-- `~/Desktop/Projects/vivamodels/docs/` — data policy, eval protocol, model cards
+Companion document: [WEIGHT_SURGERY.md](WEIGHT_SURGERY.md) — operating the capability that is built.
+
+---
+
+## 0. Scope — text LLMs only
+
+Everything in this document and in the built `weights` / `interp` stack targets
+**causal decoder text LLMs** (Llama-, Qwen-, Mistral-, Gemma-, GPT-NeoX-, and
+Mixtral-style). Image and speech models are out of scope today.
+
+| Constraint | Effect |
+|---|---|
+| Loader is `AutoModelForCausalLM` (`interp/core/loader.py`) | Whisper, TTS, diffusion, and VLMs do not load as surgery targets |
+| Arch detection is Llama-style / GPT-NeoX / Mixtral only (`interp/core/hook_registry.py`) | No vision encoder, audio encoder, or UNet families |
+| Surgery edits residual-stream writers (`embed`, `o_proj`, `down_proj`) | Decoder residual math, not diffusion latents or spectrograms |
+| Hub discovery is `pipeline_tag=text-generation` | Image/speech repos never appear as first-class library models |
+| Eval corpus is text refusal / capability prompts | No image or audio metrics |
+
+What *is* alterable: Qwen / Llama / Mistral / Gemma-class chat models via the
+weights UI and CLI — see [WEIGHT_SURGERY.md](WEIGHT_SURGERY.md).
+
+**Speech (STT / TTS).** Prompting barely applies. LoRA exists in the wider
+ecosystem (Whisper adapters, TTS fine-tunes) but not through
+`aiasylum weights lora`. Residual ablation would need a decoder with a residual
+stream and new arch probes; Whisper-style encoders and many TTS stacks do not
+match. Speech synthesis used for narration is outside this stack; it is not weight surgery.
+
+**Image (generation / vision-language).** Diffusion uses different math
+(UNet / DiT); residual ablation as built does not map. A VLM with a Llama-like
+language tower might eventually be surgery-eligible on that tower alone, but
+vision towers, cross-attention, and image I/O are unsupported, and the test
+harness still assumes text-only chat.
+
+Extending surgery or LoRA to a specific image or speech family is a separate
+project: new loaders, arch maps, and eval. Name the family first
+(e.g. Whisper, Qwen2-VL, SDXL).
 
 ---
 

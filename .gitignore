@@ -86,3 +86,16 @@ Thumbs.db
 runs/
 /models/
 *.safetensors
+
+# Local manuscript. Not part of the published tree.
+docs/book/
+
+# Movie build intermediates. Not part of the published tree.
+docs/assets/_movie-build-*/
+docs/assets/**/*.wav
+docs/assets/**/*.clean.wav
+docs/assets/**/*.roomtone.wav
+docs/assets/**/*.pre-loudnorm.mp4
+docs/assets/**/*-movie.mp4
+docs/assets/**/*-movie.pre-loudnorm.mp4
+docs/assets/youtube-launch-movie-2026-09-29/

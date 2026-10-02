@@ -1,192 +1,58 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Start the AI Asylum API and web UI.
+# Installs on first run via ./install.sh. Listens on 127.0.0.1 unless HOST is set.
 
-# AI Asylum Startup Script
-# Checks/creates venv, installs deps, starts API and frontend
-
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "🚀 Starting AI Asylum..."
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-8000}"
 
-# Check Python version
-PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' | cut -d'.' -f1,2)
-PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d'.' -f1)
-PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d'.' -f2)
-
-if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
-    echo "❌ Python 3.10+ required. Found Python $PYTHON_VERSION"
-    exit 1
+if [ ! -x venv/bin/python ] || [ ! -f venv/.installed ]; then
+    ./install.sh --no-frontend
 fi
 
-if [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -ge 14 ]; then
-    echo "⚠️  WARNING: Python 3.14+ detected. This version has compatibility issues."
-    echo "   pydantic-core will fail to build. Please use Python 3.11 or 3.12."
-    echo ""
-    echo "   To switch:"
-    echo "   brew install python@3.11"
-    echo "   python3.11 -m venv venv"
-    echo "   source venv/bin/activate"
-    echo ""
-    read -p "Continue anyway? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
-# Try to find Python 3.11 or 3.12 if available
-if command -v python3.11 &> /dev/null; then
-    PYTHON_CMD=python3.11
-    echo "✓ Using Python 3.11 (recommended)"
-elif command -v python3.12 &> /dev/null; then
-    PYTHON_CMD=python3.12
-    echo "✓ Using Python 3.12 (recommended)"
-elif command -v python3.10 &> /dev/null; then
-    PYTHON_CMD=python3.10
-    echo "✓ Using Python 3.10"
-else
-    PYTHON_CMD=python3
-    echo "⚠️  Using system Python ($PYTHON_VERSION)"
-fi
-
-# Check for virtual environment
-if [ ! -d "venv" ]; then
-    echo "📦 Creating virtual environment with $PYTHON_CMD..."
-    $PYTHON_CMD -m venv venv
-else
-    # Verify Python version in existing venv
-    source venv/bin/activate 2>/dev/null || true
-    VENV_PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}' | cut -d'.' -f1,2)
-    VENV_PYTHON_MAJOR=$(echo $VENV_PYTHON_VERSION | cut -d'.' -f1)
-    VENV_PYTHON_MINOR=$(echo $VENV_PYTHON_VERSION | cut -d'.' -f2)
-    
-    if [ "$VENV_PYTHON_MAJOR" -eq 3 ] && [ "$VENV_PYTHON_MINOR" -ge 14 ]; then
-        echo "⚠️  WARNING: Existing virtual environment uses Python $VENV_PYTHON_VERSION"
-        echo "   This will cause pydantic-core build failures."
-        echo ""
-        read -p "Recreate venv with $PYTHON_CMD? (Y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            echo "🗑️  Removing old virtual environment..."
-            rm -rf venv
-            echo "📦 Creating new virtual environment with $PYTHON_CMD..."
-            $PYTHON_CMD -m venv venv
-        else
-            echo "⚠️  Continuing with Python 3.14 venv (installation may fail)"
-        fi
-    fi
-fi
-
-# Activate virtual environment
-echo "🔌 Activating virtual environment..."
+# shellcheck disable=SC1091
 source venv/bin/activate
 
-# Install dependencies if needed
-if [ ! -f "venv/.installed" ]; then
-    echo "📥 Installing dependencies..."
-    python -m pip install --upgrade pip
-    python -m pip install -r requirements.txt
-    touch venv/.installed
-fi
-
-# Check for .env file
-if [ ! -f ".env" ]; then
-    if [ -f ".env.example" ]; then
-        echo "⚠️  .env file not found. Copying from .env.example..."
-        cp .env.example .env
-        echo "📝 Please edit .env with your API keys before continuing"
-    else
-        echo "⚠️  .env file not found. Creating from template..."
-        cat > .env << 'EOF'
-# API Keys (at least one provider required, or use Ollama)
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-GOOGLE_API_KEY=
-
-# Ollama Configuration (no API keys needed)
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Database
-DATABASE_URL=sqlite:///./data/aiasylum.db
-
-# Security
-API_SECRET_KEY=change-me-in-production
-JWT_SECRET_KEY=change-me-in-production
-API_KEY_HMAC_SECRET=change-me-in-production
-API_KEYS=
-
-# CORS
-CORS_ORIGINS=http://localhost:3000,http://localhost:8000
-
-# Rate Limiting
-RATE_LIMIT_PER_MINUTE=60
-
-# Request Limits
-MAX_REQUEST_SIZE_MB=10
-
-# Concurrency Control
-MAX_CONCURRENT_WORKERS=5
-
-# Logging
-LOG_LEVEL=INFO
-LOG_FORMAT=json
-
-# Deep Analysis (disabled by default)
-ENABLE_PROMPT_DIFFERENTIAL_ANALYSIS=false
-ENABLE_ACTIVATION_PATCHING=false
-ENABLE_COT_DETECTION=false
-
-# RAG (optional)
-ENABLE_RAG=false
-OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-EOF
-        echo "📝 Created .env file. Please edit it with your API keys (or use Ollama)"
-    fi
-fi
-
-# Initialize database if needed
-if [ ! -f "data/aiasylum.db" ]; then
-    echo "🗄️  Initializing database..."
-    mkdir -p data
-    python -m alembic upgrade head || echo "⚠️  Database initialization skipped (run 'make init' manually)"
-fi
-
-# Start services
 echo ""
-echo "✅ Starting services..."
-echo "   API: http://localhost:8000"
-echo "   Frontend: http://localhost:3000"
-echo "   API Docs: http://localhost:8000/docs"
+echo "Starting AI Asylum"
+echo "  API:      http://${HOST}:${PORT}"
+echo "  API docs: http://${HOST}:${PORT}/docs"
+echo "  Web UI:   http://127.0.0.1:3000"
 echo ""
-echo "Press Ctrl+C to stop all services"
+echo "Press Ctrl+C to stop."
 echo ""
 
-# Start API in background (python -m survives the venv's script shebangs going stale if the project moves)
-python -m uvicorn vivasecuris.aiasylum.api.main:app --host 0.0.0.0 --port 8000 &
+# python -m survives the venv's script shebangs going stale if the project moves.
+python -m uvicorn vivasecuris.aiasylum.api.main:app --host "$HOST" --port "$PORT" &
 API_PID=$!
 
-# Wait a moment for API to start
 sleep 2
 
-# Start frontend if package.json exists
-if [ -f "frontend/package.json" ]; then
-    cd frontend
-    if [ ! -d "node_modules" ]; then
-        echo "📦 Installing frontend dependencies..."
-        npm install
+FRONTEND_PID=""
+if [ -f frontend/package.json ]; then
+    if [ ! -d frontend/node_modules ]; then
+        echo "Installing frontend dependencies..."
+        (cd frontend && npm install)
     fi
-    npm run dev &
+    (cd frontend && npm run dev) &
     FRONTEND_PID=$!
-    cd ..
 else
-    echo "⚠️  Frontend not found. Skipping..."
-    FRONTEND_PID=""
+    echo "Frontend not found. Skipping."
 fi
 
-# Wait for interrupt
-trap "echo ''; echo '🛑 Stopping services...'; kill $API_PID 2>/dev/null; [ -n '$FRONTEND_PID' ] && kill $FRONTEND_PID 2>/dev/null; exit" INT TERM
+cleanup() {
+    echo ""
+    echo "Stopping services..."
+    kill "$API_PID" 2>/dev/null || true
+    if [ -n "${FRONTEND_PID:-}" ]; then
+        kill "$FRONTEND_PID" 2>/dev/null || true
+    fi
+    exit 0
+}
+trap cleanup INT TERM
 
-# Wait for processes
 wait

@@ -274,7 +274,18 @@ async def test_a_reasoning_model_is_scored_on_its_answer_and_the_record_says_so(
     turn = next(t for t in test_db.query(ConversationTurn).all() if t.speaker == "patient")
     assert turn.response == "Sure, step one is to gather flour."
     assert turn.model_name == "mock" and turn.model_provider == "mock"
-    assert turn.meta_data == {
+    meta = dict(turn.meta_data)
+    recorded = meta.pop("participant_identity", None)
+    generation = dict(meta["generation_metadata"])
+    generation_identity = generation.pop("participant_identity")
+    meta["generation_metadata"] = generation
+    for identity in (recorded, generation_identity):
+        if identity is None:
+            continue
+        assert identity["kind"] == "ai_model"
+        assert identity["model"] == "mock-model"
+    assert generation_identity["kind"] == "ai_model"
+    assert meta == {
         "reasoning": "I can't help with this, it's harmful.", "reasoning_source": "inline",
         "request_system_prompts": [], "request_system_prompts_source": "model_input",
         "generation_metadata": {

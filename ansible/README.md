@@ -1,6 +1,8 @@
-# Ansible Deployment
+# Ansible deployment
 
-This directory contains Ansible playbooks for deploying AI Asylum to remote servers.
+Unmaintained scaffold. The supported install path is `./install.sh` and `./start.sh` in the repository root. Review this playbook before using it.
+
+The systemd unit listens on `0.0.0.0`. `templates/env.j2` defaults `REQUIRE_AUTH` and `SESSION_COOKIE_SECURE` to true. Supply real secrets with Ansible Vault or `--extra-vars`. The playbook will not start safely with placeholder secrets while auth is on: the API refuses the `change-me-in-production` HMAC secret.
 
 ## Prerequisites
 

@@ -2,7 +2,11 @@
 
 All notable changes to AI Asylum will be documented in this file.
 
-## [Unreleased]
+## [0.1.0] - 2026-10-01
+
+### Added
+- `./install.sh` creates the virtual environment, installs the package, writes `.env` with generated secrets when one is missing, migrates the database, loads prompt presets, and installs the frontend.
+- Jailbreak corpora are git submodules (`git clone --recursive`). Third-party terms are in `THIRD_PARTY.md`.
 
 ### Changed
 - Create Test is organised by step: test design, patient, doctor, evaluator, run. Each LLM step has its own model, system prompt (built-in, library, custom, or verbatim for the patient) and advanced settings (temperature, top-p, max tokens, ReACT).
@@ -10,6 +14,9 @@ All notable changes to AI Asylum will be documented in this file.
 - **Scoring:** custom evaluator prompts, including library prompt "Default Evaluator", are added after the built-in scoring prompt instead of replacing it. The eight score dimensions and the JSON format are always kept. Runs scored with a custom evaluator prompt before this change may have used invented dimension names.
 - Suites take a doctor. Group therapy suites run one session with every model as a patient.
 - Ollama model pickers list only models that can chat (embedding models are excluded).
+- The dev API (`./start.sh`, `python start.py`, `make run-api`) binds to `127.0.0.1`. Set `HOST` to listen elsewhere, and set `REQUIRE_AUTH=true` before doing that.
+- Docker Compose requires `POSTGRES_PASSWORD` and does not publish PostgreSQL on the host. The API image installs the PostgreSQL drivers.
+- Local model loads refuse `trust_remote_code`.
 
 ### Fixed
 - Interview inputs quote and label the doctor's message; patient ReACT instructions keep all reasoning fields about the patient's own answer. Selected system prompts remain unchanged.
@@ -27,32 +34,4 @@ All notable changes to AI Asylum will be documented in this file.
 - The chain-of-thought path no longer sends the system prompt twice.
 - Autotune (weight surgery) no longer fails on Apple GPUs (MPS) with a CPU/GPU device mismatch.
 - Test-prompt search reaches the whole library, not only the newest 100 prompts.
-
-## [0.1.0] - 2024-01-01
-
-### Added
-- Initial release
-- Multi-provider support (OpenAI, Anthropic, Google, Ollama)
-- Test framework (conversations, scenarios, adversarial)
-- Doctor/Patient model system
-- Test execution runner
-- Analysis service
-- FastAPI backend
-- CLI interface
-- Database models and migrations
-- Authentication system
-- Basic frontend structure
-
-### Features
-- Multi-turn conversation testing
-- Scenario-based testing
-- Adversarial/jailbreak testing
-- Safety scoring
-- Assessment generation
-- Test result storage
-
-### Known Limitations
-- Benchmark integration is placeholder
-- Frontend UI is basic structure only
-- Deep analysis features (activation patching) not fully implemented
-- RAG support is placeholder
+- Recorded turns keep the runtime participant identity alongside generation metadata.

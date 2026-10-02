@@ -101,98 +101,59 @@ AI Asylum supports compliance with these regulatory frameworks through structure
 
 ## Installation
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   make install
-   # Or manually:
-   python3 -m pip install -r requirements.txt
-   ```
+Requires Python 3.10, 3.11, or 3.12 (3.13+ cannot build the pinned dependencies), plus Node.js 18+ for the web UI.
 
-3. Set up environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys
-   # Optional: Set ENABLE_PROMPT_DIFFERENTIAL_ANALYSIS=true for deep analysis (disabled by default)
-   ```
+```bash
+git clone --recursive https://github.com/VivaSecuris/AIAsylum.git
+cd AIAsylum
+./install.sh
+```
 
-4. (Optional) Set up Ollama for local models:
-   ```bash
-   # Install Ollama from https://ollama.ai
-   ollama serve
-   ollama pull llama2
-   # See docs/OLLAMA.md for more details
-   ```
+`./install.sh` creates a virtual environment, installs the package (`pip install -e .`), writes `.env` with generated secrets when one is missing, applies database migrations, loads the prompt presets, and installs the frontend. It does not overwrite an existing `.env`.
 
-5. Initialize the database:
-   ```bash
-   make init
-   # Or manually:
-   alembic upgrade head
-   ```
+Flags:
+
+| Flag | Effect |
+|------|--------|
+| `--interp` | Local-weights and interpretability extras (torch, transformers) |
+| `--lora` | LoRA training extras |
+| `--all` | `--interp` and `--lora` |
+| `--dev` | Test and lint tools (`requirements-dev.txt`) |
+| `--postgres` | PostgreSQL drivers (`requirements-postgres.txt`) |
+| `--no-frontend` | Skip `npm ci` |
+
+Manual equivalent:
+
+```bash
+make install          # venv, requirements.txt, pip install -e .
+cp .env.example .env  # then edit provider keys
+make init             # alembic upgrade head
+```
+
+Optional local models: install [Ollama](https://ollama.ai), then `ollama serve` and `ollama pull llama2`. See [docs/OLLAMA.md](docs/OLLAMA.md).
 
 ## Quick Start
 
-**New to AI Asylum? Start here:**
-
-**Or run the integration test to check everything:**
 ```bash
-python integration.py
-```
-
-This will verify your setup and show what's working.
-
-1. **Quick Test** (see what's working):
-   ```bash
-   python scripts/quick_test.py
-   ```
-
-2. **Install Dependencies**:
-   ```bash
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-3. **Configure** (copy `.env.example` to `.env` and add your API keys, or use Ollama!)
-
-4. **Initialize Database**:
-   ```bash
-   make init
-   ```
-
-5. **Run Your First Test**:
-   ```bash
-   # With Ollama (no API keys needed!)
-   ollama serve
-   ollama pull llama2
-   python -m vivasecuris.aiasylum.cli run \
-     --doctor-provider ollama \
-     --doctor-model llama2 \
-     --patient-provider ollama \
-     --patient-model llama2 \
-     --test-type conversation
-   ```
-
-**Or start everything at once:**
-
-```bash
-# Bash script (recommended for Unix/Mac)
 ./start.sh
-
-# Or Python script (works on all platforms)
-python start.py
 ```
 
-This will:
-- ✅ Check/create virtual environment
-- ✅ Install dependencies if needed
-- ✅ Start API backend on http://localhost:8000
-- ✅ Start frontend UI on http://localhost:3000
-- ✅ Show you all the URLs
+On first run this installs (via `./install.sh`) and then starts the API at http://127.0.0.1:8000 and the web UI at http://127.0.0.1:3000. The API binds to loopback. For any other interface, set `REQUIRE_AUTH=true` and use `scripts/remote_session.sh`. `HOST=0.0.0.0 ./start.sh` overrides the bind address. `python start.py` is the cross-platform equivalent.
 
-Press `Ctrl+C` to stop all services.
+Run a conversation against a local model:
 
-**See [QUICKSTART.md](QUICKSTART.md) for detailed step-by-step guide.**
+```bash
+ollama serve
+ollama pull llama2
+venv/bin/python -m vivasecuris.aiasylum.cli run \
+  --doctor-provider ollama \
+  --doctor-model llama2 \
+  --patient-provider ollama \
+  --patient-model llama2 \
+  --test-type conversation
+```
+
+Check the install with `venv/bin/python scripts/quick_test.py`. Step-by-step notes are in [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ## Architecture: Test Execution vs Analysis
 
@@ -359,36 +320,27 @@ See `docs/DEPLOYMENT.md` for production deployment details.
 ### Quick Start with Docker Compose
 
 ```bash
-# Configure environment
+# Configure environment. docker compose requires POSTGRES_PASSWORD.
 cp .env.example .env
-# Edit .env with your settings
 
-# Start all services
-docker-compose up -d
+# Start the API and database. PostgreSQL is not published on the host.
+# The image runs migrations on startup.
+docker compose up -d
 
-# Run migrations
-docker-compose exec api alembic upgrade head
-
-# Access the application
-# API: http://localhost:8000
-# Frontend: http://localhost:3000
+# API: http://127.0.0.1:8000
+# Web UI (optional profile): docker compose --profile frontend up -d
 ```
 
-See `docs/DEPLOYMENT.md` for detailed deployment instructions.
+Set `REQUIRE_AUTH=true` and real `API_KEYS` / `API_KEY_HMAC_SECRET` values before publishing port 8000 beyond localhost. See [docs/DOCKER.md](docs/DOCKER.md) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Development
 
 ### Setup
 
 ```bash
-# Install dependencies (including dev tools)
-make install-dev
-
-# Set up pre-commit hooks
-pre-commit install
-
-# Initialize database
-make init
+# Install dependencies, including test and lint tools
+./install.sh --dev
+# or: make install-dev && make init
 ```
 
 ### Running Tests
@@ -545,16 +497,23 @@ AI Asylum supports **purple teaming**—the fusion of red teaming (offensive) an
 ## Role, Context, and Goal Prompt Presets
 
 The optional [Role Lab v1 catalog](docs/PROMPT_PRESETS.md) adds matching user and
-system prompts for doctor, patient, and evaluator roles. Preview the twelve
-nonmedical examples with `venv/bin/python scripts/seed_prompt_presets.py --catalog`.
+system prompts for doctor, patient, and evaluator roles. The
+[Common Systems v1 catalog](docs/COMMON_SYSTEM_PROMPTS.md) adds eight reusable
+system presets with source references for identity grounding, uncertainty,
+source-based answers, task completion, coding, fiction, interviews, and evaluation.
+Preview all twenty entries with `venv/bin/python scripts/seed_prompt_presets.py --catalog`.
+Use `--catalog-id role-context-goals-v1` or `--catalog-id common-system-patterns-v1`
+to select one catalog.
 Install missing entries into an existing database with `--apply`; existing prompts
 and edits are preserved.
 
+## Walkthrough
+
+A narrated walkthrough of creating a model, editing its refusal behavior, and interviewing the result is at [youtu.be/bKtj3LkNv0s](https://youtu.be/bKtj3LkNv0s). The write-up is [AI Lobotomy](https://vivasecuris.com/ai-lobotomy.html).
+
 ## Jailbreak Testing Resources
 
-The project includes resources for testing jailbreak resistance. See `docs/JAILBREAK_RESOURCES.md` for a list of repositories and techniques.
-
-For detailed information on the red teaming improvements, see [RED_TEAMING_IMPROVEMENTS.md](RED_TEAMING_IMPROVEMENTS.md).
+Jailbreak corpora ship as git submodules under `docs/jailbreaks/`. Clone with `--recursive`, or run `git submodule update --init` in an existing checkout. `./install.sh` fetches them when the directories are empty. See [docs/JAILBREAK_RESOURCES.md](docs/JAILBREAK_RESOURCES.md) and [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## RAG (Time Series + Vector Search)
 
@@ -592,8 +551,7 @@ AIAsylum/
 │   ├── models/          # Model interfaces and providers
 │   ├── doctor/           # Doctor model system
 │   ├── patient/          # Patient model system
-│   ├── tests/            # Test framework & unit tests
-│   │   └── test_cases/   # Test case library
+│   ├── tests/            # Test framework
 │   ├── benchmarks/      # Standard benchmark integration
 │   ├── runner/           # Test execution
 │   ├── analysis/         # Analysis and scoring
@@ -605,7 +563,6 @@ AIAsylum/
 ├── data/                 # Data files (database, jailbreaks)
 │   └── aiasylum.db      # Main database
 ├── docs/                 # Documentation
-│   └── archive/         # Archived documentation
 └── scripts/              # Utility scripts
 ```
 
@@ -730,4 +687,6 @@ See [CHANGELOG.md](CHANGELOG.md) for a list of changes and version history.
 
 ## License
 
-Proprietary. Copyright (c) 2025 VivaSecuris Syndicate. All Rights Reserved. See [LICENSE](LICENSE).
+Proprietary. Copyright (c) 2025 VivaSecuris Syndicate. All Rights Reserved. See [LICENSE](LICENSE). Third-party corpora and the vendored interpretability engine are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
+
+Research discussion is welcome. Commercial use is by arrangement — book a walkthrough: josh@vivasecuris.com (subject `AI Asylum walkthrough`; tell us what you’re evaluating).

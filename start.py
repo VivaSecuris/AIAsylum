@@ -185,20 +185,22 @@ OLLAMA_EMBEDDING_MODEL=nomic-embed-text
             print("⚠️  Database initialization skipped (run 'make init' manually)")
     
     # Start services
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = os.environ.get("PORT", "8000")
     print("")
-    print("✅ Starting services...")
-    print("   API: http://localhost:8000")
-    print("   Frontend: http://localhost:3000")
-    print("   API Docs: http://localhost:8000/docs")
+    print("Starting services...")
+    print(f"   API: http://{host}:{port}")
+    print("   Frontend: http://127.0.0.1:3000")
+    print(f"   API Docs: http://{host}:{port}/docs")
     print("")
     print("Press Ctrl+C to stop all services")
     print("")
     
     processes = []
     
-    # Start API
-    api_cmd = [str(venv_python), "-m", "uvicorn", "vivasecuris.aiasylum.api.main:app", 
-               "--host", "0.0.0.0", "--port", "8000"]
+    # Start API. Loopback unless HOST is set. Non-loopback needs REQUIRE_AUTH=true.
+    api_cmd = [str(venv_python), "-m", "uvicorn", "vivasecuris.aiasylum.api.main:app",
+               "--host", host, "--port", port]
     api_process = subprocess.Popen(api_cmd, cwd=SCRIPT_DIR)
     processes.append(api_process)
     time.sleep(2)

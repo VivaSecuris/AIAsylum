@@ -8,7 +8,7 @@ Get AI Asylum up and running in minutes!
 python3 --version
 ```
 
-**Important**: Python 3.10-3.12 are recommended. Python 3.14 is very new and may have compatibility issues. See [PYTHON_VERSION.md](PYTHON_VERSION.md) if you're on 3.14.
+**Important**: Python 3.10, 3.11, or 3.12 is required. Python 3.13 and newer cannot build the pinned dependencies. See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md).
 
 ## Step 2: Verify Setup
 
@@ -36,7 +36,7 @@ pip install -r requirements.txt
 
 **Notes**: 
 - `psycopg2-binary` is optional - SQLite works by default
-- `pandas` may have issues on Python 3.14+ - use `requirements-core.txt` if you encounter errors
+- On Python 3.13 or newer, install 3.11 or 3.12 instead. See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md).
 - See [INSTALL_TROUBLESHOOTING.md](INSTALL_TROUBLESHOOTING.md) for help
 
 ## Step 4: Configure Environment
@@ -145,9 +145,9 @@ curl http://localhost:8000/health
 
 ## Next Steps
 
-- Read [README.md](README.md) for full documentation
-- Check [TESTING.md](TESTING.md) for testing guide
-- See [docs/](docs/) for detailed guides
+- Read [README.md](../README.md) for full documentation
+- Check [TESTING.md](TESTING.md) for the testing guide
+- The rest of this directory is the user documentation
 
 ## Getting Help
 
