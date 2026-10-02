@@ -141,3 +141,12 @@ def test_session_status_reports_cookie_validity_without_disclosing_it(monkeypatc
     assert cookie not in response.text and 'status-test-key' not in response.text
     client.cookies.set(SESSION_COOKIE, 'invalid')
     assert client.get('/api/v1/auth/session').json()['authenticated'] is False
+
+
+def test_configured_keys_alone_do_not_report_auth_enabled(monkeypatch, client):
+    """Keys without REQUIRE_AUTH lock nothing, so the UI must not ask for a login."""
+    from config import settings
+    monkeypatch.setattr(settings, "require_auth", False)
+    monkeypatch.setattr(settings, "api_keys", KEY)
+    assert client.get("/api/v1/auth/session").json() == {"authenticated": False, "auth": "disabled"}
+    assert client.get("/api/v1/test-runs/").status_code == 200

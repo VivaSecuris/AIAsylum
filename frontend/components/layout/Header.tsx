@@ -1,28 +1,16 @@
-import { useState } from 'react'
-import { LogOut, Key } from 'lucide-react'
+import { LogOut, ShieldCheck, ShieldOff } from 'lucide-react'
 import { useAuthSession } from '@/lib/auth'
 import { formatApiError } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 
+/**
+ * Session status. A Login control only appears when the server requires an API
+ * key (REQUIRE_AUTH); without it nothing is locked, so the header says so
+ * instead of offering a login that would change nothing. Signing in itself
+ * happens on the signed-out screen in Layout.
+ */
 export function Header() {
-  const [showLogin, setShowLogin] = useState(false)
-  const [apiKey, setApiKey] = useState('')
-  const { isAuthenticated, isUpdating, isCheckingSession, login, logout } = useAuthSession()
-  const [loginError, setLoginError] = useState<string | null>(null)
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (isUpdating) return
-    setLoginError(null)
-    try {
-      await login(apiKey)
-      setShowLogin(false)
-      setApiKey('')
-      toast.success('Signed in.')
-    } catch (error) {
-      setLoginError(formatApiError(error, 'Login failed. Please check your API key.'))
-    }
-  }
+  const { authRequired, isAuthenticated, isUpdating, isCheckingSession, logout } = useAuthSession()
 
   const handleLogout = async () => {
     try {
@@ -42,70 +30,29 @@ export function Header() {
         {isUpdating && <span role="status" className="text-xs text-muted-foreground">Refreshing server status…</span>}
         {isCheckingSession ? (
           <span role="status" className="text-xs text-muted-foreground">Checking session…</span>
-        ) : !isAuthenticated ? (
+        ) : !authRequired ? (
+          <span
+            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            title="This server does not require an API key (REQUIRE_AUTH is off), so anyone who can reach it can use it. Keep it on 127.0.0.1, or set REQUIRE_AUTH=true to require a key."
+          >
+            <ShieldOff className="h-3.5 w-3.5" /> No sign-in required
+          </span>
+        ) : isAuthenticated ? (
           <>
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <ShieldCheck className="h-3.5 w-3.5" /> Signed in
+            </span>
             <button
-              onClick={() => { setShowLogin(true); setLoginError(null) }}
+              onClick={handleLogout}
               disabled={isUpdating}
               className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
             >
-              <Key className="h-4 w-4" />
-              Login
+              <LogOut className="h-4 w-4" />
+              Sign out
             </button>
-            {showLogin && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => {
-                    setShowLogin(false)
-                    setApiKey('')
-                  }}
-                />
-                <div className="absolute right-6 top-16 z-50 rounded-lg border bg-card p-4 shadow-lg min-w-[300px]">
-                  <form onSubmit={handleLogin} className="flex flex-col gap-3">
-                    <input
-                      type="password"
-                      aria-label="API key"
-                      placeholder="API Key"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                      autoFocus
-                    />
-                    {loginError && <p role="alert" className="max-w-sm text-xs text-destructive">{loginError}</p>}
-                    <div className="flex gap-2">
-                      <button
-                        type="submit"
-                        disabled={isUpdating || !apiKey.trim()}
-                        className="flex-1 rounded bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-                      >
-                        {isUpdating ? 'Signing in…' : 'Login'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowLogin(false)
-                          setApiKey('')
-                        }}
-                        className="rounded border px-3 py-2 text-sm hover:bg-muted"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </>
-            )}
           </>
         ) : (
-          <button
-            onClick={handleLogout}
-            disabled={isUpdating}
-            className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
-          >
-            <LogOut className="h-4 w-4" />
-            Logout
-          </button>
+          <span className="text-xs text-muted-foreground">Signed out</span>
         )}
       </div>
     </header>

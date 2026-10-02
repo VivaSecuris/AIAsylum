@@ -815,6 +815,9 @@ export interface PromptUpdate {
   metadata?: Record<string, any>
 }
 
+/** Dispatched on window when the API answers 401 to anything but the sign-in call. */
+export const UNAUTHORIZED_EVENT = 'asylum:unauthorized'
+
 class ApiClient {
   private client: AxiosInstance
 
@@ -882,6 +885,11 @@ class ApiClient {
           // Provide a more helpful error message
           error.message = `Cannot connect to API server at ${API_BASE_URL}. Please ensure the backend is running.`
         } else if (error.response) {
+          // A 401 means the session ended (or never existed) on a server that
+          // requires a key; the auth provider switches to the signed-out screen.
+          if (error.response.status === 401 && typeof window !== 'undefined' && error.config?.url !== '/api/v1/auth/session') {
+            window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+          }
           // Server responded with error status
           console.error('[API] Response error:', {
             status: error.response.status,

@@ -22,13 +22,17 @@ class SessionRequest(BaseModel):
 
 @router.get("/session")
 async def current_session(request: Request):
-    """Report cookie validity after a reload, without exposing credentials."""
+    """Report cookie validity after a reload, without exposing credentials.
+
+    ``auth`` is "enabled" exactly when the middleware enforces it (REQUIRE_AUTH).
+    Configured keys alone do not lock anything, so they must not make the UI ask
+    for a login that changes nothing.
+    """
     keys = settings.api_keys_list
-    enabled = bool(settings.require_auth or keys)
     cookie = request.cookies.get(SESSION_COOKIE, "")
     return {
         "authenticated": bool(cookie and verify_session(cookie, keys, settings.api_key_hmac_secret)),
-        "auth": "enabled" if enabled else "disabled",
+        "auth": "enabled" if settings.require_auth else "disabled",
     }
 
 
@@ -37,15 +41,14 @@ async def create_session(request: SessionRequest, response: Response):
     """Validate an API key and issue a signed, HttpOnly session cookie.
 
     The cookie carries an HMAC-signed expiry bound to the key, never the key
-    itself. When no keys are configured and auth is off (local development),
-    login is a no-op that still succeeds, so the UI behaves the same.
+    itself. When auth is off (local development), login is a no-op that still
+    succeeds: nothing is locked, so there is nothing to unlock.
     """
     keys = settings.api_keys_list
-    if settings.require_auth or keys:
-        if not verify_key(request.api_key, keys):
-            raise HTTPException(status_code=401, detail="Invalid API key")
-    else:
+    if not settings.require_auth:
         return {"status": "authenticated", "auth": "disabled"}
+    if not verify_key(request.api_key, keys):
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
     response.set_cookie(
         key=SESSION_COOKIE,

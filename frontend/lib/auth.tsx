@@ -1,8 +1,10 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { apiClient } from './api'
+import { UNAUTHORIZED_EVENT, apiClient } from './api'
 
 interface AuthSession {
+  /** The server enforces API keys (REQUIRE_AUTH). False means nothing is locked. */
+  authRequired: boolean
   isAuthenticated: boolean
   isUpdating: boolean
   isCheckingSession: boolean
@@ -16,6 +18,7 @@ const AuthContext = createContext<AuthSession | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [authRequired, setAuthRequired] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
   const [isCheckingSession, setIsCheckingSession] = useState(true)
   const sessionVersion = useRef(0)
@@ -27,6 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((session) => {
         if (!cancelled && version === sessionVersion.current) {
           setIsAuthenticated(session.authenticated)
+          setAuthRequired(session.auth === 'enabled')
         }
       })
       .catch(() => {
@@ -36,6 +40,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled && version === sessionVersion.current) setIsCheckingSession(false)
       })
     return () => { cancelled = true }
+  }, [])
+
+  // Any 401 means the server wants a key we do not have (or the session expired).
+  useEffect(() => {
+    const signedOut = () => {
+      setAuthRequired(true)
+      setIsAuthenticated(false)
+    }
+    window.addEventListener(UNAUTHORIZED_EVENT, signedOut)
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, signedOut)
   }, [])
 
   async function updateSession(authenticated: boolean, apiKey?: string) {
@@ -58,6 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
+      authRequired,
       isAuthenticated,
       isUpdating,
       isCheckingSession,
