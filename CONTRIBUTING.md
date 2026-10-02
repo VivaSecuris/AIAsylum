@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to AI Asylum!
 
+AI Asylum is source-available, not open source: see [LICENSE](LICENSE). By submitting an issue or pull request you agree that your contribution may be used, modified and distributed by VivaSecuris Syndicate under those terms. Bug reports and research discussion in issues are welcome without a pull request.
+
 ## Getting Started
 
 1. Fork the repository

@@ -16,7 +16,7 @@ export function HuggingFaceAccess({ gated, modelId }: { gated?: boolean | string
       <div className="mt-2 space-y-2 rounded-md border p-3">
         <p>Sign into Hugging Face and obtain access on the model’s page. Create a <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" className="text-primary underline">read token</a> with permission for that repository.</p>
         <p>On the analysis server, activate its Python environment and run <code className="font-mono">hf auth login</code> as the account running the API. Enter the token at that private terminal prompt. Then restart the API when no jobs are running and refresh the status here.</p>
-        <p>Signing into the website does not sign the AWS server in. Keep tokens out of model IDs and experiment notes.</p>
+        <p>Signing into the website does not sign the remote GPU server in. Keep tokens out of model IDs and experiment notes.</p>
         <button type="button" className="text-primary underline disabled:opacity-50" disabled={isFetching} onClick={() => refetch()}>Refresh server access status</button>
       </div>
     </details>

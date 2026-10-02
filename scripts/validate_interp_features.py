@@ -2,7 +2,7 @@
 """Run bounded, artifact-checked real-model analyses through the server job queue.
 
 Example: python scripts/validate_interp_features.py --model Qwen/Qwen3-0.6B
-  --api http://127.0.0.1:18000/api/v1 --key-file ~/.config/aiasylum/aiasylum-gpu.key
+  --api http://127.0.0.1:18000/api/v1 --key-file ~/.config/aiasylum/gpu-box.key
   --out runs/interp-feature-validation/qwen3-06b.json
 
 Does not modify or save model weights. CUDA time is consumed. Use --cases to

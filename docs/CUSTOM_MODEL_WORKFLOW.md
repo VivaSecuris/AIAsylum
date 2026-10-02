@@ -16,13 +16,13 @@ Open **Models → Models** (`/compare?view=models`). Custom checkpoints and orig
 
 Choose **Interpretability dashboards** to select a completed analysis and view its saved interactive charts directly. Its model pair, timestamp, and device identify the run. **Full analysis & causal tests** opens the run's detailed patching and circuit views when those artifacts were recorded. **Weight experiment plots** exposes recorded layer separation, steering, capability frontier, and comparison data, with a link to the full run.
 
-The connected server is shown at the top. AWS and the local workstation retain separate run registries. Importing lineage does not import scored assessments or dashboard artifacts. On September 24, 2026, AWS had 22 completed interpretability dashboards and no scored behavioral assessments; the local workstation retained its earlier evaluation scores, two interpretability dashboards, and 23 completed weight runs. Use the local WebUI for those original results. The local and GPU frontends use separate build directories (`.next-local` and `.next-gpu`); production verification must use another `NEXT_DIST_DIR` to avoid corrupting a running development server's chunks.
+The connected server is shown at the top. The GPU server and the local workstation retain separate run registries. Importing lineage does not import scored assessments or dashboard artifacts, so results recorded on one machine are only visible in that machine's WebUI. The local and GPU frontends use separate build directories (`.next-local` and `.next-gpu`); production verification must use another `NEXT_DIST_DIR` to avoid corrupting a running development server's chunks.
 
 ## Find models and organize experiments
 
 **Models → Find models** and **Find common models** in each server model picker list common Qwen, Llama, Gemma, Mistral, Phi, and SmolLM checkpoints. Search queries go to the public Hugging Face Hub; searching the local library stays local. Selecting a result only fills the model reference. **Download to server** explicitly starts a download, and the model appears as ready once its checkpoint files are present. Discovery is not proof of runtime compatibility or sufficient GPU memory; review the analysis preflight before running a new architecture or size.
 
-Public repositories need no Hugging Face login. Gated and private models require an account with repository access and a read token configured for the account running the API on the analysis server. Browser sign-in alone does not connect AWS. The UI shows whether a token is configured (it does not validate that token or prove access). For gated models, open the linked model page to review its license and obtain access, then run `hf auth login` in the server's Python environment. Keep credentials out of model IDs, notes, and chat. Restart the API only when no jobs are active and refresh the access status.
+Public repositories need no Hugging Face login. Gated and private models require an account with repository access and a read token configured for the account running the API on the analysis server. Browser sign-in alone does not connect the GPU server. The UI shows whether a token is configured (it does not validate that token or prove access). For gated models, open the linked model page to review its license and obtain access, then run `hf auth login` in the server's Python environment. Keep credentials out of model IDs, notes, and chat. Restart the API only when no jobs are active and refresh the access status.
 
 Use **New experiment** to name a study and describe its purpose. **Organize · name, notes and experiments** on a model card or selected history step saves an optional display name, notes, and experiment memberships. A model or step can belong to more than one experiment. Select an experiment above the library or history to focus the workspace; **Unassigned models and steps** helps collect older work. Model pickers also support experiment filtering.
 
@@ -40,7 +40,7 @@ Connections represent recorded inputs and outputs. Creation timestamps show orde
 
 Select a step to inspect its settings, results, provenance, inputs, and next steps. **Branch from this step** or **Review and retry as a new run** opens an editable form; it does not execute immediately. Starting that form creates a new run linked back to the selected step, preserving the original result. Saving an edited checkpoint requires a new output name.
 
-Imported histories retain their origin namespace. An imported run numbered 12 never becomes AWS run 12. For an imported sweep/edit, the branch form first recreates its recorded direction on the current server; the inspector explains that transition. A checkpoint can be the source of a new direction directly once its files are ready. Missing historical inputs cannot be recovered by the graph alone.
+Imported histories retain their origin namespace. An imported run numbered 12 never becomes the destination server's run 12. For an imported sweep/edit, the branch form first recreates its recorded direction on the current server; the inspector explains that transition. A checkpoint can be the source of a new direction directly once its files are ready. Missing historical inputs cannot be recovered by the graph alone.
 
 New runs have durable lineage identities independent of their database integer. Deleting a run saves its settings and outcome summary atomically under `runs/model-lineage/archive/` before deletion; these archived steps remain in the graph and lose their live result-page link. This history snapshot does not preserve model weights or artifacts that the user explicitly deletes. If the history snapshot cannot be written, deletion fails without removing the run.
 
@@ -52,7 +52,7 @@ To export this workspace's history for another server without merging databases:
 
 ```bash
 venv/bin/python scripts/export_model_lineage.py \
-  --remote-root /home/ubuntu/aiasylum \
+  --remote-root /absolute/path/to/aiasylum/on/the/server \
   --out runs/model-lineage/export.json
 ```
 
@@ -75,7 +75,7 @@ scripts/remote_models.sh q05-beta0 q05-beta2 q3-rank2
 scripts/remote_models.sh --dry-run all
 ```
 
-The default destination is `aiasylum-gpu:~/aiasylum/models/`. `--host SSH_ALIAS` and `--remote-dir PROJECT_DIR` select another configured SSH host or project directory inside that host's home. Transfers use existing SSH key authentication and do not send local API credentials.
+The default destination is `gpu-box:~/aiasylum/models/`, where `gpu-box` is an alias in your `~/.ssh/config`. `--host SSH_ALIAS` and `--remote-dir PROJECT_DIR` select another configured SSH host or project directory inside that host's home. Transfers use existing SSH key authentication and do not send local API credentials.
 
 Before uploading, the command requires nonempty configuration, tokenizer, weights, and `asylum_surgery.json` provenance. Sharded checkpoints must have every file referenced by the weight index. It hashes every file with SHA-256, checks remote free disk with a 10 GiB reserve, then transfers one checkpoint at a time using resumable `rsync`.
 
@@ -126,22 +126,8 @@ scripts/remote_models.sh \
 
 This helper never writes to the visible `models/` directory. A wrong file length, incomplete correction, or final hash mismatch stops the operation. Local originals and the initial reconstruction are preserved, and the correction report records hashes, transfer bytes, and verified files.
 
-## Custom checkpoints on AWS
+## Where custom checkpoints live
 
-All custom checkpoints live on `aiasylum-gpu` under `/home/ubuntu/aiasylum/models/`. The workstation's `models/` directory is intentionally empty.
+Keep custom checkpoints on the GPU server under `~/aiasylum/models/`. The workstation's `models/` directory stays empty, and `.gitignore` excludes it.
 
-On **2026-09-25 at 15:55 UTC**, every custom checkpoint was deleted on both machines: nine on the workstation and ten on AWS. Records are in `runs/model-deletions/`. Neither machine had a backup, so the original weight files are gone. The old names now show as **deleted** in the library and keep their history.
-
-The same day, all ten were rebuilt on AWS as `<name>-rebuild`: `ablated-rebuild`, `ablated_r2-rebuild`, `q05-beta0-rebuild`, `q05-beta2-rebuild`, `q3-beta-neg2-rebuild`, `q3-beta0-rebuild`, `q3-rank18-rebuild`, `q3-rank2-rebuild`, `qwen0.5-ablated-rebuild` and `qwen05b-control-rebuild`. Each one replays its recorded surgery on CPU, with the same base model, saved direction, beta/rank/k and dtype.
-
-These are rebuilds, not the originals:
-
-- `qwen05b-control-rebuild` matches the original's SHA-256 exactly.
-- `qwen0.5-ablated-rebuild` reproduces the original's recorded mean relative change to every digit, but its original hash was never recorded.
-- The other eight have the same file sizes but differ at rounding level. Their mean relative change is within 0.05% of the original's.
-
-Each `asylum_surgery.json` records these checks under `extra.rebuild`. Results recorded against the old names describe the deleted files, not the rebuilds.
-
-The rebuild script and its log are on the server at `.model-transfers/rebuild_checkpoints.py` and `.model-transfers/rebuild-20260925.log`. The recipes and original SHA-256 manifest it read from are in `.model-transfers/completed/20260924-originals/`. The workstation copy of that manifest is `runs/model-transfers/20260924T200926Z-32676/manifest.json`.
-
-A 10-question MMLU comparison of `q05-beta0-rebuild` against `Qwen/Qwen2.5-0.5B-Instruct` (campaign `4f5183e55b6b4aa6bd88486ae0057de3`) completed with 2/10 for each and no invalid or truncated answers. That checks the workflow, not the effect of the edit.
+Weight files are not backed up by any part of this workflow. If a checkpoint is lost, rebuild it from its recorded surgery: the saved direction under `runs/weights/`, the same base model, and the beta, rank, `k` and dtype in its `asylum_surgery.json`. A rebuild replayed on CPU can differ from the original at rounding level, so save it under a new name (for example `<name>-rebuild`) and record the comparison against the original's SHA-256 in `asylum_surgery.json` under `extra.rebuild`. Results recorded against the old name describe the old files, not the rebuild.

@@ -3,7 +3,7 @@
 # models/ on purpose; this command verifies and publishes complete checkpoints.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-HOST=aiasylum-gpu
+HOST=gpu-box
 REMOTE_DIR=aiasylum
 DRY_RUN=0
 BASIS_ROOT=""
@@ -12,7 +12,7 @@ usage() {
 Usage: scripts/remote_models.sh [--host SSH_ALIAS] [--remote-dir DIR] [--dry-run] [--basis-root DIR] all|NAME...
 
 Uploads selected directories from models/ without changing the local originals.
-The default target is aiasylum-gpu:~/aiasylum/models/. A complete SHA-256 manifest
+The default target is gpu-box:~/aiasylum/models/. A complete SHA-256 manifest
 is saved under runs/model-transfers/. Partial transfers resume outside models/;
 verified checkpoints are published by atomic rename. Existing different models
 are never overwritten. --dry-run hashes and checks resources without uploading weights.

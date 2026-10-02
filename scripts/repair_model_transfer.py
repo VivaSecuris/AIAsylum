@@ -250,7 +250,7 @@ def main() -> None:
         remote(action, project, basis, output)
         return
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', default='aiasylum-gpu')
+    parser.add_argument('--host', default='gpu-box')
     parser.add_argument('--remote-dir', default='aiasylum')
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--basis-root', required=True)

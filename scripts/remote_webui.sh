@@ -2,7 +2,7 @@
 # A separate UI and authenticated API tunnel for the remote GPU server.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-remote_host="${1:-aiasylum-gpu}"
+remote_host="${1:-gpu-box}"
 [[ "$remote_host" =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || { echo "Invalid SSH host" >&2; exit 1; }
 # Do not launch a second UI against an unrelated or already-owned local port.
 if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:18000 -sTCP:LISTEN -t >/dev/null 2>&1; then

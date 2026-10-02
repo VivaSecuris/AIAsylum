@@ -2,6 +2,18 @@
 
 All notable changes to AI Asylum will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- CycloneDX SBOMs for the default Python install and the frontend lockfile (`sbom/`, regenerated with `./scripts/generate_sbom.sh`).
+- [docs/API_KEYS.md](docs/API_KEYS.md) explains how to get an OpenAI, Anthropic, or Google key and how to set your own API key.
+- `CONTRIBUTING.md` states that the project is source-available under `LICENSE` and what submitting a contribution grants.
+
+### Changed
+- The Docker image installs the package, runs as a non-root user, and no longer tries to pip-install a TimescaleDB version that is not a Python package. Compose requires `POSTGRES_PASSWORD`, `API_KEYS`, and `API_KEY_HMAC_SECRET` before the API starts.
+- **Remote GPU scripts default to the SSH alias `gpu-box`** (`scripts/remote_models.sh`, `scripts/remote_webui.sh`, `scripts/repair_model_transfer.py`), matching `remote_session.sh` and `remote_validate.sh`. Add a `Host gpu-box` entry to `~/.ssh/config`, or pass the host explicitly.
+- `docs/WEIGHT_SURGERY.md` §6 reports the same Qwen2.5-3B run as the published AI Lobotomy write-up (87.5% baseline refusal).
+
 ## [0.1.0] - 2026-10-01
 
 ### Added
@@ -35,12 +47,3 @@ All notable changes to AI Asylum will be documented in this file.
 - Autotune (weight surgery) no longer fails on Apple GPUs (MPS) with a CPU/GPU device mismatch.
 - Test-prompt search reaches the whole library, not only the newest 100 prompts.
 - Recorded turns keep the runtime participant identity alongside generation metadata.
-
-## [Unreleased]
-
-### Added
-- CycloneDX SBOMs for the default Python install and the frontend lockfile (`sbom/`, regenerated with `./scripts/generate_sbom.sh`).
-- [docs/API_KEYS.md](docs/API_KEYS.md) explains how to get an OpenAI, Anthropic, or Google key and how to set your own API key.
-
-### Changed
-- The Docker image installs the package, runs as a non-root user, and no longer tries to pip-install a TimescaleDB version that is not a Python package. Compose requires `POSTGRES_PASSWORD`, `API_KEYS`, and `API_KEY_HMAC_SECRET` before the API starts.

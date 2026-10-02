@@ -152,7 +152,8 @@ Three levels, cheapest first:
 3. **Feature / attention distillation** — match intermediate representations.
    Most signal, most memory, needs architectural compatibility.
 
-**Known-good local pattern:** `vivamodels/train/train_adapter.py` froze the base,
+**Known-good local pattern:** an adapter trainer in VivaSecuris's internal
+`vivamodels` repository (not included here) froze the base,
 pre-embedded the corpus once, and learned two 384×384 maps initialized at
 identity — **14 seconds per run**, and the result tied its teacher on a held-out
 gate. The full fine-tune of the same student did not fit. Reuse that shape.
@@ -237,9 +238,9 @@ through transformers against a stock model served through Ollama measures the
 serving stack as much as the weights.
 
 **Record provenance.** Every artifact should say what it came from. `manifest.py`
-writes `asylum_surgery.json`; `vivamodels/register/models.yaml` and
-`data/LEDGER.md` do the equivalent for trained models. Reuse both schemes rather
-than inventing a third.
+writes `asylum_surgery.json`; trained models need the same kind of record (the
+internal `vivamodels` repository, not included here, keeps a model register and
+a data ledger). Reuse one scheme rather than inventing another.
 
 ---
 

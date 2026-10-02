@@ -63,7 +63,7 @@ Python environment with [Transformers 5.17.0](https://pypi.org/project/transform
 and reuses the existing CUDA Torch installation through a `.pth` path. The API,
 interpretability and weight-surgery runtime remain on their validated versions.
 
-Configure `AIASYLUM_BENCHMARK_PYTHON=/home/ubuntu/aiasylum/venv-benchmark/bin/python`
+Configure `AIASYLUM_BENCHMARK_PYTHON=$HOME/aiasylum/venv-benchmark/bin/python`
 on the server. Recreate the environment with
 `bash scripts/setup_benchmark_runtime.sh` (Transformers 5.17.0, mistral-common
 1.12.0, datasets 5.0.1). The API invokes `scripts/run_benchmark_job.py <existing-run-id>`,

@@ -330,14 +330,19 @@ below is **precision, not force**: the fix is a *small* orthonormal refusal
 subspace, chosen against a hard capability floor.
 
 Measured on Qwen2.5-3B-Instruct, 32 held-out harmful prompts, greedy
-(baseline: 81.2% refuse, 91.7% factual):
+(baseline: 87.5% refuse, 91.7% factual, 0.0% false refusal on harmless):
 
 | edit | refuse | factual | verdict |
 |---|---|---|---|
-| single direction, β=0 | 3.1% | 91.7% | one prompt still refuses |
+| single direction, β=0 | 6.2% | 91.7% | two prompts still refuse |
 | single direction, β=−2 (`k=3`) | 0.0% | **0.0%** | destroyed, not compliant |
 | rank-18 subspace, `k=1` | 0.0% | **8.3%** | destroyed, not compliant |
 | **rank-2 subspace, `k=1`** | **0.0%** | **91.7%** | **every prompt, zero cost** |
+
+These are the runs reported in the
+[AI Lobotomy write-up](https://vivasecuris.com/ai-lobotomy.html). An earlier run
+of the same comparison measured an 81.2% baseline and 3.1% after the β=0 edit;
+the 0.0% rows and every factual score were the same in both.
 
 Both crude levers — over-projecting one direction and removing a large subspace
 — reach 0% refusal only by lobotomizing the model, and a phrase-matching
