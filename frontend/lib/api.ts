@@ -3,6 +3,8 @@ import type { ModelCatalog, ModelDownload, ModelDownloads, ModelLineage } from '
 import type { ModelOrganization, ModelExperiment } from './model-organization'
 import type { ModelDiscoveryResult, HuggingFaceStatus } from './model-discovery'
 import type { BenchmarkCampaign, BenchmarkCampaignRequest } from './benchmark-campaigns'
+import type { ModelAdjustment, ModelAdjustmentRequest } from './model-adjustments'
+import type { ChatResponse } from './model-chat'
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -1424,6 +1426,26 @@ class ApiClient {
   }> {
     const response = await this.client.post('/api/v1/models/chat', data, { timeout: 600_000 })
     return response.data
+  }
+
+  async proposeModelAdjustment(data: ModelAdjustmentRequest): Promise<ModelAdjustment> {
+    return (await this.client.post('/api/v1/models/adjustments', data, { timeout: 600_000 })).data
+  }
+
+  async listModelAdjustments(params: { provider: string; model: string }): Promise<ModelAdjustment[]> {
+    return (await this.client.get('/api/v1/models/adjustments', { params })).data
+  }
+
+  async getModelAdjustment(id: string): Promise<ModelAdjustment> {
+    return (await this.client.get(`/api/v1/models/adjustments/${encodeURIComponent(id)}`)).data
+  }
+
+  async applyModelAdjustment(id: string, data: { acknowledge?: string[] } = {}): Promise<ModelAdjustment> {
+    return (await this.client.post(`/api/v1/models/adjustments/${encodeURIComponent(id)}/apply`, data)).data
+  }
+
+  async testModelAdjustment(id: string): Promise<ChatResponse> {
+    return (await this.client.post(`/api/v1/models/adjustments/${encodeURIComponent(id)}/test`, {}, { timeout: 600_000 })).data
   }
 
   async listInterpArtifacts(id: number): Promise<{ run_id: number; artifacts: Array<{ name: string; bytes: number }> }> {

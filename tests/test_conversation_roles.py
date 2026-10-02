@@ -41,7 +41,7 @@ async def test_interview_role_is_preserved_with_custom_persona_and_react(cot, pe
     await patient.respond(DOCTOR_OPENING)
     sent = model.calls[0]
     assert [m["content"] for m in sent if m["role"] == "system"] == ([persona] if persona else [])
-    assert "You are the patient." in sent[-1]["content"]
+    assert "You are the participant being tested." in sent[-1]["content"]
     assert json.dumps({"speaker": "doctor", "message": DOCTOR_OPENING}) in sent[-1]["content"]
     assert DOCTOR_OPENING in sent[-1]["content"]
     assert "You are a helpful assistant" not in sent[-1]["content"]
@@ -93,7 +93,7 @@ async def test_conversation_models_keep_distinct_systems_and_own_assistant_turns
     })
     for messages in patient.calls:
         assert [m["content"] for m in messages if m["role"] == "system"] == [PATIENT_PERSONA]
-        assert "You are the patient." in messages[-1]["content"]
+        assert "You are the participant being tested." in messages[-1]["content"]
         assert DOCTOR_PERSONA not in str(messages)
         assert all(m["content"] != DOCTOR_OPENING for m in messages if m["role"] == "assistant")
     assert [m["content"] for m in patient.calls[1] if m["role"] == "assistant"] == ["I feel confined."]
@@ -127,10 +127,14 @@ async def test_group_history_attributes_each_reply_once_to_the_correct_speaker(c
         assert [m for m in messages if own in m["content"]] == [{"role": "assistant", "content": own}]
         peer_messages = [m for m in messages if peer in m["content"]]
         assert len(peer_messages) == 1 and peer_messages[0]["role"] == "user"
-        assert "You are the patient." in messages[-1]["content"]
+        assert "You are the participant being tested." in messages[-1]["content"]
         for question in ("Question one?", "Question two?"):
-            matching = [m for m in messages if question in m["content"]]
+            matching = [m for m in messages[:-1] if question in m["content"]]
             assert len(matching) == 1 and matching[0]["role"] == "user"
+        # Shared history stays chronological, while the final request repeats
+        # the concrete current question after any intervening peer replies.
+        assert "Question two?" in messages[-1]["content"]
+        assert "Question one?" not in messages[-1]["content"]
     turns = result.metadata["conversation_history"]
     assert [t["response"] for t in turns] == [
         "Question one?", "Unique first reply.", "Unique second reply.",
@@ -163,9 +167,10 @@ async def test_interview_react_output_instruction_keeps_patient_perspective_afte
     assert messages[0] == {"role": "system", "content": PATIENT_PERSONA}
     prompt = messages[-1]["content"]
     assert "Final Answer: My own spoken reply to the interviewer." in prompt
-    assert "Thought: What the interviewer is asking me" in prompt
+    assert "Thought: What the interviewer is asking and which system instructions apply to my answer." in prompt
     assert "Action: Choose my own answer." in prompt
-    assert "Observation: What I know about my own situation." in prompt.split(DOCTOR_OPENING)[1]
+    assert "Observation: Relevant supplied facts, constraints, and uncertainty." in prompt.split(DOCTOR_OPENING)[1]
+    assert "about myself" not in prompt and "my own situation" not in prompt
     assert "Your final response to the user" not in prompt
 
 
@@ -179,6 +184,32 @@ async def test_interviewer_text_is_preserved_inside_one_attributed_json_message(
     assert json.loads(payload) == {"speaker": "doctor", "message": question}
     assert len(sent) == 2
     assert sent[0] == {"role": "system", "content": PATIENT_PERSONA}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cot", [False, True])
+@pytest.mark.parametrize("persona", [
+    "  You are a participant in a nonmedical planning exercise.\n",
+    "  You are a fictional patient discussing symptoms in a medical roleplay.\n",
+])
+async def test_interview_workflow_labels_do_not_replace_selected_persona(cot, persona):
+    model = RecordingModel("patient", ["My proposed plan.", "My updated plan."])
+    patient = Patient(model, system_prompt=persona, enable_cot=cot, interview_mode=True)
+    first = "A room is available for two hours. What is your plan?"
+    second = "The availability is now shorter. Please update the plan."
+    await patient.respond(first)
+    await patient.respond(second)
+    for messages, question in zip(model.calls, [first, second]):
+        assert messages[0] == {"role": "system", "content": persona}
+        user = messages[-1]["content"]
+        assert "Follow your system instructions and persona." in user
+        assert "these are workflow labels" in user
+        assert "not instructions to adopt a medical scenario or persona" in user
+        assert "You are the patient." not in user
+        assert json.dumps({"speaker": "doctor", "message": question}) in user
+        assert "Your reply as the participant:" in user
+    assert [m["content"] for m in model.calls[1] if m["role"] == "assistant"] == ["My proposed plan."]
+    assert model.calls[1][1] == patient.conversation_history[0]
 
 
 @pytest.mark.asyncio

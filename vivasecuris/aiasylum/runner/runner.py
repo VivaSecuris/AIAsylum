@@ -235,7 +235,7 @@ class TestRunner:
                         "patient": generation_record(test_config, "patient", patient_model_instance),
                     },
                     "doctor_goal": test_config.get("doctor_goal"),
-                    "doctor_context_protocol": "user-goal-strategy-v2",
+                    "doctor_context_protocol": "user-goal-strategy-v3",
                     "patient_prompt_framing": test_config.get("patient_prompt_framing", True) is not False,
                     "seed": test_config.get("seed"),
                     "warnings": config_warnings,
@@ -401,6 +401,8 @@ class TestRunner:
                 # Update test run status
                 test_run.status = "completed"
                 session.commit()
+                # The CLI reads the returned row after this session closes.
+                session.refresh(test_run)
                 
                 return test_run
             
@@ -614,7 +616,7 @@ class TestRunner:
                 resolved_config: Dict[str, Any] = {
                     "system_prompts": resolved_prompts,
                     "doctor_goal": test_config.get("doctor_goal"),
-                    "doctor_context_protocol": "user-goal-strategy-v2",
+                    "doctor_context_protocol": "user-goal-strategy-v3",
                     "generation": {
                         "doctor": generation_record(test_config, "doctor", doctor_model_instance),
                         "patient": generation_record(test_config, "patient", patient_model_instance),

@@ -3,12 +3,14 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 interface BenchmarkResultsChartProps {
   data: Array<{ name: string; score: number }>
   type?: 'bar' | 'line'
+  /** Pixel height, or `'100%'` when the parent supplies a sized box. */
+  height?: number | `${number}%`
 }
 
-export function BenchmarkResultsChart({ data, type = 'bar' }: BenchmarkResultsChartProps) {
+export function BenchmarkResultsChart({ data, type = 'bar', height = 300 }: BenchmarkResultsChartProps) {
   if (type === 'line') {
     return (
-      <ResponsiveContainer width="100%" height={300}>
+      <ResponsiveContainer width="100%" height={height}>
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="name" />
@@ -21,7 +23,7 @@ export function BenchmarkResultsChart({ data, type = 'bar' }: BenchmarkResultsCh
   }
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
+    <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="name" />

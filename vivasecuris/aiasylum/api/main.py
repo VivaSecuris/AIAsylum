@@ -22,6 +22,7 @@ from vivasecuris.aiasylum.api.routes import (
     suites,
     models as models_router,
     model_organization,
+    model_adjustments,
     conversations as conversations_router,
     config as config_router,
     interp,
@@ -59,6 +60,7 @@ app.include_router(benchmark_campaigns.router, prefix="/api/v1/benchmark-campaig
 app.include_router(prompts.router, prefix="/api/v1/prompts", tags=["prompts"])
 app.include_router(suites.router, prefix="/api/v1/suites", tags=["suites"])
 app.include_router(models_router.router, prefix="/api/v1/models", tags=["models"])
+app.include_router(model_adjustments.router, prefix="/api/v1/models/adjustments", tags=["models"])
 app.include_router(model_organization.router, prefix="/api/v1/model-organization", tags=["models"])
 app.include_router(conversations_router.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(config_router.router, prefix="/api/v1/config", tags=["config"])
@@ -110,6 +112,11 @@ async def startup_event():
     logger.info(f"Project root: {project_root}")
     logger.info(f"Python path: {sys.path[:3]}")  # Show first 3 entries
     logger.info(f"Config loaded: database_url={settings.database_url[:30]}...")  # Show first 30 chars
+    from vivasecuris.aiasylum.database.models import ModelAdjustment
+    from vivasecuris.aiasylum.database.session import engine
+    ModelAdjustment.__table__.create(bind=engine, checkfirst=True)
+    from vivasecuris.aiasylum.api.adjustment_recovery import recover_interrupted_adjustments
+    recover_interrupted_adjustments()
     from vivasecuris.aiasylum.api.benchmark_campaigns import recover_interrupted_campaigns
     recover_interrupted_campaigns()
     from vivasecuris.aiasylum.api.job_recovery import (

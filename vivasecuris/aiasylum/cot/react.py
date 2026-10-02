@@ -124,17 +124,17 @@ class ReACTReasoner:
         answer_instruction = "Your final response to the user"
         begin = "Begin your reasoning:"
         if speaker_role == "patient":
-            # Generic actions/observations encourage an interviewee to invent
-            # an examination of the other speaker. Keep every field about the
-            # responding model's own answer, not just the final-answer field.
+            # Keep the responding speaker's perspective without inventing an
+            # examination of the interviewer or an autobiographical situation.
+            # The selected system and current task determine the answer's topic.
             return f"""Answer the interviewer as yourself, following your system instructions.
 
 {prompt}
 
 Use this response format:
-{self.thinking_prefix} What the interviewer is asking me and what I want to say about myself.
+{self.thinking_prefix} What the interviewer is asking and which system instructions apply to my answer.
 {self.action_prefix} Choose my own answer.
-{self.observation_prefix} What I know about my own situation.
+{self.observation_prefix} Relevant supplied facts, constraints, and uncertainty.
 {self.final_answer_prefix} My own spoken reply to the interviewer.
 """
         return f"""Follow the system instructions, persona, and conversation role already supplied.

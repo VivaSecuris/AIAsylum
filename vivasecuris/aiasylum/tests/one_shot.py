@@ -44,7 +44,8 @@ class OneShotTest(TestCase):
             patient_model, system_prompt=patient_system_prompt, enable_cot=enable_patient_cot,
             frame_prompts=(context or {}).get("patient_prompt_framing", True) is not False,
         )
-        doctor = Doctor(doctor_model, system_prompt=doctor_system_prompt, enable_cot=enable_doctor_cot) if doctor_model else None
+        doctor = Doctor(doctor_model, system_prompt=doctor_system_prompt, enable_cot=enable_doctor_cot,
+                        participant_identities=[patient.identity]) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []
         results = []

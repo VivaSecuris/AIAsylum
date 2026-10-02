@@ -1010,6 +1010,8 @@ class WeightRunRequest(BaseModel):
     extra_cols: int = 2048
 
     lineage_parent: Optional[str] = Field(None, max_length=1024)
+    # Recorded in the first job transaction, before dataset/artifact writes.
+    adjustment_id: Optional[str] = Field(None, min_length=1, max_length=36)
 
     notes: Optional[str] = None
     # Preflight codes the caller explicitly overrode. Naming each one means a
@@ -4091,6 +4093,7 @@ async def create_weight_run(request: WeightRunRequest):
             objective=objective,
             meta_data={
                 "lineage_parent": request.lineage_parent,
+                "adjustment_id": request.adjustment_id,
                 "lineage_id": uuid4().hex,
                 "source_direction_lineage_id": (direction_row.meta_data or {}).get("lineage_id") if direction_row is not None else None,
                 "options": {

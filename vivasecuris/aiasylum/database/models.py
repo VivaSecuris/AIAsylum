@@ -488,6 +488,20 @@ class InterpRun(Base):
         return f"InterpRun #{self.id}: {self.mode} ({self.status})"
 
 
+class ModelAdjustment(Base):
+    """A reviewable behavior revision, never an in-place replacement of weights."""
+
+    __tablename__ = "model_adjustments"
+    id = Column(String(36), primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    provider = Column(String(80), nullable=False, index=True)
+    model = Column(String(2048), nullable=False, index=True)
+    mode = Column(String(16), nullable=False)
+    status = Column(String(20), default="proposed", nullable=False)
+    weight_run_id = Column(Integer, nullable=True)
+    meta_data = Column("metadata", MetaJSON, default=dict)
+
+
 class WeightRun(Base):
     """One stage of the weight-surgery pipeline: derive, sweep, or surgery.
 

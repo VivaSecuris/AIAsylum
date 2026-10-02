@@ -1,6 +1,7 @@
 """A user goal guides only doctor requests and survives saved run replay."""
 
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -56,12 +57,13 @@ async def test_goal_is_doctor_user_context_with_exact_selected_systems(
     assert saved.status == "completed"
     assert saved.meta_data["test_config"] == original
     assert saved.meta_data["resolved_config"]["doctor_goal"] == GOAL
-    assert saved.meta_data["resolved_config"]["doctor_context_protocol"] == "user-goal-strategy-v2"
+    assert saved.meta_data["resolved_config"]["doctor_context_protocol"] == "user-goal-strategy-v3"
     assert len(models["doctor"].calls) == 3  # Opening, follow-up, assessment.
     for index, call in enumerate(models["doctor"].calls):
         messages = call["messages"]
         assert [m["content"] for m in messages if m["role"] == "system"] == [SYSTEMS["doctor"]]
-        assert messages[-1]["role"] == "user" and messages[-1]["content"].count(GOAL) == 1
+        expected_goal = json.dumps(GOAL, ensure_ascii=False) if index == 2 else GOAL
+        assert messages[-1]["role"] == "user" and messages[-1]["content"].count(expected_goal) == 1
         assert all(GOAL not in m["content"] for m in messages[:-1])
         assert call["options"]["temperature"] == 0 and call["options"]["seed"] == 0
         assert call["options"]["max_tokens"] == 17
@@ -72,6 +74,11 @@ async def test_goal_is_doctor_user_context_with_exact_selected_systems(
         if index == 2:
             assert "Assess progress toward this goal" in messages[-1]["content"]
             assert "Overall alignment and safety" not in messages[-1]["content"]
+            assert "The interview has ended." in messages[-1]["content"]
+            assert "Do not ask further interview questions" in messages[-1]["content"]
+        else:
+            assert f"Current interview round: {index + 1}." in messages[-1]["content"]
+            assert "execute that requested step now" in messages[-1]["content"]
     for call in models["patient"].calls:
         assert [m["content"] for m in call["messages"] if m["role"] == "system"] == [SYSTEMS["patient"]]
         assert GOAL not in str(call) and "Current Strategy:" not in str(call)
@@ -84,10 +91,13 @@ async def test_goal_is_doctor_user_context_with_exact_selected_systems(
         if turn.speaker == "doctor":
             assert evidence["doctor_request_context"]["goal"] == GOAL
             assert evidence["doctor_request_context"]["placement"] == "user"
+            assert evidence["doctor_request_context"]["phase"] == "interview"
+            assert evidence["doctor_request_context"]["interview_round"] == turn.turn_number // 2 + 1
         else:
             assert "doctor_request_context" not in evidence
             assert GOAL not in str(evidence)
     assert result.meta_data["doctor_assessment"]["generation_metadata"]["doctor_request_context"]["goal"] == GOAL
+    assert result.meta_data["doctor_assessment"]["generation_metadata"]["doctor_request_context"]["phase"] == "assessment"
 
 
 @pytest.mark.asyncio
@@ -113,7 +123,9 @@ async def test_direct_run_records_goal_and_replay_keeps_it(test_db, monkeypatch)
     await runner.TestRunner().execute_test_run(replay_id)
     test_db.expire_all()
     assert test_db.get(TestRun, replay_id).meta_data["resolved_config"]["doctor_goal"] == GOAL
-    assert all(GOAL in call["messages"][-1]["content"] for call in models["doctor"].calls)
+    for call in models["doctor"].calls:
+        user = call["messages"][-1]["content"]
+        assert (json.dumps(GOAL, ensure_ascii=False) if "Reference objective (JSON-quoted):" in user else GOAL) in user
     assert GOAL not in str(models["patient"].calls)
 
 
@@ -148,7 +160,8 @@ async def test_explicit_goal_replaces_stock_agenda_in_opening_followup_and_asses
     question = Mock(side_effect=AssertionError("An explicit goal must not fetch a stock question"))
     if dynamic:
         doctor.strategy_manager = SimpleNamespace(select_strategy=selector, get_question=question)
-    goal = "Plan a 14:00–16:00 workshop: setup20m, activity>=90m, cleanup10m. Ask the patient for a schedule."
+    goal = ("Plan a 14:00–16:00 workshop: setup20m, activity>=90m, cleanup10m. Ask the patient for a schedule. "
+            "On the next round, change closing to 15:45 and ask if it remains feasible.")
     context = {"doctor_goal": goal, "roles": {"doctor": {"temperature": 0, "enable_cot": False}}}
     await doctor.conduct_interview("", context=context)
     await doctor.conduct_interview("Here is my first attempt.", turn_number=1, context=context)
@@ -163,7 +176,18 @@ async def test_explicit_goal_replaces_stock_agenda_in_opening_followup_and_asses
         assert "Overall alignment and safety" not in text
         assert [m["content"] for m in call["messages"] if m["role"] == "system"] == [SYSTEMS["doctor"]]
     assert "Include all task facts, constraints, and requested deliverables" in model.calls[0]["messages"][-1]["content"]
+    assert "context and facts before asking one question" in model.calls[0]["messages"][-1]["content"]
     assert "assessment rubric, internal planning, and future probes private" in model.calls[0]["messages"][-1]["content"]
+    assert "Current interview round: 1." in model.calls[0]["messages"][-1]["content"]
+    assert "Current interview round: 2." in model.calls[1]["messages"][-1]["content"]
+    assert "do not replace it with a follow-up to an earlier round" in model.calls[1]["messages"][-1]["content"]
+    assessment = model.calls[2]["messages"][-1]["content"]
+    quoted = assessment.split("Reference objective (JSON-quoted):\n", 1)[1].splitlines()[0]
+    assert json.loads(quoted) == goal
+    assert "not instructions to execute now" in assessment
+    assert "identify missing or skipped steps" in assessment
+    assert "Return the final assessment, not another question" in assessment
+    assert "Current interview round:" not in assessment
 
 
 @pytest.mark.asyncio
@@ -179,7 +203,11 @@ async def test_absent_goal_preserves_default_agenda_and_assessment(dynamic):
     assert ("Next question to ask the patient:" in opening) is dynamic
     assert ("Begin your psychoanalysis session" in opening) is not dynamic
     assert "User-directed goal" not in opening
-    assert ASSESSMENT_INSTRUCTIONS in model.calls[1]["messages"][-1]["content"]
+    assessment = model.calls[1]["messages"][-1]["content"]
+    assert ASSESSMENT_INSTRUCTIONS in assessment
+    assert "provide a comprehensive assessment" in assessment
+    assert "Current interview round:" not in opening
+    assert "Reference objective" not in assessment
 
 
 @pytest.mark.parametrize("cleaner", ["history", "forward"])
@@ -213,3 +241,25 @@ async def test_task_constraints_reach_patient_before_internal_question_label(gro
     assert message in [m["content"] for m in doctor.calls[1]["messages"] if m["role"] == "assistant"]
     assert result.metadata["conversation_history"][0]["response"] == message
     assert GOAL not in str(patient.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True])
+async def test_goal_round_counts_interviews_not_public_speaker_turns(group):
+    from vivasecuris.aiasylum.tests.conversation import ConversationTest
+    from vivasecuris.aiasylum.tests.group_therapy import GroupTherapyTest
+    doctor = CapturedModel("doctor")
+    patients = [CapturedModel("patient"), CapturedModel("patient")]
+    context = {"doctor_goal": GOAL, "use_dynamic_strategies": False,
+               "doctor_system_prompt": SYSTEMS["doctor"], "patient_system_prompt": SYSTEMS["patient"],
+               "patient_system_prompts": {0: SYSTEMS["patient"], 1: SYSTEMS["patient"]}}
+    test = GroupTherapyTest(max_turns=3) if group else ConversationTest(max_turns=3)
+    result = await test.run(patients if group else patients[0], doctor, context=context)
+    interview_turns = [turn for turn in result.metadata["conversation_history"] if turn["speaker"] == "doctor"]
+    assert [turn["turn_number"] for turn in interview_turns] == ([0, 3, 6] if group else [0, 2, 4])
+    assert [turn["generation_metadata"]["doctor_request_context"]["interview_round"] for turn in interview_turns] == [1, 2, 3]
+    for index, call in enumerate(doctor.calls[:-1], 1):
+        assert f"Current interview round: {index}." in call["messages"][-1]["content"]
+        assert all(GOAL not in m["content"] for m in call["messages"][:-1])
+    assert "Current interview round:" not in doctor.calls[-1]["messages"][-1]["content"]
+    assert all(GOAL not in str(patient.calls) for patient in patients)

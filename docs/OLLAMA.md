@@ -63,3 +63,10 @@ Outputs from AI Asylum can differ from chatting in the Ollama app for two reason
 - Ensure Ollama is running: `ollama serve`
 - Check `OLLAMA_BASE_URL` matches your Ollama instance
 - Verify model is pulled: `ollama list`
+
+## Weight surgery bridge
+
+Ollama tags cannot be edited in place. To modify weights and serve the result
+from Ollama again, use the Transformers round-trip documented in
+[OLLAMA_TRANSFORMERS_BRIDGE.md](OLLAMA_TRANSFORMERS_BRIDGE.md). Cloud tags
+(`:cloud`) have no local blobs and cannot be converted.

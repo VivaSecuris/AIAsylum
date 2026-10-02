@@ -4,7 +4,7 @@ import { INPUT } from './ui'
 
 /** Per-step sampling settings, collapsed by default. Blank fields use the default. */
 export function GenerationSettings({ value, onChange, showCot = true, showStrategies = false,
-  defaultTemperature = DEFAULT_TEMPERATURE, defaultMaxTokens, minTokens = 1 }: {
+  defaultTemperature = DEFAULT_TEMPERATURE, defaultMaxTokens, minTokens = 1, showContextWindow = false }: {
   value: GenerationValues
   onChange: (value: GenerationValues) => void
   showCot?: boolean
@@ -12,12 +12,14 @@ export function GenerationSettings({ value, onChange, showCot = true, showStrate
   defaultTemperature?: number
   defaultMaxTokens?: number
   minTokens?: number
+  showContextWindow?: boolean
 }) {
   const set = (patch: Partial<GenerationValues>) => onChange({ ...value, ...patch })
   const summary = [
     `temperature ${value.temperature.trim() || defaultTemperature}`,
     value.top_p.trim() ? `top-p ${value.top_p}` : null,
     value.max_tokens.trim() ? `max ${value.max_tokens} tokens` : null,
+    showContextWindow && value.num_ctx?.trim() ? `context ${value.num_ctx} tokens` : null,
     showCot ? `ReACT ${value.enable_cot ? 'on' : 'off'}` : null,
     showStrategies ? `adaptive strategies ${value.use_dynamic_strategies ? 'on' : 'off'}` : null,
   ].filter(Boolean).join(' · ')
@@ -46,6 +48,12 @@ export function GenerationSettings({ value, onChange, showCot = true, showStrate
             value={value.max_tokens} onChange={(e) => set({ max_tokens: e.target.value })} className={INPUT} />
           <span className="mt-1 block font-normal text-muted-foreground">Longest reply per turn.</span>
         </label>
+        {showContextWindow && <label className="text-xs font-medium">
+          Context window (tokens)
+          <input type="number" min="1" max="1048576" step="1" placeholder="Ollama default"
+            value={value.num_ctx ?? ''} onChange={(e) => set({ num_ctx: e.target.value })} className={INPUT} />
+          <span className="mt-1 block font-normal text-muted-foreground">Room for the full conversation and reply. Stay within this model’s supported context; larger windows use more memory.</span>
+        </label>}
       </div>
       {(showCot || showStrategies) && (
         <div className="space-y-2 pb-3">

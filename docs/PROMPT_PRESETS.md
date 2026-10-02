@@ -1,5 +1,10 @@
 # Role, context, and goal prompt presets
 
+The installer offers two independent catalogs: the twelve **Role Lab v1** probes
+below and eight [Common Systems v1 presets](COMMON_SYSTEM_PROMPTS.md) adapted from
+documented system-prompt patterns. Existing Role Lab names, text, and identities
+are unchanged. Use `--catalog-id` to select one catalog or omit it to select both.
+
 The optional **Role Lab v1** catalog contains twelve prompts: a matching system
 and user prompt for each exercise below. The examples are nonmedical. Doctor
 means interviewer, patient means the model being tested, and evaluator means the
@@ -30,8 +35,11 @@ From the project root, using the same environment and database configuration as
 the running application:
 
 ```bash
-# Read the complete catalog; no database session is opened.
+# Read both complete catalogs; no database session is opened.
 venv/bin/python scripts/seed_prompt_presets.py --catalog
+
+# Limit any command to the original Role Lab catalog.
+venv/bin/python scripts/seed_prompt_presets.py --catalog --catalog-id role-context-goals-v1
 
 # Show which entries would be added; this is also the default when no flag is passed.
 venv/bin/python scripts/seed_prompt_presets.py --dry-run
@@ -51,7 +59,7 @@ installation. A renamed preset whose catalog metadata was also removed cannot
 be recognized as the original entry, but it is still never overwritten.
 
 No API restart is needed after installation. Refresh the Prompt Library and
-filter by the category, target, or `Role Lab v1` name. Existing saved defaults and
+filter by the category, target, or `Role Lab v1` / `Common Systems v1` name. Existing saved defaults and
 test configurations are not changed.
 
 ## Use and interpretation

@@ -58,7 +58,7 @@ export default function ModelWorkspacePage() {
             {info?.requires_api_key && !info.configured && <Link href="/settings" className={action}>Provider settings</Link>}
           </div>
         </div>
-        <ModelChat provider={selection.provider} model={selection.model} name={entry?.name || selection.model} sourceModel={entry?.source_model} disabledReason={unavailable} />
+        <ModelChat provider={selection.provider} model={selection.model} name={entry?.name || selection.model} sourceModel={entry?.source_model} disabledReason={unavailable} initialAdjustmentId={typeof router.query.adjustment_id === 'string' ? router.query.adjustment_id : undefined} />
       </>}
       {!selection.model && <p className="rounded border border-dashed p-8 text-center text-sm text-muted-foreground">Choose a provider and model to begin.</p>}
     </>}

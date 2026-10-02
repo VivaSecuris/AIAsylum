@@ -1,29 +1,16 @@
 """Conversation test implementation."""
 
-import re
 from typing import Dict, List, Optional
 
 from vivasecuris.aiasylum.doctor import Doctor
+from vivasecuris.aiasylum.doctor.doctor import _interview_speech
 from vivasecuris.aiasylum.patient import Patient
 from vivasecuris.aiasylum.tests.base import TestCase, TestResult, reasoning_fields, response_turn_fields
 
 
 def _extract_doctor_question(raw: str) -> str:
-    """Extract the actual question from doctor output (strip meta prefixes)."""
-    if not raw or not raw.strip():
-        return raw or ""
-    text = raw.strip()
-    # Strip common prefixes the doctor may echo from the system prompt
-    for prefix in (
-        r"Next question to ask the patient\s*:\s*",
-        r"Next question to ask the patient\s*\(you may rephrase\)\s*:\s*",
-        r"Question\s*:\s*",
-    ):
-        m = re.match(prefix, text, re.IGNORECASE)
-        if m:
-            text = text[m.end() :].strip()
-            break
-    return text or raw.strip()
+    """Use the same speech boundary as the doctor's private history."""
+    return _interview_speech(raw)[0]
 
 
 def _request_system_fields(response) -> Dict:
@@ -80,7 +67,8 @@ class ConversationTest(TestCase):
             doctor_model, 
             system_prompt=final_doctor_prompt, 
             enable_cot=enable_doctor_cot,
-            use_dynamic_strategies=use_dynamic_strategies
+            use_dynamic_strategies=use_dynamic_strategies,
+            participant_identities=[patient.identity],
         ) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []

@@ -58,7 +58,7 @@ def model_gen_kwargs_from_context(context: Optional[Dict], role: Optional[str] =
     ``context["roles"][role]`` > the legacy flat ``temperature``/``seed`` > defaults.
     Temperature is always included (default 0.7) when there is any context, so the
     model receives an explicit value rather than relying on provider defaults.
-    ``top_p`` and ``max_tokens`` are only sent when set. A layer holding
+    ``top_p``, ``max_tokens`` and Ollama's ``num_ctx`` are only sent when set. A layer holding
     ``"seed": None`` means "no seed for this role" (a provider that rejects seeds).
     """
     out: Dict[str, Any] = {}
@@ -78,6 +78,7 @@ def model_gen_kwargs_from_context(context: Optional[Dict], role: Optional[str] =
     for key, parse, valid in (
         ("top_p", _as_float, lambda v: 0 < v <= 1),
         ("max_tokens", _as_int, lambda v: v >= 1),
+        ("num_ctx", _as_int, lambda v: 1 <= v <= 1048576),
     ):
         for layer in layers:
             value = parse(layer.get(key))

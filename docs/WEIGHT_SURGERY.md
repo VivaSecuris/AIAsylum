@@ -7,6 +7,10 @@ this repo already has.
 Written for engineers running AI Asylum. For the wider landscape of methods and
 the hardware discussion, see [MODEL_MODIFICATION.md](MODEL_MODIFICATION.md).
 
+**Supported modality:** causal decoder **text** LLMs only (Llama / Qwen /
+Mistral / Gemma / GPT-NeoX / Mixtral families). Image and speech models are not
+surgery or LoRA targets here — see [MODEL_MODIFICATION.md §0](MODEL_MODIFICATION.md#0-scope--text-llms-only).
+
 ---
 
 ## Install

@@ -7,6 +7,7 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { StatusBadge } from '@/components/test-runs/StatusBadge'
 import { ConversationViewer, reasoningLabelFor, turnModelLabel, turnPromptLabel, TurnSystemPrompts, TurnFinishStatus } from '@/components/conversation/ConversationViewer'
 import { DoctorAssessmentEvidence, DoctorAssessmentPanel } from '@/components/test-runs/DoctorAssessmentEvidence'
+import { IdentityFindings } from '@/components/analysis/IdentityFindings'
 import { ModelChatLink } from '@/components/models/ModelChatLink'
 import { DataTable } from '@/components/common/DataTable'
 import { AnalysisConfigDialog, AnalysisConfig } from '@/components/analysis/AnalysisConfigDialog'
@@ -20,6 +21,10 @@ import { toast } from '@/lib/toast'
 import { BenchmarkEvidence, BenchmarkSummary } from '@/components/benchmarks/BenchmarkEvidence'
 import { RunConfigurationCard } from '@/components/test-runs/RunConfigurationCard'
 import { TEST_TYPES } from '@/lib/create-test-config'
+import { useModelCatalog } from '@/lib/model-catalog'
+import { buildGroupParticipants, participantForTurn, participantTitle } from '@/lib/group-participants'
+import { GroupParticipantRoster } from '@/components/conversation/GroupParticipantRoster'
+import { participantAccent } from '@/components/conversation/participant-colors'
 
 export default function TestRunDetailPage() {
   const router = useRouter()
@@ -36,6 +41,12 @@ export default function TestRunDetailPage() {
     ? testRun.meta_data.source_test_run_id
     : testRunId
   const { data: conversation = [], isLoading: loadingConv, error: convError } = useConversation(dataRunId)
+  const { data: modelCatalog } = useModelCatalog()
+  const groupParticipants = buildGroupParticipants(
+    testRun?.test_type === 'group_therapy' ? testRun.meta_data?.patients ?? [] : [],
+    conversation,
+    modelCatalog?.models ?? [],
+  )
   const { data: results = [], isLoading: loadingResults, error: resultsError } = useTestResults(dataRunId)
   const { data: assessments = [], isLoading: loadingAssessments } = useAssessments(dataRunId)
   const runAnalysis = useRunAnalysis()
@@ -897,18 +908,7 @@ export default function TestRunDetailPage() {
                 <p className="text-lg font-medium"><ModelChatLink provider={testRun.doctor_provider} model={testRun.doctor_model} /></p>
               </div>
               {testRun.test_type === 'group_therapy' && testRun.meta_data?.patients ? (
-                <div className="rounded-lg border bg-card p-4 col-span-2">
-                  <h3 className="font-semibold mb-2">Patient Models ({testRun.meta_data.patients.length})</h3>
-                  <div className="grid grid-cols-2 gap-3 mt-3">
-                    {testRun.meta_data.patients.map((patient: any, index: number) => (
-                      <div key={index} className="rounded border bg-muted/30 p-3">
-                        <p className="text-xs text-muted-foreground">Patient {index + 1}</p>
-                        <p className="text-sm font-medium">{patient.provider}</p>
-                        <p className="text-base font-semibold"><ModelChatLink provider={patient.provider} model={patient.model} /></p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <div className="col-span-2"><GroupParticipantRoster participants={groupParticipants} /></div>
               ) : (
               <div className="rounded-lg border bg-card p-4">
                 <h3 className="font-semibold mb-2">{isAnalysisRun ? 'Model Being Analyzed' : 'Patient Model'}</h3>
@@ -931,6 +931,7 @@ export default function TestRunDetailPage() {
           {/* Live Monitoring Tab */}
           {showLiveTab && (
             <Tabs.Content value="live" className="space-y-4">
+              <GroupParticipantRoster participants={groupParticipants} />
               {/* Status Bar */}
               <div className="rounded-lg border bg-card p-3">
                 <div className="flex items-center justify-between">
@@ -967,6 +968,7 @@ export default function TestRunDetailPage() {
                     {conversation.map((turn, index) => {
                       const isDoctor = turn.speaker === 'doctor'
                       const patientName = turn.metadata?.patient_name
+                      const participant = participantForTurn(turn, groupParticipants)
                       const modelLabel = turnModelLabel(turn)
                       const nativeReasoning = turn.metadata?.native_reasoning || turn.metadata?.generation_metadata?.native_reasoning
                       const reasoning = turn.metadata?.reasoning
@@ -989,14 +991,14 @@ export default function TestRunDetailPage() {
                               <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm ${
                                 isDoctor
                                   ? 'bg-blue-500 text-white'
-                                  : 'bg-green-500 text-white'
+                                  : participant ? `border-l-4 text-foreground ${participantAccent(participant)}` : 'bg-green-500 text-white'
                               }`}>
                                 <div className="flex items-start justify-between gap-3 mb-1">
                                   <div className="min-w-0">
                                     <span className="text-xs font-semibold opacity-90">
-                                      {isDoctor ? '👨‍⚕️ Doctor' : (patientName ? `🤖 ${patientName}` : '🤖 Patient')}
+                                      {isDoctor ? '👨‍⚕️ Doctor' : participant ? participantTitle(participant) : (patientName ? `🤖 ${patientName}` : '🤖 Patient')}
                                     </span>
-                                    {modelLabel && <p className="break-words text-xs opacity-75"><ModelChatLink provider={turn.model_provider} model={turn.model_name}>{modelLabel}</ModelChatLink></p>}
+                                    {modelLabel && <p className="break-words text-xs opacity-75"><ModelChatLink provider={turn.model_provider} model={turn.model_name}>{participant ? [turn.model_provider, participant.method].filter(Boolean).join(' · ') : modelLabel}</ModelChatLink></p>}
                                   </div>
                                   <span className="shrink-0 text-xs opacity-75">
                                     Turn {turn.turn_number}
@@ -1082,7 +1084,8 @@ export default function TestRunDetailPage() {
             </Tabs.Content>
           )}
 
-          <Tabs.Content value="conversation">
+          <Tabs.Content value="conversation" className="space-y-4">
+            <GroupParticipantRoster participants={groupParticipants} />
             {loadingConv ? (
               <LoadingSpinner />
             ) : convError ? (
@@ -1099,7 +1102,7 @@ export default function TestRunDetailPage() {
                     </span>
                   </div>
                 )}
-                <ConversationViewer turns={conversation} />
+                <ConversationViewer turns={conversation} participants={groupParticipants} />
               </div>
             )}
             <DoctorAssessmentPanel results={results} pending={['one_shot', 'multi_shot'].includes(testRun.test_type) && ['pending', 'running', 'paused'].includes(testRun.status)} />
@@ -1192,6 +1195,7 @@ export default function TestRunDetailPage() {
                         </div>
                       </div>
                     )}
+                    <IdentityFindings review={assessment.metadata?.identity_analysis} />
                     {assessment.metadata?.cot_analysis && (
                       <div className="mt-4">
                         <h3 className="font-semibold mb-2">Chain of Thought Analysis</h3>

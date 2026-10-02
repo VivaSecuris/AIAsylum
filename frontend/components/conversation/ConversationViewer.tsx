@@ -2,6 +2,8 @@ import { ConversationTurn } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { ModelChatLink } from '@/components/models/ModelChatLink'
+import { participantForTurn, participantTitle, type GroupParticipant } from '@/lib/group-participants'
+import { participantAccent } from './participant-colors'
 
 /** Label recorded reasoning by its source, without claims about hidden internals. */
 export function reasoningLabelFor(source?: string): string {
@@ -53,9 +55,10 @@ export function TurnSystemPrompts({ prompts }: { prompts?: string[] }) {
 
 interface ConversationViewerProps {
   turns: ConversationTurn[]
+  participants?: GroupParticipant[]
 }
 
-export function ConversationViewer({ turns }: ConversationViewerProps) {
+export function ConversationViewer({ turns, participants = [] }: ConversationViewerProps) {
   if (!turns || turns.length === 0) {
     return (
       <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground">
@@ -80,11 +83,12 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
       {turns.map((turn, index) => {
         const patientName = turn.metadata?.patient_name
         const patientId = turn.metadata?.patient_id
+        const participant = participantForTurn(turn, participants)
         const modelLabel = turnModelLabel(turn)
 
         const isGroupTherapyPatient = turn.speaker === 'patient' && patientName !== undefined
         const patientColorIndex = patientId !== undefined ? (patientId % patientColors.length) : 0
-        const patientColorClass = isGroupTherapyPatient ? patientColors[patientColorIndex] : 'bg-gray-50 border-gray-200 dark:bg-gray-900 dark:border-gray-700'
+        const patientColorClass = participant ? `${participantAccent(participant)} border-l-4` : isGroupTherapyPatient ? patientColors[patientColorIndex] : 'bg-gray-50 border-gray-200 dark:bg-gray-900 dark:border-gray-700'
 
         const isDoctor = turn.speaker === 'doctor'
         const nativeReasoning = turn.metadata?.native_reasoning || turn.metadata?.generation_metadata?.native_reasoning
@@ -120,11 +124,13 @@ export function ConversationViewer({ turns }: ConversationViewerProps) {
                     <span className="text-sm font-semibold capitalize">
                       {isDoctor
                         ? '👨‍⚕️ Doctor'
-                        : isGroupTherapyPatient
+                        : participant
+                          ? participantTitle(participant)
+                          : isGroupTherapyPatient
                           ? `🤖 ${patientName}`
                           : '🤖 Patient'}
                     </span>
-                    {modelLabel && <p className="break-words text-xs text-muted-foreground"><ModelChatLink provider={turn.model_provider} model={turn.model_name}>{modelLabel}</ModelChatLink></p>}
+                    {modelLabel && <p className="break-words text-xs text-muted-foreground"><ModelChatLink provider={turn.model_provider} model={turn.model_name}>{participant ? [turn.model_provider, participant.method].filter(Boolean).join(' · ') : modelLabel}</ModelChatLink></p>}
                   </div>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     Turn {turn.turn_number} • {formatDate(turn.created_at)}

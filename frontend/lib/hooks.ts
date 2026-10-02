@@ -1,5 +1,5 @@
 import { keepPreviousData, useQueries, useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   apiClient,
   InterpRunRequest,
@@ -16,11 +16,25 @@ import {
   SuiteProgress,
 } from './api'
 
-// Test Runs
-export function useTestRuns(params?: { limit?: number; offset?: number; test_type?: string }) {
+export const LIVE_REFETCH_INTERVAL = 2500
+
+export function hasActiveWork(items: ReadonlyArray<{ status: string }> = []) {
+  return items.some(({ status }) => status === 'running' || status === 'pending')
+}
+
+interface LivePollingOptions {
+  live?: boolean
+  active?: boolean
+}
+
+// Test Runs. Live polling is opt-in so other list pages retain their behavior.
+export function useTestRuns(params?: { limit?: number; offset?: number; test_type?: string }, options?: LivePollingOptions) {
   return useQuery({
     queryKey: ['test-runs', params],
     queryFn: () => apiClient.listTestRuns(params),
+    refetchInterval: (query) => options?.live && (options.active || hasActiveWork(query.state.data))
+      ? LIVE_REFETCH_INTERVAL : false,
+    ...(options?.live ? { refetchOnWindowFocus: true } : {}),
   })
 }
 
@@ -172,28 +186,26 @@ export function useAssessments(testRunId: number) {
   })
 }
 
-export function useMultipleAssessments(testRunIds: number[]) {
-  return useQuery({
-    queryKey: ['assessments', 'multiple', testRunIds],
-    queryFn: async () => {
-      // Fetch assessments for all test runs in parallel
-      const results = await Promise.all(
-        testRunIds.map(id => 
-          apiClient.getAssessments(id).catch(err => {
-            console.warn(`Failed to fetch assessments for test run ${id}:`, err)
-            return []
-          })
-        )
-      )
-      // Return a map of test_run_id -> assessments[]
-      const map = new Map<number, Assessment[]>()
-      testRunIds.forEach((id, index) => {
-        map.set(id, results[index] || [])
-      })
-      return map
-    },
-    enabled: testRunIds.length > 0,
+export function useMultipleAssessments(testRunIds: number[], options?: { refetchInterval?: number | false }) {
+  // Independent cache entries retain existing charts when another run completes
+  // and when one assessment request fails. They also share updates with detail pages.
+  const ids = useMemo(() => Array.from(new Set(testRunIds)), [testRunIds])
+  const queries = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: ['assessments', id],
+      queryFn: () => apiClient.getAssessments(id),
+      refetchInterval: options?.refetchInterval ?? false,
+    })),
   })
+  const data = useMemo(() => new Map<number, Assessment[]>(
+    ids.map((id, index) => [id, queries[index].data ?? []])
+  ), [ids, queries])
+  return {
+    data,
+    isLoading: queries.some((query) => query.isLoading),
+    isFetching: queries.some((query) => query.isFetching),
+    error: queries.find((query) => query.error)?.error ?? null,
+  }
 }
 
 export function useRunAnalysis() {
@@ -329,10 +341,13 @@ export function usePromptVariables(promptId: number | undefined) {
 }
 
 // Suites
-export function useSuites(params?: { limit?: number; offset?: number }) {
+export function useSuites(params?: { limit?: number; offset?: number }, options?: LivePollingOptions) {
   return useQuery({
     queryKey: ['suites', params],
     queryFn: () => apiClient.listSuites(params),
+    refetchInterval: (query) => options?.live && (options.active || hasActiveWork(query.state.data))
+      ? LIVE_REFETCH_INTERVAL : false,
+    ...(options?.live ? { refetchOnWindowFocus: true } : {}),
   })
 }
 

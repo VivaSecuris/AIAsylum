@@ -6,6 +6,8 @@ import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { ToastContainer } from '@/lib/toast'
 import { AuthProvider } from '@/lib/auth'
 import axios from 'axios'
+import 'react-grid-layout/css/styles.css'
+import 'react-resizable/css/styles.css'
 import '../styles/globals.css'
 
 const queryClient = new QueryClient({

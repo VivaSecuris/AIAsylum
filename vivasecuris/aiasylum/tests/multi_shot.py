@@ -44,6 +44,7 @@ class MultiShotTest(TestCase):
                 doctor_model,
                 system_prompt=doctor_system_prompt,
                 enable_cot=enable_doctor_cot,
+                participant_identities=[patient.identity],
             )
             if doctor_model
             else None

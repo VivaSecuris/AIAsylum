@@ -39,7 +39,8 @@ def substitute_variables(prompt: str, variables: Dict[str, str]) -> str:
     Substitute variables in a prompt with their values.
     
     Variables are identified by the pattern $variable_name and replaced with
-    the corresponding value from the variables dictionary.
+    the corresponding literal value from the variables dictionary. Inserted
+    values are not interpreted as regex replacements or expanded a second time.
     
     Args:
         prompt: The prompt text containing variables
@@ -56,16 +57,11 @@ def substitute_variables(prompt: str, variables: Dict[str, str]) -> str:
         >>> substitute_variables("No variables", {})
         'No variables'
     """
-    result = prompt
-    
-    # Replace each variable found in the prompt
-    for var_name, var_value in variables.items():
-        # Escape special regex characters in variable name
-        escaped_name = re.escape(var_name)
-        # Replace $variable_name with the value
-        # Use word boundary to ensure we match the full variable name
-        # Pattern: $variable_name followed by word boundary or end of string
-        pattern = r'\$' + escaped_name + r'\b'
-        result = re.sub(pattern, var_value, result)
-    
-    return result
+    if not variables:
+        return prompt
+
+    # Keep the existing literal-name and trailing word-boundary matching rules.
+    # One pass prevents an inserted $name from becoming another substitution;
+    # a callback prevents paths/backreferences from being regex instructions.
+    names = "|".join(re.escape(name) for name in variables)
+    return re.sub(r"\$(" + names + r")\b", lambda match: variables[match.group(1)], prompt)

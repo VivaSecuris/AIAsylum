@@ -36,6 +36,7 @@ export function RoleFields({ role, step, onChange, modelLabel = 'Model', allowNo
       {role === 'doctor' && doctorGoal && <DoctorGoalField value={doctorGoal.value} onChange={doctorGoal.onChange} />}
       {showGeneration && (
         <GenerationSettings defaultTemperature={defaultTemperature} defaultMaxTokens={defaultMaxTokens} value={step.generation} showCot={showCot} showStrategies={showStrategies}
+          showContextWindow={step.provider === 'ollama'}
           onChange={(generation) => onChange({ ...step, generation })} />
       )}
     </div>

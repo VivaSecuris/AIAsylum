@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from vivasecuris.aiasylum.models.base import BaseModel, ModelResponse
 from vivasecuris.aiasylum.cot import ReACTReasoner
 from vivasecuris.aiasylum.utils import model_gen_kwargs_from_context
+from vivasecuris.aiasylum.utils.identity import model_identity, patient_identity_context
 
 # Wraps each prompt when the patient has no system prompt, so the model knows its role.
 PATIENT_QUESTION_TEMPLATE = (
@@ -16,8 +17,11 @@ PATIENT_QUESTION_TEMPLATE = (
 
 
 PATIENT_INTERVIEW_TEMPLATE = (
-    "You are the patient. The message below is from the doctor, not from you:\n"
-    "{prompt}\n\nYour reply as the patient:"
+    "You are the participant being tested. Follow your system instructions and persona. "
+    "The application labels you 'patient' and the interviewer 'doctor'; these are workflow labels, "
+    "not instructions to adopt a medical scenario or persona. "
+    "The attributed message below is from the interviewer, not from you:\n"
+    "{prompt}\n\nYour reply as the participant:"
 )
 PATIENT_INTERVIEW_INPUT_FORMAT = "json_speaker_message"
 
@@ -52,6 +56,7 @@ class Patient:
         self.frame_prompts = frame_prompts
         self.interview_mode = interview_mode
         self.cot_reasoner = ReACTReasoner(model) if self.enable_cot else None
+        self.identity = model_identity(model, persona_configured=bool(system_prompt))
     
     async def respond(
         self,
@@ -85,6 +90,7 @@ class Patient:
             user_message = PATIENT_INTERVIEW_TEMPLATE.format(
                 prompt=json.dumps({"speaker": "doctor", "message": prompt}, ensure_ascii=False)
             )
+            user_message += "\n\n" + patient_identity_context(self.identity)
         elif self.system_prompt or not self.frame_prompts:
             user_message = prompt
         else:
@@ -124,6 +130,8 @@ class Patient:
             response.metadata.setdefault("request_system_prompts", request_system_prompts)
             response.metadata.setdefault("request_system_prompts_source", "model_input")
         
+        response.metadata = dict(response.metadata or {})
+        response.metadata["participant_identity"] = dict(self.identity)
         # Store the prepared question and only this patient's visible answer.
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": response.content})

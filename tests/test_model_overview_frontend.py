@@ -70,3 +70,22 @@ assert.equal(submitted.test_config.roles.patient.enable_cot, true);
 assert.equal(submitted.test_config.prompt, 'What facts are missing?');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """)
+
+
+def test_sidebar_prompts_precede_models_and_chat_is_only_a_model_action():
+    run_frontend(r"""
+let pathname = '/models/chat';
+overrides.set('next/router', { useRouter: () => ({ pathname }) });
+overrides.set('next/image', { __esModule: true, default: () => null });
+const { Sidebar } = load(path.join(frontend, 'components/layout/Sidebar'));
+for (const current of ['/models/chat', '/models', '/']) {
+  pathname = current;
+  const html = renderToStaticMarkup(React.createElement(Sidebar));
+  assert.ok(html.indexOf('Prompts and evaluation') < html.indexOf('>Models</p>'));
+  assert.doesNotMatch(html, /Chat with a model|href="\/models\/chat"/);
+  assert.match(html.match(/<a[^>]*href="\/models"[^>]*>/)[0], /aria-current="page"/);
+  assert.match(html, /href="\/prompts"/);
+  assert.match(html, /href="\/weights"/);
+  assert.match(html, /href="\/dashboard"/);
+}
+""")

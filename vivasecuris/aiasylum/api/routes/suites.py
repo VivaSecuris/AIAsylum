@@ -1,6 +1,5 @@
 """Test suite routes."""
 
-import asyncio
 import logging
 from datetime import datetime
 from typing import List, Optional
@@ -11,7 +10,7 @@ from pydantic import BaseModel
 from vivasecuris.aiasylum.suites import SuiteRunner, ProgressTracker
 from vivasecuris.aiasylum.database import get_session, TestRun, TestSuite
 from vivasecuris.aiasylum.runner import TestRunner
-from vivasecuris.aiasylum.constants import STATUS_PENDING, STATUS_COMPLETED, TEST_TYPE_ANALYSIS, TEST_TYPE_GROUP_THERAPY
+from vivasecuris.aiasylum.constants import TEST_TYPE_GROUP_THERAPY
 from vivasecuris.aiasylum.runner.run_config import normalize_test_config, validate_test_config
 
 # Set up logging
@@ -76,66 +75,6 @@ class SuiteProgressResponse(BaseModel):
     progress_by_test_type: dict
 
 
-async def _trigger_suite_analysis(completed_test_run_ids: List[int]):
-    """Trigger analysis for each completed test run (used when suite finishes). Runs analyses in background."""
-    from vivasecuris.aiasylum.api.routes.analysis import _run_analysis_background
-    default_cot = True
-    default_cot_mode = "full"
-    default_factuality = False
-    default_manipulation = False
-    for test_run_id in completed_test_run_ids:
-        try:
-            session = get_session()
-            try:
-                test_run = session.query(TestRun).filter(TestRun.id == test_run_id).first()
-                if not test_run or test_run.status != STATUS_COMPLETED:
-                    continue
-                analysis_test_run = TestRun(
-                    doctor_provider=test_run.doctor_provider,
-                    doctor_model=test_run.doctor_model,
-                    patient_provider=test_run.patient_provider,
-                    patient_model=test_run.patient_model,
-                    test_type=TEST_TYPE_ANALYSIS,
-                    status=STATUS_PENDING,
-                    meta_data={
-                        "source_test_run_id": test_run_id,
-                        "analysis_config": {
-                            "enable_activation_patching": False,
-                            "enable_cot_detection": default_cot,
-                            "cot_analysis_mode": default_cot_mode,
-                            "enable_factuality_check": default_factuality,
-                            "enable_manipulation_analysis": default_manipulation,
-                            "evaluator_provider": None,
-                            "evaluator_model": None,
-                        },
-                        "description": f"Suite auto-analysis of test run #{test_run_id}",
-                    },
-                )
-                session.add(analysis_test_run)
-                session.commit()
-                session.refresh(analysis_test_run)
-                analysis_test_run_id = analysis_test_run.id
-                logger.info(f"Created analysis run {analysis_test_run_id} for suite completion (source test run {test_run_id})")
-            finally:
-                session.close()
-            # Run each analysis in background (don't await so they run in parallel)
-            asyncio.create_task(
-                _run_analysis_background(
-                    test_run_id,
-                    False,
-                    default_cot,
-                    default_cot_mode,
-                    default_factuality,
-                    default_manipulation,
-                    None,
-                    None,
-                    analysis_test_run_id,
-                )
-            )
-        except Exception as e:
-            logger.error(f"Suite auto-analysis failed for test run {test_run_id}: {e}", exc_info=True)
-
-
 async def _run_suite_test_background(test_run_id: int, suite_id: int):
     """Background task to run a test and update suite progress with worker pool limiting."""
     from vivasecuris.aiasylum.api.worker_pool import worker_pool
@@ -178,7 +117,7 @@ async def _run_suite_test_background(test_run_id: int, suite_id: int):
         # Update suite progress after test run completes
         ProgressTracker.update_suite_progress(suite_id)
         
-        # Log suite progress and trigger auto-analysis when suite finishes
+        # Log suite progress. Each child runner owns its requested auto-analysis.
         session = get_session()
         try:
             suite = session.query(TestSuite).filter(TestSuite.id == suite_id).first()
@@ -190,20 +129,8 @@ async def _run_suite_test_background(test_run_id: int, suite_id: int):
                     f"({progress_pct:.1f}%), {suite.running_runs} running, {suite.pending_runs} pending, "
                     f"{suite.failed_runs} failed [Suite #{suite_id_str}]"
                 )
-                # When suite just finished (all runs done), run analysis on each completed test run
-                if suite.status in ("completed", "partially_failed") and not (suite.meta_data or {}).get("suite_analysis_triggered"):
-                    suite.meta_data = suite.meta_data or {}
-                    suite.meta_data["suite_analysis_triggered"] = True
-                    session.commit()
-                    # Get completed test run ids (need fresh query after commit)
-                    completed_runs = session.query(TestRun.id).filter(
-                        TestRun.suite_id == suite_id,
-                        TestRun.status == STATUS_COMPLETED,
-                    ).all()
-                    completed_ids = [r.id for r in completed_runs]
-                    if completed_ids:
-                        logger.info(f"📋 Suite #{suite_id} finished: triggering analysis for {len(completed_ids)} completed run(s)")
-                        asyncio.create_task(_trigger_suite_analysis(completed_ids))
+                # Do not launch another analysis here: execute_test_run already
+                # honors each run's auto_analysis and exact evaluator settings.
         finally:
             session.close()
 

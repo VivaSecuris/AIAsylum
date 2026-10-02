@@ -6,7 +6,8 @@ A ``test_config`` carries, besides the test design, one block of settings per LL
   ``patient_``; for group therapy each ``patients[i]`` has its own
   ``system_prompt_id`` / ``system_prompt`` and optional ``generation``.
 * ``roles``: ``{"doctor": {...}, "patient": {...}}`` with ``temperature``, ``top_p``,
-  ``max_tokens``, ``enable_cot`` and, for the doctor, ``use_dynamic_strategies``.
+  ``max_tokens``, Ollama's optional ``num_ctx``, ``enable_cot`` and, for the doctor,
+  ``use_dynamic_strategies``.
 * ``patient_prompt_framing``: False sends prompts to the patient verbatim.
 * ``doctor_goal``: Optional objective supplied only in doctor user context.
 * ``analysis_config``: evaluator provider/model, ``evaluator_system_prompt_id`` or
@@ -80,6 +81,7 @@ class RoleGeneration(BaseModel):
     temperature: Optional[float] = Field(None, ge=0, le=2)
     top_p: Optional[float] = Field(None, gt=0, le=1)
     max_tokens: Optional[int] = Field(None, ge=1, le=32768)
+    num_ctx: Optional[int] = Field(None, ge=1, le=1048576)
     enable_cot: Optional[bool] = None
     use_dynamic_strategies: Optional[bool] = None
 
@@ -248,6 +250,7 @@ def resolve_system_prompts(session, cfg: Dict, test_type: str) -> Tuple[Dict[str
             choice["user_message_framing"] = "interview"
             choice["user_message_template"] = PATIENT_INTERVIEW_TEMPLATE
             choice["user_message_input_format"] = PATIENT_INTERVIEW_INPUT_FORMAT
+            choice["identity_grounding"] = "identity-grounding-v1"
         elif test_type != "benchmark" and not choice.get("text"):
             choice["user_message_framing"] = "standalone"
             choice["user_message_template"] = PATIENT_QUESTION_TEMPLATE
@@ -310,6 +313,8 @@ def generation_record(cfg: Dict, role: str, model=None, overrides: Optional[Dict
     }
     if role == "doctor":
         record["use_dynamic_strategies"] = cfg.get("use_dynamic_strategies", True)
+    if "num_ctx" in sent:
+        record["num_ctx"] = sent["num_ctx"]
     requested = cfg.get("seed")
     if requested not in (None, "") and "seed" not in sent:
         record["seed_note"] = f"{getattr(model, 'provider', 'this provider')} does not accept a seed"

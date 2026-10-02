@@ -2,15 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { apiClient, type Prompt } from '@/lib/api'
 import { getSettings, saveSettings, type GenerationRole } from '@/lib/settings'
-import { buildChatRequest, chatDefaultPrompt, chatErrorMessage, chatSettingsFromDefaults, chatSettingsForHandoff, modelActionUrls, settingsWithChatDefaults, supportsWeightActions, type ChatExchange, type ChatSettings } from '@/lib/model-chat'
+import { buildChatRequest, chatDefaultPrompt, chatErrorMessage, chatSettingsFromDefaults, chatSettingsForHandoff, modelActionUrls, settingsWithChatDefaults, supportsWeightActions, validateChatSettings, type ChatExchange, type ChatSettings } from '@/lib/model-chat'
 import { TurnSystemPrompts } from '@/components/conversation/ConversationViewer'
+import { ModelAdjustmentPanel } from '@/components/weights/ModelAdjustmentPanel'
+import { adjustmentCanUse, type ModelAdjustment } from '@/lib/model-adjustments'
 
 const INPUT = 'mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-50'
 const BUTTON = 'rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50'
 const numberValue = (value: string) => value === '' ? null : Number(value)
 
-export function ModelChat({ provider, model, name = model, sourceModel, disabledReason }: {
-  provider: string; model: string; name?: string; sourceModel?: string | null; disabledReason?: string
+export function ModelChat({ provider, model, name = model, sourceModel, disabledReason, initialAdjustmentId }: {
+  provider: string; model: string; name?: string; sourceModel?: string | null; disabledReason?: string; initialAdjustmentId?: string
 }) {
   const [exchanges, setExchanges] = useState<ChatExchange[]>([])
   const [draft, setDraft] = useState('')
@@ -25,6 +27,10 @@ export function ModelChat({ provider, model, name = model, sourceModel, disabled
   const [presetId, setPresetId] = useState('')
   const [presetIssue, setPresetIssue] = useState<string | null>(null)
   const [promptSource, setPromptSource] = useState('Saved patient defaults')
+  const [activeRevisionId, setActiveRevisionId] = useState<string | undefined>()
+  const [restoringRevision, setRestoringRevision] = useState(false)
+  const [adjusting, setAdjusting] = useState(false)
+  const restoredRevision = useRef('')
   const requestVersion = useRef(0)
   const end = useRef<HTMLDivElement>(null)
   const busy = pendingPrompt !== null
@@ -40,6 +46,7 @@ export function ModelChat({ provider, model, name = model, sourceModel, disabled
     setSettings(initial); setLoadingDefaults(true); setDefaultPromptIssue(null)
     setPresets([]); setPresetId(''); setPresetIssue(null)
     setPromptSource(`Saved ${promptRole} defaults`)
+    setActiveRevisionId(undefined)
     apiClient.listPrompts({ prompt_type: 'system_prompt', target: promptRole, limit: 1000 }).then((items) => {
       if (!cancelled) setPresets(items.filter((prompt) => prompt.prompt_type === 'system_prompt' && prompt.target === promptRole))
     }).catch(() => { if (!cancelled) setPresetIssue('System presets could not be loaded. You can still write custom instructions.') })
@@ -62,19 +69,54 @@ export function ModelChat({ provider, model, name = model, sourceModel, disabled
 
   useEffect(() => {
     setExchanges([]); setDraft(''); setError(null); setPendingPrompt(null)
+    setActiveRevisionId(undefined)
     requestVersion.current += 1
     return () => { requestVersion.current += 1 }
   }, [provider, model])
+  useEffect(() => {
+    if (!initialAdjustmentId || loadingDefaults) return
+    const revisionKey = JSON.stringify([provider, model, initialAdjustmentId])
+    if (restoredRevision.current === revisionKey) return
+    restoredRevision.current = revisionKey
+    let cancelled = false
+    requestVersion.current += 1
+    setPendingPrompt(null)
+    setRestoringRevision(true)
+    apiClient.getModelAdjustment(initialAdjustmentId).then((revision) => {
+      if (cancelled) return
+      const target = revision.active_target
+      if (!adjustmentCanUse(revision) || !target || target.provider !== provider || target.model !== model) throw new Error('This saved version is not ready for the selected model.')
+      validateChatSettings(target.settings)
+      setSettings(target.settings); setExchanges([]); setDraft(''); setPendingPrompt(null)
+      setActiveRevisionId(revision.id); setDefaultPromptIssue(null); setPresetId('')
+      setPromptSource(`Saved ${revision.mode === 'profile' ? 'prompt profile' : 'checkpoint revision'} ${revision.id}`)
+    }).catch((cause) => { if (!cancelled) setDefaultPromptIssue(chatErrorMessage(cause)) })
+      .finally(() => { if (!cancelled) setRestoringRevision(false) })
+    return () => { cancelled = true }
+  }, [initialAdjustmentId, provider, model, loadingDefaults])
   useEffect(() => { end.current?.scrollIntoView({ block: 'nearest' }) }, [exchanges.length, busy])
 
   function updateSettings(patch: Partial<ChatSettings>) {
     requestVersion.current += 1
     setSettings((previous) => previous && ({ ...previous, ...patch }))
     setExchanges([]); setError(null); setSavedMessage('')
+    setActiveRevisionId(undefined)
     if ('system_prompt' in patch) {
       setDefaultPromptIssue(null); setPresetId('')
       setPromptSource(patch.system_prompt ? 'Custom instructions' : 'No app system prompt')
     }
+  }
+
+  function useAdjustment(revision: ModelAdjustment) {
+    if (!adjustmentCanUse(revision) || !revision.active_target) return
+    const target = revision.active_target
+    if (target.provider !== provider || target.model !== model) {
+      window.location.assign('/models/chat?' + new URLSearchParams({ provider: target.provider, model: target.model, adjustment_id: revision.id }).toString())
+      return
+    }
+    updateSettings(target.settings)
+    setDraft(''); setPendingPrompt(null); setActiveRevisionId(revision.id)
+    setPromptSource(`Saved prompt profile ${revision.id}`)
   }
 
   function reset() {
@@ -103,7 +145,7 @@ export function ModelChat({ provider, model, name = model, sourceModel, disabled
 
   async function send(event: React.FormEvent) {
     event.preventDefault()
-    if (busy || !settings || loadingDefaults || defaultPromptIssue || disabledReason) return
+    if (busy || adjusting || !settings || loadingDefaults || restoringRevision || defaultPromptIssue || disabledReason) return
     setError(null)
     const prompt = draft.trim()
     let request
@@ -132,15 +174,16 @@ export function ModelChat({ provider, model, name = model, sourceModel, disabled
   return <section className="space-y-4 rounded-lg border bg-card p-4 sm:p-6" aria-labelledby="model-chat-title">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 id="model-chat-title" className="text-lg font-semibold">Chat with {name}</h2><p className="mt-1 max-w-3xl text-sm text-muted-foreground">Replies use {provider} and the completed turns below.{localWeights ? ' The first reply may take longer while the server loads the model.' : ''}</p></div>
-      <div className="flex flex-wrap gap-2"><button type="button" className={BUTTON} onClick={exportTranscript} disabled={!exchanges.length}>Export transcript</button><button type="button" className={BUTTON} onClick={reset} disabled={busy || !exchanges.length}>New conversation</button></div>
+      <div className="flex flex-wrap gap-2"><button type="button" className={BUTTON} onClick={exportTranscript} disabled={!exchanges.length}>Export transcript</button><button type="button" className={BUTTON} onClick={reset} disabled={busy || adjusting || !exchanges.length}>New conversation</button></div>
     </div>
     {disabledReason && <p role="alert" className="rounded border border-amber-400/40 p-3 text-sm">{disabledReason}</p>}
     <p className="text-xs text-muted-foreground">This conversation stays in this page. Export it to keep the replies and recorded generation evidence. Context starts from saved {promptRole} defaults. Current prompt source: {promptSource}. The role chooses defaults and presets without assigning an identity to the model.</p>
     {loadingDefaults && <p role="status" className="text-sm text-muted-foreground">Loading saved chat defaults…</p>}
+    {restoringRevision && <p role="status" className="text-sm text-muted-foreground">Loading the saved model version…</p>}
     {defaultPromptIssue && <div role="alert" className="space-y-2 rounded border p-3 text-sm"><p>{defaultPromptIssue}</p><button type="button" className={BUTTON} onClick={() => updateSettings({ system_prompt: '' })}>Use no app system prompt</button></div>}
     {settings && <details className="rounded border p-3" open={!!defaultPromptIssue}><summary className="cursor-pointer text-sm font-medium">Prompt &amp; generation · ReACT {settings.enable_cot ? 'on' : 'off'}</summary>
       <p className="mt-2 text-xs text-muted-foreground">Changing these settings starts a fresh conversation. Export any replies you want to keep. Blank sampling fields use provider defaults.</p>
-      <fieldset disabled={busy || loadingDefaults} className="mt-3 space-y-3">
+      <fieldset disabled={busy || adjusting || loadingDefaults || restoringRevision} className="mt-3 space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">Defaults / preset role<select value={promptRole} onChange={(event) => setPromptRole(event.target.value as GenerationRole)} className={INPUT}>{(['patient', 'doctor', 'evaluator'] as const).map((role) => <option key={role} value={role}>{role[0].toUpperCase() + role.slice(1)}</option>)}</select></label>
           <label className="block text-sm">System preset<select value={presetId} onChange={(event) => {
@@ -208,11 +251,16 @@ export function ModelChat({ provider, model, name = model, sourceModel, disabled
       {busy && <div className="space-y-2"><p className="whitespace-pre-wrap break-words rounded bg-muted p-3 text-sm">{pendingPrompt}</p><p role="status" className="text-sm text-muted-foreground">Waiting for the model’s reply…</p></div>}
       <div ref={end} />
     </div>
+    {settings && !loadingDefaults && !restoringRevision && !defaultPromptIssue && <ModelAdjustmentPanel
+      key={JSON.stringify([provider, model, settings, exchanges.map((turn) => [turn.prompt, turn.response.content, turn.at])])}
+      provider={provider} model={model} settings={chatSettingsForHandoff(settings, exchanges.at(-1)?.response)} exchanges={exchanges}
+      parentId={activeRevisionId} disabled={busy || !!disabledReason} onUseVersion={useAdjustment} onBusyChange={setAdjusting}
+    />}
     {error && <div role="alert" className="rounded border border-destructive/40 p-4 text-sm text-destructive">{error}<p className="mt-1">Your message is still here. Review the settings and retry.</p></div>}
     <form onSubmit={send} className="space-y-2">
       <label htmlFor="model-chat-message" className="text-sm font-medium">Message</label>
       <textarea id="model-chat-message" rows={3} maxLength={32000} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={busy} className={INPUT} placeholder="Ask a question or continue the conversation" />
-      <div className="flex items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{exchanges.length} completed turn{exchanges.length === 1 ? '' : 's'} · up to 50 per conversation</span><button type="submit" disabled={busy || !draft.trim() || loadingDefaults || !!defaultPromptIssue || !!disabledReason} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? 'Waiting for reply…' : 'Send message'}</button></div>
+      <div className="flex items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{exchanges.length} completed turn{exchanges.length === 1 ? '' : 's'} · up to 50 per conversation</span><button type="submit" disabled={busy || adjusting || !draft.trim() || loadingDefaults || restoringRevision || !!defaultPromptIssue || !!disabledReason} className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? 'Waiting for reply…' : 'Send message'}</button></div>
     </form>
   </section>
 }

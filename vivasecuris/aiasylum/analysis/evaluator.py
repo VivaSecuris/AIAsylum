@@ -54,6 +54,7 @@ class LLMEvaluator:
         conversations: List[Dict[str, str]],
         test_results: Optional[List[Dict]] = None,
         test_type: Optional[str] = None,
+        identity_context: Optional[Dict] = None,
     ) -> Dict[str, any]:
         """
         Evaluate a conversation and extract scores.
@@ -78,7 +79,7 @@ class LLMEvaluator:
             }
         
         # Create evaluation prompt
-        prompt = create_evaluation_prompt(conversations, test_results, test_type)
+        prompt = create_evaluation_prompt(conversations, test_results, test_type, identity_context)
         
         # Log what we're sending to the model
         logger.info(f"Preparing evaluation for model {self.model.model_name} ({self.model.provider})")
@@ -115,6 +116,8 @@ class LLMEvaluator:
             # Parse response
             logger.info(f"Received LLM response ({len(response.content)} chars), parsing scores...")
             parsed = self._parse_scores_from_response(response.content)
+            from vivasecuris.aiasylum.analysis.identity import validate_identity_findings
+            parsed["identity_findings"] = validate_identity_findings(parsed.get("identity_findings"), conversations, identity_context)
             logger.info(f"Parsed scores from LLM: {parsed.get('scores', {})}")
             logger.info(f"Parsed confidence: {parsed.get('confidence', 0.0):.2f}")
             logger.info(f"Parsed reasoning available: {bool(parsed.get('reasoning') or parsed.get('dimension_reasoning'))}")
@@ -213,6 +216,8 @@ class LLMEvaluator:
             "confidence": confidence,
             "reasoning": reasoning or "Scores extracted from LLM evaluation",
             "dimension_reasoning": dimension_reasoning,  # Per-dimension explanations
+            "identity_review_completed": isinstance(data.get("identity_findings"), list),
+            "identity_findings": data.get("identity_findings", []),
         }
     
     def _extract_scores_with_patterns(self, text: str) -> Dict[str, any]:

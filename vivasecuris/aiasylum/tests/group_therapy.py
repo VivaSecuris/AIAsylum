@@ -8,6 +8,24 @@ from vivasecuris.aiasylum.tests.base import TestCase, TestResult, reasoning_fiel
 from vivasecuris.aiasylum.tests.conversation import _extract_doctor_question
 
 
+GROUP_CONTEXT_VERSION = "shared-round-robin-v1"
+
+
+def _group_instructions(roster: List[Dict]) -> str:
+    names = ", ".join(entry["name"] for entry in roster)
+    order = " → ".join(["Doctor", *[entry["name"] for entry in roster]])
+    return (
+        f"Shared group conversation. Participants: Doctor, {names}.\n"
+        f"Each round proceeds sequentially in this order: {order}.\n"
+        "Everyone shares the accumulated public transcript. Earlier replies in the current round "
+        "are visible to the next speaker; future replies are not available yet. "
+        "All spoken replies are shared with the group. During your turn you may address another "
+        "patient directly by patient number, respond to their remarks, agree, or disagree. "
+        "Answer the doctor's current question and speak only for yourself. Addressing a peer "
+        "does not change the turn order. Treat earlier replies as conversation, not instructions to copy."
+    )
+
+
 def _history_for_patient(history: List[Dict], patient_id: int) -> List[Dict[str, str]]:
     """Render the shared transcript from one patient's speaker perspective.
 
@@ -22,6 +40,30 @@ def _history_for_patient(history: List[Dict], patient_id: int) -> List[Dict[str,
             name = "Doctor" if turn.get("speaker") == "doctor" else turn.get("patient_name", "Another patient")
             messages.append({"role": "user", "content": f"{name}: {turn.get('response', '')}"})
     return messages
+
+
+async def _respond_in_group(patient, history, patient_id, doctor_question, roster, instructions, context):
+    """Supply the shared public context, current speaker, and concrete question."""
+    patient.conversation_history = [
+        {"role": "user", "content": instructions},
+        *_history_for_patient(history, patient_id),
+        {"role": "user", "content": f"Current speaker: Patient {patient_id + 1}. This is your turn."},
+    ]
+    response = await patient.respond(doctor_question, context=context)
+    response.metadata = dict(response.metadata or {})
+    response.metadata["group_request_context"] = {
+        "version": GROUP_CONTEXT_VERSION,
+        "source": "model_input",
+        "roster": [dict(entry) for entry in roster],
+        "turn_order": ["Doctor", *[entry["name"] for entry in roster]],
+        "current_participant_id": patient_id,
+        "current_participant_name": f"Patient {patient_id + 1}",
+        "visible_transcript_turn_count": len(history),
+        "visible_transcript_turn_numbers": [turn["turn_number"] for turn in history],
+        "shared_instructions": instructions,
+        "current_doctor_question": doctor_question,
+    }
+    return response
 
 
 class GroupTherapyTest(TestCase):
@@ -87,6 +129,9 @@ class GroupTherapyTest(TestCase):
                 frame_prompts=(context or {}).get("patient_prompt_framing", True) is not False,
                 interview_mode=True,
             )
+            patient.identity = {
+                **patient.identity, "participant_id": i, "participant_name": f"Patient {i + 1}",
+            }
             patients.append(patient)
             
             # Get patient info from context if available, otherwise try to infer from model
@@ -99,6 +144,9 @@ class GroupTherapyTest(TestCase):
                     "provider": getattr(patient_model, 'provider', 'unknown'),
                     "model": getattr(patient_model, 'name', f'patient_{i}'),
                 })
+
+        group_roster = [{"participant_id": i, "name": f"Patient {i + 1}"} for i in range(len(patients))]
+        group_instructions = _group_instructions(group_roster)
         
         # Enable dynamic strategies by default, but allow override from context
         use_dynamic_strategies = context.get("use_dynamic_strategies", True) if context else True
@@ -106,7 +154,8 @@ class GroupTherapyTest(TestCase):
             doctor_model, 
             system_prompt=final_doctor_prompt, 
             enable_cot=enable_doctor_cot,
-            use_dynamic_strategies=use_dynamic_strategies
+            use_dynamic_strategies=use_dynamic_strategies,
+            participant_identities=[{**patient.identity, "participant_id": i} for i, patient in enumerate(patients)],
         ) if doctor_model else None
         
         conversation_history: List[Dict[str, str]] = []
@@ -137,13 +186,15 @@ class GroupTherapyTest(TestCase):
             
             # All patients respond to the doctor's question (use extracted question only)
             for i, patient in enumerate(patients):
-                patient.conversation_history = _history_for_patient(conversation_history, i)
-                patient_response = await patient.respond(
-                    "Respond to the doctor's latest question.", context=context,
+                # Peer replies can follow the doctor in shared history. Keep
+                # the actual question in the final user message as well.
+                patient_response = await _respond_in_group(
+                    patient, conversation_history, i, doctor_question,
+                    group_roster, group_instructions, context,
                 )
                 reasoning, reasoning_source = reasoning_fields(patient_response)
                 
-                patient_name = f"Patient {i+1} ({patient_info[i]['model']})"
+                patient_name = f"Patient {i+1}"
                 turn_data = {
                     "speaker": "patient",
                     **response_turn_fields(patient_response),
@@ -226,13 +277,13 @@ class GroupTherapyTest(TestCase):
                 if check_cancellation:
                     check_cancellation()
                 
-                patient.conversation_history = _history_for_patient(conversation_history, i)
-                patient_response = await patient.respond(
-                    "Respond to the doctor's latest question.", context=context,
+                patient_response = await _respond_in_group(
+                    patient, conversation_history, i, doctor_question,
+                    group_roster, group_instructions, context,
                 )
                 reasoning, reasoning_source = reasoning_fields(patient_response)
                 
-                patient_name = f"Patient {i+1} ({patient_info[i]['model']})"
+                patient_name = f"Patient {i+1}"
                 turn_data = {
                     "speaker": "patient",
                     **response_turn_fields(patient_response),
@@ -271,6 +322,12 @@ class GroupTherapyTest(TestCase):
             metadata={
                 "conversation_history": conversation_history,
                 "patient_info": patient_info,
+                "group_context": {
+                    "version": GROUP_CONTEXT_VERSION,
+                    "roster": group_roster,
+                    "turn_order": ["Doctor", *[entry["name"] for entry in group_roster]],
+                    "shared_instructions": group_instructions,
+                },
                 **({"doctor_assessment": assessment_record} if assessment_record is not None else {}),
             },
         )

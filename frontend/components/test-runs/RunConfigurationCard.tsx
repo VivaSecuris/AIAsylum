@@ -34,6 +34,7 @@ function GenerationRow({ label, g }: { label: string; g: any }) {
     `temperature ${g.temperature ?? 'default'}`,
     g.top_p != null ? `top-p ${g.top_p}` : null,
     g.max_tokens != null ? `max ${g.max_tokens} tokens` : null,
+    g.num_ctx != null ? `context ${g.num_ctx} tokens` : null,
     `ReACT ${g.enable_cot ? 'on' : 'off'}`,
     g.use_dynamic_strategies === false ? 'fixed questions' : null,
     g.seed != null ? `seed ${g.seed}` : g.seed_note ? `no seed (${g.seed_note})` : null,

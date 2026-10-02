@@ -52,6 +52,23 @@ class OllamaModel(BaseModel):
         if self._client:
             await self._client.aclose()
             self._client = None
+
+    def _generation_options(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        options = {
+            "temperature": kwargs.get("temperature", self.temperature),
+            "num_predict": kwargs.get("max_tokens", self.max_tokens),
+        }
+        for key in ("seed", "top_p", "top_k", "repeat_penalty"):
+            if key in kwargs:
+                options[key] = kwargs[key]
+        # The server's default can be much smaller than a model's supported
+        # context. Honor an explicit budget without shortening the messages.
+        num_ctx = kwargs.get("num_ctx", self.kwargs.get("num_ctx"))
+        if num_ctx is not None:
+            if isinstance(num_ctx, bool) or not isinstance(num_ctx, int) or num_ctx < 1:
+                raise ValueError("num_ctx must be a positive whole number")
+            options["num_ctx"] = num_ctx
+        return options
     
     async def check_available(self) -> bool:
         """Check if model is available in Ollama."""
@@ -118,18 +135,7 @@ class OllamaModel(BaseModel):
                 chat_messages.append({"role": role, "content": content})
             
             # Options: match Ollama app behavior when possible. temperature=0 gives reproducible outputs.
-            options = {
-                "temperature": kwargs.get("temperature", self.temperature),
-                "num_predict": kwargs.get("max_tokens", self.max_tokens),
-            }
-            if "seed" in kwargs:
-                options["seed"] = kwargs["seed"]
-            if "top_p" in kwargs:
-                options["top_p"] = kwargs["top_p"]
-            if "top_k" in kwargs:
-                options["top_k"] = kwargs["top_k"]
-            if "repeat_penalty" in kwargs:
-                options["repeat_penalty"] = kwargs["repeat_penalty"]
+            options = self._generation_options(kwargs)
             
             request_data = {
                 "model": self.model_name,
@@ -156,7 +162,7 @@ class OllamaModel(BaseModel):
                     content=message.get("content", ""),
                     model=self.model_name,
                     provider="ollama",
-                    finish_reason="stop" if data.get("done") else None,
+                    finish_reason=data.get("done_reason") or ("stop" if data.get("done") else None),
                     usage={
                         "prompt_eval_count": data.get("prompt_eval_count"),
                         "eval_count": data.get("eval_count"),
@@ -166,6 +172,8 @@ class OllamaModel(BaseModel):
                         "done": data.get("done"),
                         "request_system_prompts": request_system_prompts,
                         "request_system_prompts_source": "provider",
+                        "request_num_ctx": options.get("num_ctx"),
+                        "request_message_count": len(chat_messages),
                     }, message.get("thinking")),
                 )
             except httpx.ConnectError as e:
@@ -198,18 +206,7 @@ class OllamaModel(BaseModel):
                 request_system_prompts.append(system_prompt)
         
         # Prepare generate request (same options as chat for consistency)
-        options = {
-            "temperature": kwargs.get("temperature", self.temperature),
-            "num_predict": kwargs.get("max_tokens", self.max_tokens),
-        }
-        if "seed" in kwargs:
-            options["seed"] = kwargs["seed"]
-        if "top_p" in kwargs:
-            options["top_p"] = kwargs["top_p"]
-        if "top_k" in kwargs:
-            options["top_k"] = kwargs["top_k"]
-        if "repeat_penalty" in kwargs:
-            options["repeat_penalty"] = kwargs["repeat_penalty"]
+        options = self._generation_options(kwargs)
         request_data = {
             "model": self.model_name,
             "prompt": full_prompt,
@@ -226,7 +223,7 @@ class OllamaModel(BaseModel):
                 content=data.get("response", ""),
                 model=self.model_name,
                 provider="ollama",
-                finish_reason="stop" if data.get("done") else None,
+                finish_reason=data.get("done_reason") or ("stop" if data.get("done") else None),
                 usage={
                     "prompt_eval_count": data.get("prompt_eval_count"),
                     "eval_count": data.get("eval_count"),
@@ -237,6 +234,7 @@ class OllamaModel(BaseModel):
                         "context": data.get("context"), "done": data.get("done"),
                         "request_system_prompts": request_system_prompts,
                         "request_system_prompts_source": "provider",
+                        "request_num_ctx": options.get("num_ctx"),
                     }, data.get("thinking")
                 ),
             )
@@ -273,10 +271,7 @@ class OllamaModel(BaseModel):
             "model": self.model_name,
             "prompt": full_prompt,
             "stream": True,
-            "options": {
-                "temperature": kwargs.get("temperature", self.temperature),
-                "num_predict": kwargs.get("max_tokens", self.max_tokens),
-            },
+            "options": self._generation_options(kwargs),
         }
         
         client = await self._get_client()

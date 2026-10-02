@@ -29,7 +29,10 @@ export type SystemPromptChoice =
   | { mode: 'custom'; text: string }
 
 /** Kept as strings so a blank field means "use the default". */
-export interface GenerationValues extends GenerationDefaults {}
+export interface GenerationValues extends GenerationDefaults {
+  /** Ollama context window, including input history and the reply. */
+  num_ctx?: string
+}
 
 export interface StepState {
   provider: string
@@ -279,6 +282,7 @@ function generationFrom(block: any, fallbackTemperature: unknown, fallbackCot: u
   if (temperature !== undefined && temperature !== null) values.temperature = String(temperature)
   if (b.top_p !== undefined && b.top_p !== null) values.top_p = String(b.top_p)
   if (b.max_tokens !== undefined && b.max_tokens !== null) values.max_tokens = String(b.max_tokens)
+  if (b.num_ctx !== undefined && b.num_ctx !== null) values.num_ctx = String(b.num_ctx)
   values.enable_cot = Boolean(b.enable_cot ?? fallbackCot ?? values.enable_cot)
   if (b.use_dynamic_strategies !== undefined) values.use_dynamic_strategies = Boolean(b.use_dynamic_strategies)
   return values
@@ -427,7 +431,7 @@ export function stepsForType(type: TestType) {
   }
 }
 
-function generationPayload(g: GenerationValues, role: 'doctor' | 'patient', withStrategies: boolean): Record<string, any> {
+function generationPayload(g: GenerationValues, role: 'doctor' | 'patient', withStrategies: boolean, provider: string): Record<string, any> {
   const out: Record<string, any> = {
     temperature: numberOr(g.temperature, DEFAULT_TEMPERATURE, { min: 0, max: 2 }),
     enable_cot: g.enable_cot,
@@ -436,6 +440,8 @@ function generationPayload(g: GenerationValues, role: 'doctor' | 'patient', with
   if (Number.isFinite(topP) && topP > 0) out.top_p = topP
   const maxTokens = numberOr(g.max_tokens, NaN, { min: 1, max: 32768, int: true })
   if (Number.isFinite(maxTokens)) out.max_tokens = maxTokens
+  const numCtx = numberOr(g.num_ctx ?? '', NaN, { min: 1, max: 1048576, int: true })
+  if (provider === 'ollama' && Number.isFinite(numCtx)) out.num_ctx = numCtx
   if (role === 'doctor' && withStrategies) out.use_dynamic_strategies = g.use_dynamic_strategies
   return out
 }
@@ -488,8 +494,8 @@ export function buildTestRunRequest(state: FormState, variableNames: string[] = 
 
   applyChoice(cfg, 'doctor_system_prompt_id', 'doctor_system_prompt', state.doctor.systemPrompt)
   cfg.roles = {
-    doctor: generationPayload(state.doctor.generation, 'doctor', steps.doctor.showStrategies),
-    patient: generationPayload(state.patient.generation, 'patient', false),
+    doctor: generationPayload(state.doctor.generation, 'doctor', steps.doctor.showStrategies, state.doctor.provider),
+    patient: generationPayload(state.patient.generation, 'patient', false, state.patient.provider),
   }
 
   let patientProvider = state.patient.provider
@@ -498,7 +504,7 @@ export function buildTestRunRequest(state: FormState, variableNames: string[] = 
     const patients = state.groupPatients.filter((p) => p.provider && p.model.trim())
     cfg.patients = patients.map((p) => {
       const entry: Record<string, any> = { provider: p.provider, model: p.model.trim(),
-        generation: generationPayload(p.generation, 'patient', false) }
+        generation: generationPayload(p.generation, 'patient', false, p.provider) }
       applyChoice(entry, 'system_prompt_id', 'system_prompt', p.systemPrompt)
       return entry
     })
@@ -590,7 +596,7 @@ export interface ValidationContext {
   unfilledVariables?: string[]
 }
 
-function checkGeneration(label: string, g: GenerationValues, errors: string[]) {
+function checkGeneration(label: string, g: GenerationValues, errors: string[], provider?: string) {
   const check = (value: string, name: string, ok: (n: number) => boolean, range: string) => {
     if (value.trim() === '') return
     const n = Number(value)
@@ -599,6 +605,7 @@ function checkGeneration(label: string, g: GenerationValues, errors: string[]) {
   check(g.temperature, 'temperature', (n) => n >= 0 && n <= 2, 'between 0 and 2')
   check(g.top_p, 'top-p', (n) => n > 0 && n <= 1, 'above 0 and at most 1')
   check(g.max_tokens, 'max tokens', (n) => Number.isInteger(n) && n >= 1 && n <= 32768, 'a whole number from 1 to 32768')
+  if (provider === 'ollama') check(g.num_ctx ?? '', 'context window', (n) => Number.isInteger(n) && n >= 1 && n <= 1048576, 'a whole number from 1 to 1048576')
 }
 
 function checkChoice(label: string, choice: SystemPromptChoice, missing: number[], errors: string[]) {
@@ -618,7 +625,7 @@ export function validateForm(state: FormState, ctx: ValidationContext = {}): { e
   if (state.testType === 'benchmark') {
     if (!state.benchmark) errors.push('Choose a benchmark.')
     if (!state.patient.provider || !state.patient.model.trim()) errors.push('Patient: choose a provider and model.')
-    checkGeneration('Patient', state.patient.generation, errors)
+    checkGeneration('Patient', state.patient.generation, errors, state.patient.provider)
     checkChoice('Patient', state.patient.systemPrompt, missing, errors)
     return { errors, warnings }
   }
@@ -661,18 +668,18 @@ export function validateForm(state: FormState, ctx: ValidationContext = {}): { e
     if (complete.length !== state.groupPatients.length) warnings.push('Patients without a provider and model are left out.')
     state.groupPatients.forEach((p, i) => {
       checkChoice(`Patient ${i + 1}`, p.systemPrompt, missing, errors)
-      checkGeneration(`Patient ${i + 1}`, p.generation, errors)
+      checkGeneration(`Patient ${i + 1}`, p.generation, errors, p.provider)
     })
   } else {
     if (!state.patient.provider || !state.patient.model.trim()) errors.push('Patient: choose a provider and model.')
     checkChoice('Patient', state.patient.systemPrompt, missing, errors)
-    checkGeneration('Patient', state.patient.generation, errors)
+    checkGeneration('Patient', state.patient.generation, errors, state.patient.provider)
   }
 
   if (steps.doctor.shown) {
     if (!state.doctor.provider || !state.doctor.model.trim()) errors.push('Doctor: choose a provider and model.')
     checkChoice('Doctor', state.doctor.systemPrompt, missing, errors)
-    checkGeneration('Doctor', state.doctor.generation, errors)
+    checkGeneration('Doctor', state.doctor.generation, errors, state.doctor.provider)
   }
 
   if (state.evaluator.enabled) {
