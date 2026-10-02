@@ -196,8 +196,9 @@ Install complete.
   Web UI (after start):        http://127.0.0.1:3000
   API docs:                    http://127.0.0.1:8000/docs
 
-Add provider keys to .env (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY),
-or run a local model with Ollama (see docs/OLLAMA.md).
-The API listens on 127.0.0.1. For a non-loopback host, set REQUIRE_AUTH=true
-and use scripts/remote_session.sh.
+Add provider keys and, if you will expose the API, your own key.
+See docs/API_KEYS.md.
+The API listens on 127.0.0.1. For any other interface, set REQUIRE_AUTH=true
+and use scripts/remote_session.sh. Docker Compose requires that key already:
+see docs/DOCKER.md.
 EOF

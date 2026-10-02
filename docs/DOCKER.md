@@ -28,7 +28,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 - Port: 8000
 - Health check: `http://localhost:8000/health`
 - API docs: `http://localhost:8000/docs`
-- Listens on all container interfaces. Set `REQUIRE_AUTH=true` and real `API_KEYS` / `API_KEY_HMAC_SECRET` before exposing the port off localhost.
+- Listens on all container interfaces. Compose sets `REQUIRE_AUTH=true` and will not start until `API_KEYS` and `API_KEY_HMAC_SECRET` are set. See [API_KEYS.md](API_KEYS.md).
 
 ### Database (PostgreSQL)
 - Not published to the host. Other containers reach it as `db:5432`.
@@ -54,20 +54,17 @@ ANTHROPIC_API_KEY=
 GOOGLE_API_KEY=
 OLLAMA_BASE_URL=http://ollama:11434
 POSTGRES_PASSWORD=choose-a-long-password
-DATABASE_URL=postgresql://aiasylum:${POSTGRES_PASSWORD}@db:5432/aiasylum
-API_SECRET_KEY=your-secret-key
-JWT_SECRET_KEY=your-jwt-secret
-API_KEY_HMAC_SECRET=your-hmac-secret
-API_KEYS=
+API_KEY_HMAC_SECRET=generate-with-secrets.token_urlsafe
+API_KEYS=generate-with-secrets.token_urlsafe
 REQUIRE_AUTH=true
 CORS_ORIGINS=http://localhost:3000,http://localhost:8000
 ```
 
 ## Volumes
 
-- `postgres_data`: PostgreSQL data persistence
-- `ollama_data`: Ollama model storage
-- `./data`: Application data directory
+- `postgres_data`: PostgreSQL data
+- `api_data`: API data directory inside the container
+- `ollama_data`: Ollama model storage (only with `--profile ollama`)
 
 ## Commands
 

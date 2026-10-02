@@ -7,4 +7,6 @@
 
 psycopg2-binary==2.9.9
 pgvector==0.2.4  # Optional: for vector search
-timescaledb==2.13.0  # Optional: for time-series data
+
+# TimescaleDB is a PostgreSQL extension, not a Python package. Install it in
+# the database server and run `CREATE EXTENSION IF NOT EXISTS timescaledb;`.

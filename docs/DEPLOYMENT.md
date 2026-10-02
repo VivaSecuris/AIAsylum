@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10, 3.11, or 3.12
 - PostgreSQL (recommended) or SQLite (development)
 - Node.js 18+ (for frontend)
 - API keys for at least one LLM provider
@@ -67,45 +67,12 @@ cd frontend && npm install && npm run dev
 
 #### Option 2: Docker Compose
 
-Create `docker-compose.yml`:
+The repository already contains `docker-compose.yml`. Set `POSTGRES_PASSWORD`, `API_KEY_HMAC_SECRET`, and `API_KEYS` in `.env` first. See [API_KEYS.md](API_KEYS.md) and [DOCKER.md](DOCKER.md).
 
-```yaml
-version: '3.8'
-
-services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/aiasylum
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    depends_on:
-      - db
-  
-  db:
-    image: postgres:15
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=aiasylum
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-  
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - api
-
-volumes:
-  postgres_data:
-```
-
-Run:
 ```bash
-docker-compose up -d
+docker compose build
+docker compose up -d
+docker compose --profile frontend up -d
 ```
 
 ### Security Considerations
@@ -119,14 +86,7 @@ docker-compose up -d
 
 ### High-Security Authentication
 
-For production, implement DB-backed API keys with HMAC verification:
-
-1. Store API keys in database with scoped permissions
-2. Use token format: `ak_live_<kid>_<secret>`
-3. Verify HMAC signature using `API_KEY_HMAC_SECRET`
-4. Implement token rotation and expiration
-
-See `docs/API.md` for API authentication details.
+Set `REQUIRE_AUTH=true` and put a key you generated into `API_KEYS`. Docker Compose does this by default and will not start without that key. The steps are in [API_KEYS.md](API_KEYS.md).
 
 ### Monitoring
 

@@ -35,3 +35,12 @@ All notable changes to AI Asylum will be documented in this file.
 - Autotune (weight surgery) no longer fails on Apple GPUs (MPS) with a CPU/GPU device mismatch.
 - Test-prompt search reaches the whole library, not only the newest 100 prompts.
 - Recorded turns keep the runtime participant identity alongside generation metadata.
+
+## [Unreleased]
+
+### Added
+- CycloneDX SBOMs for the default Python install and the frontend lockfile (`sbom/`, regenerated with `./scripts/generate_sbom.sh`).
+- [docs/API_KEYS.md](docs/API_KEYS.md) explains how to get an OpenAI, Anthropic, or Google key and how to set your own API key.
+
+### Changed
+- The Docker image installs the package, runs as a non-root user, and no longer tries to pip-install a TimescaleDB version that is not a Python package. Compose requires `POSTGRES_PASSWORD`, `API_KEYS`, and `API_KEY_HMAC_SECRET` before the API starts.

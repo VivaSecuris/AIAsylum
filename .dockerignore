@@ -57,11 +57,14 @@ logs/
 htmlcov/
 .tox/
 
-# Frontend
-frontend/node_modules/
-frontend/.next/
-frontend/build/
-frontend/dist/
+# Frontend has its own image. Keep it out of the API build context.
+frontend/
+
+# Not needed to run the API
+tests/
+models/
+runs/
+sbom/
 
 # OS
 .DS_Store

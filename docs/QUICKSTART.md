@@ -45,7 +45,7 @@ pip install -r requirements.txt
 # Copy example environment file
 cp .env.example .env
 
-# Edit .env with your settings
+# Edit .env with your settings. See docs/API_KEYS.md.
 # At minimum, you need ONE of:
 # - OPENAI_API_KEY=sk-...
 # - ANTHROPIC_API_KEY=sk-ant-...

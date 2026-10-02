@@ -1,4 +1,4 @@
-.PHONY: venv setup install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean prefetch-benchmarks
+.PHONY: venv setup install install-dev init migrate migrate-create run-api run-frontend test test-coverage test-cli lint format backup restore clean prefetch-benchmarks sbom
 
 # Everything runs through the venv's interpreter, so no activation is needed.
 # PYTHON_BOOTSTRAP only creates the venv; it must be 3.10-3.12 (see docs/INSTALL_TROUBLESHOOTING.md).
@@ -9,6 +9,9 @@ HOST ?= 127.0.0.1
 # Installation
 setup:
 	./install.sh
+
+sbom:
+	./scripts/generate_sbom.sh
 
 venv:
 	@if [ ! -x $(PY) ]; then $(PYTHON_BOOTSTRAP) -m venv venv; fi

@@ -132,6 +132,17 @@ make init             # alembic upgrade head
 
 Optional local models: install [Ollama](https://ollama.ai), then `ollama serve` and `ollama pull llama2`. See [docs/OLLAMA.md](docs/OLLAMA.md).
 
+Provider keys and your own API key are different. How to create each one and where to put it: [docs/API_KEYS.md](docs/API_KEYS.md).
+
+Docker Compose builds the API and PostgreSQL images from this repo. It will not start until `.env` has `POSTGRES_PASSWORD`, `API_KEY_HMAC_SECRET`, and `API_KEYS`. See [docs/DOCKER.md](docs/DOCKER.md).
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+The dependency inventories are [sbom/python-core.cdx.json](sbom/python-core.cdx.json) and [sbom/frontend.cdx.json](sbom/frontend.cdx.json). Regenerate them with `./scripts/generate_sbom.sh`.
+
 ## Quick Start
 
 ```bash
