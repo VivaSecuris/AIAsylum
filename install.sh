@@ -156,7 +156,7 @@ venv/bin/python scripts/seed_prompt_presets.py --apply
 
 if [ "$WITH_FRONTEND" -eq 1 ]; then
     if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 \
-        && node -e 'process.exit(0 if int(process.versions.node.split(".")[0]) >= 18 else 1)'; then
+        && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)'; then
         echo "Installing frontend dependencies (npm ci)..."
         (cd frontend && npm ci)
     else
