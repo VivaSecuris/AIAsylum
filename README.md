@@ -517,7 +517,7 @@ and edits are preserved.
 
 ## Walkthrough
 
-A narrated walkthrough of creating a model, editing its refusal behavior, and interviewing the result is at [youtu.be/0WSA0tu6Sxs](https://youtu.be/0WSA0tu6Sxs). The write-up is [AI Lobotomy](https://vivasecuris.com/ai-lobotomy.html).
+A narrated walkthrough of creating a model, editing its refusal behavior, and interviewing the result is at [youtu.be/bKtj3LkNv0s](https://youtu.be/bKtj3LkNv0s). The write-up is [AI Lobotomy](https://vivasecuris.com/ai-lobotomy.html).
 
 ## Jailbreak Testing Resources
 
